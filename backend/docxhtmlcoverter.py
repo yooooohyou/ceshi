@@ -76,7 +76,7 @@ class DocxHtmlConverter:
                         img_names.append(os.path.basename(file_info.filename))
                 image_order = sorted(img_names)
 
-        print(f"✅ 解析到图片显示顺序：{image_order}")
+        # print(f"✅ 解析到图片显示顺序：{image_order}")
         return image_order
 
     def _extract_original_images(self, docx_path, output_img_dir):
@@ -99,7 +99,7 @@ class DocxHtmlConverter:
                     with open(save_path, 'wb') as f:
                         f.write(zip_file.read(file_info.filename))
 
-        print(f"✅ 提取原始图片完成，绝对路径：{output_img_dir}")
+        # print(f"✅ 提取原始图片完成，绝对路径：{output_img_dir}")
         return [f for f in os.listdir(output_img_dir) if os.path.isfile(os.path.join(output_img_dir, f))]
 
     def _image_to_base64(self, img_path):
@@ -206,7 +206,7 @@ class DocxHtmlConverter:
                 '</head>',
                 f'<style type="text/css">\n{css_content}\n</style>\n</head>'
             )
-            print(f"✅ 已内嵌CSS样式（CSS文件路径：{css_file_path}）")
+            # print(f"✅ 已内嵌CSS样式（CSS文件路径：{css_file_path}）")
 
         # 8. 内嵌图片（核心修复：绝对路径匹配+替换）
         for idx, spire_name in enumerate(spire_img_names):
@@ -221,7 +221,7 @@ class DocxHtmlConverter:
                     # 匹配所有包含该图片名的src属性（无论路径前缀）
                     spire_img_pattern = re.compile(f'src="[^"]*{re.escape(spire_name)}"')
                     html_content = spire_img_pattern.sub(f'src="{base64_str}"', html_content)
-                    print(f"🔄 图片 {original_img_name} 已转为Base64内嵌（替换Spire生成的 {spire_name}）")
+                    # print(f"🔄 图片 {original_img_name} 已转为Base64内嵌（替换Spire生成的 {spire_name}）")
                 else:
                     print(f"⚠️ 图片 {original_img_name} Base64转换失败，跳过替换")
 
@@ -287,7 +287,7 @@ class DocxHtmlConverter:
             )
             document.SaveToFile(output_docx_path, FileFormat.Docx2016)
 
-            print(f"✅ HTML转DOCX成功！文件绝对路径：{output_docx_path}")
+            # print(f"✅ HTML转DOCX成功！文件绝对路径：{output_docx_path}")
             return True
 
         except Exception as e:
@@ -321,17 +321,17 @@ if __name__ == "__main__":
     if html_content:
         converter.html_text_to_docx(html_content, r"C:\Users\you62\PyCharmMiscProject\word2html\result.docx")
 # # ------------------------------ 调用示例 ------------------------------
-# if __name__ == "__main__":
-#     # 1. 初始化转换器
-#     converter = DocxHtmlConverter()
-#
-#     # 2. 示例1：DOCX转单文件HTML
-#     input_docx = r"input.docx"  # 替换为你的DOCX路径
-#     output_html = r"output.html"  # 输出HTML路径
-#     html_content_a = converter.docx_to_single_html(input_docx, output_html)
-#     # 写入最终HTML文件
-#     with open(output_html, 'w', encoding='utf-8') as f:
-#         f.write(html_content_a)
+if __name__ == "__main__":
+    # 1. 初始化转换器
+    converter = DocxHtmlConverter()
+
+    # 2. 示例1：DOCX转单文件HTML
+    input_docx = r"input.docx"  # 替换为你的DOCX路径
+    output_html = r"output.html"  # 输出HTML路径
+    html_content_a = converter.docx_to_single_html(input_docx, output_html)
+    # 写入最终HTML文件
+    with open(output_html, 'w', encoding='utf-8') as f:
+        f.write(html_content_a)
 #
 #     # 3. 示例2：DOCX转单文件HTML
 #     sample_html = """自定义html"""
