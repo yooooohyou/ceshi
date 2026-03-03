@@ -1,20 +1,17 @@
 from fastapi import FastAPI, UploadFile, File, Body, Request, HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.exceptions import RequestValidationError
-from fastapi.encoders import jsonable_encoder
 import os
-import sys
 import datetime
 import random
 import string
 import psycopg2
-from psycopg2 import OperationalError, ProgrammingError
 from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 from typing import Optional, Tuple, Union, List, Dict, Any, Literal
 import io
 from docxautogenerator import generate_fully_centered_patent_doc
-from mergfile import call_docx_split,call_docx_merge,call_docx_delete,TreeItem,MergeRequest,DeleteRequest,SplitResponse,DeleteResponse
+from mergfile import call_docx_split,call_docx_merge, TreeItem,MergeRequest
 import json
 
 from docxhtmlcoverter import DocxHtmlConverter
