@@ -745,55 +745,6 @@ async def upload_and_generate_tree(
 @app.get("/doc_editor/get_html_by_node/{node_id}", summary="根据节点ID查询HTML文本")
 async def get_html_by_node(node_id: int) -> JSONResponse:
     """根据标题树节点ID查询存储的HTML文本"""
-    select_sql = """
-            SELECT t.html_content, t.title_text, t.create_time, t.update_time, t.level, t.eid, t.idx, t.node_type, t.origin_file_path, t.is_conversion_completion,
-                   r.original_filename, r.upload_time, r.update_time as file_update_time, r.split_file_id, r.process_mode
-            FROM "yxdl_docx_title_trees" t
-            LEFT JOIN "yxdl_docx_upload_records" r ON t.record_id = r.id
-            WHERE t.id = %s
-            """
-
-    with get_db_connection() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute(select_sql, (node_id,))
-            result = cursor.fetchone()
-
-            if not result:
-                return unified_response(
-                    code=404,
-                    message=f"未找到ID为{node_id}的标题树节点",
-                    data={}
-                )
-
-    # 格式化时间字段
-    def format_time(time_obj):
-        return time_obj.strftime("%Y-%m-%d %H:%M:%S") if time_obj else ""
-
-    if result["is_conversion_completion"] == 0:
-        html_content = docx_to_html(result["origin_file_path"])
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                update_sql = """
-                                            UPDATE "yxdl_docx_title_trees"
-                                            SET html_content = %s, update_time = NOW()
-                                            WHERE id = %s
-                                        """
-                cursor.execute(update_sql, (html_content, node_id))
-                conn.commit()  # 提交事务
-
-                # 3. 重新查询更新后的完整数据（可选，用于返回最新状态）
-                cursor.execute(select_sql, (node_id,))
-                updated_result = cursor.fetchone()
-        return unified_response(
-            code=200,
-            message="查询HTML文本成功",
-            data={
-                "node_id": node_id,
-                "title_text": updated_result["title_text"],
-                "level": updated_result["level"],
-                "html_content": updated_result["html_content"]
-            }
-        )
     try:
         select_sql = """
         SELECT t.html_content, t.title_text, t.create_time, t.update_time, t.level, t.eid, t.idx, t.node_type, t.origin_file_path, t.is_conversion_completion,
@@ -823,11 +774,9 @@ async def get_html_by_node(node_id: int) -> JSONResponse:
             html_content = docx_to_html(result["origin_file_path"])
             with get_db_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                    update_sql = """
-                                        UPDATE "yxdl_docx_title_trees"
-                                        SET html_content = %s, update_time = NOW()
-                                        WHERE id = %s
-                                    """
+                    update_sql = """UPDATE "yxdl_docx_title_trees"
+SET html_content = %s, update_time = NOW(), is_conversion_completion = 1
+WHERE id = %s"""
                     cursor.execute(update_sql, (html_content, node_id))
                     conn.commit()  # 提交事务
 
