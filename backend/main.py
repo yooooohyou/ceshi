@@ -13,6 +13,10 @@ import io
 from docxautogenerator import generate_fully_centered_patent_doc
 from mergfile import call_docx_split,call_docx_merge, TreeItem,MergeRequest
 import json
+import requests
+import os
+import tempfile
+from urllib.parse import urlparse
 
 from docxhtmlcoverter import DocxHtmlConverter
 
@@ -60,6 +64,63 @@ class HTMLSafeJSONEncoder(json.JSONEncoder):
         self.escape_forward_slashes = False  # 禁用/的转义
 
 # ====================== 统一返回格式工具函数 ======================
+
+def is_web_path(path_str):
+    """
+    判断路径是否为网页URL路径
+    :param path_str: 待判断的路径字符串
+    :return: True（是网页路径）/ False（不是）
+    """
+    # 去除首尾空格，避免干扰
+    path_str = path_str.strip()
+    # 解析URL，判断是否有有效的协议头
+    parsed = urlparse(path_str)
+    # 常见的网页协议头
+    web_schemes = {'http', 'https', 'ftp', 'ftps'}
+    return parsed.scheme in web_schemes
+
+
+def is_local_path(path_str):
+    """
+    判断路径是否为本地文件路径
+    :param path_str: 待判断的路径字符串
+    :return: True（是本地路径）/ False（不是）
+    """
+    path_str = path_str.strip()
+    # 如果是网页路径，直接返回False
+    if is_web_path(path_str):
+        return False
+
+    # 判断是否符合本地路径特征
+    # 1. Windows路径特征：包含盘符（如C:\）或反斜杠
+    if os.name == 'nt':  # Windows系统
+        # 匹配盘符格式（如C:、D:），或包含反斜杠，或是相对路径
+        has_drive = len(path_str) >= 2 and path_str[1] == ':' and path_str[0].isalpha()
+        has_backslash = '\\' in path_str
+        return has_drive or has_backslash or os.path.exists(path_str)
+    else:  # Linux/macOS系统
+        # 以/开头（绝对路径），或存在相对路径，或文件实际存在
+        is_abs = path_str.startswith('/')
+        return is_abs or os.path.exists(path_str)
+
+
+def judge_path_type(path_str):
+    """
+    综合判断路径类型，返回类型描述
+    :param path_str: 待判断的路径字符串
+    :return: 字符串（web/local/unknown）
+    """
+    if not path_str:
+        return 'unknown'
+
+    if is_web_path(path_str):
+        return 'web'
+    elif is_local_path(path_str):
+        return 'local'
+    else:
+        return 'unknown'
+
+
 def unified_response(code: int, message: str, data: dict = None) -> JSONResponse:
     """生成统一格式的响应体"""
     return JSONResponse(
@@ -119,16 +180,36 @@ def generate_unique_file_id() -> str:
     random_str = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
     return f"docx_{timestamp}_{random_str}"
 
+def convert_path1_to_path2(path1):
+    # 基础域名（固定不变）
+    old_prefix = "http://10.13.6.62:20067/data/sc_bid/sc_web/sc_dev/dev-js-bid-manage-project/dev-js-bid-manage-officeeditorserver/dev_office_data/data/save_data/"
+    new_prefix = "http://10.13.6.62:20067/officeeditserver/"
+    # 替换前缀得到路径2
+    path2 = path1.replace(old_prefix, new_prefix)
+    return path2
+
 
 def docx_to_html(file_path: str) -> str:
     """Word转HTML的实现函数"""
+
     try:
-        # abs_file_path = os.path.abspath(file_path)
+        abs_file_path = os.path.abspath("temp.docx")
         # if not os.path.exists(abs_file_path):
         #     return f"<p>转换失败：文件不存在: {abs_file_path}</p>"
+        if judge_path_type(file_path) == 'web':
+            new_file_path = convert_path1_to_path2(file_path)
+            response = requests.get(new_file_path, timeout=30)
+            # 校验响应状态码（200表示成功）
+            response.raise_for_status()
+
+            # 将文件内容写入本地
+            with open(abs_file_path, 'wb') as f:
+                f.write(response.content)
+
+            # print(f"文件下载成功，本地路径：{save_path}")
 
         # 文件大小检查
-        file_size = os.path.getsize(file_path)
+        file_size = os.path.getsize(abs_file_path)
         if file_size > 10 * 1024 * 1024:
             print(f"警告：文件过大（{file_size / 1024 / 1024:.2f}MB），可能转换失败")
 
@@ -137,10 +218,11 @@ def docx_to_html(file_path: str) -> str:
         temp_html_path = os.path.join(UPLOAD_DIR, temp_html_filename)
 
         # 执行DOCX转HTML
-        converter.docx_to_single_html(file_path, temp_html_path)
+        converter.docx_to_single_html(abs_file_path, temp_html_path)
 
         # 读取并返回HTML内容
         html_content = ""
+        print(html_content)
         if os.path.exists(temp_html_path):
             try:
                 with open(temp_html_path, 'r', encoding='utf-8') as f:
@@ -663,6 +745,55 @@ async def upload_and_generate_tree(
 @app.get("/doc_editor/get_html_by_node/{node_id}", summary="根据节点ID查询HTML文本")
 async def get_html_by_node(node_id: int) -> JSONResponse:
     """根据标题树节点ID查询存储的HTML文本"""
+    select_sql = """
+            SELECT t.html_content, t.title_text, t.create_time, t.update_time, t.level, t.eid, t.idx, t.node_type, t.origin_file_path, t.is_conversion_completion,
+                   r.original_filename, r.upload_time, r.update_time as file_update_time, r.split_file_id, r.process_mode
+            FROM "yxdl_docx_title_trees" t
+            LEFT JOIN "yxdl_docx_upload_records" r ON t.record_id = r.id
+            WHERE t.id = %s
+            """
+
+    with get_db_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(select_sql, (node_id,))
+            result = cursor.fetchone()
+
+            if not result:
+                return unified_response(
+                    code=404,
+                    message=f"未找到ID为{node_id}的标题树节点",
+                    data={}
+                )
+
+    # 格式化时间字段
+    def format_time(time_obj):
+        return time_obj.strftime("%Y-%m-%d %H:%M:%S") if time_obj else ""
+
+    if result["is_conversion_completion"] == 0:
+        html_content = docx_to_html(result["origin_file_path"])
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                update_sql = """
+                                            UPDATE "yxdl_docx_title_trees"
+                                            SET html_content = %s, update_time = NOW()
+                                            WHERE id = %s
+                                        """
+                cursor.execute(update_sql, (html_content, node_id))
+                conn.commit()  # 提交事务
+
+                # 3. 重新查询更新后的完整数据（可选，用于返回最新状态）
+                cursor.execute(select_sql, (node_id,))
+                updated_result = cursor.fetchone()
+        return unified_response(
+            code=200,
+            message="查询HTML文本成功",
+            data={
+                "node_id": node_id,
+                "title_text": updated_result["title_text"],
+                "level": updated_result["level"],
+                "html_content": updated_result["html_content"]
+            }
+        )
     try:
         select_sql = """
         SELECT t.html_content, t.title_text, t.create_time, t.update_time, t.level, t.eid, t.idx, t.node_type, t.origin_file_path, t.is_conversion_completion,
