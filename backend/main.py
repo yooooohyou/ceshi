@@ -13,8 +13,8 @@ from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 from typing import Optional, Tuple, Union, List, Dict, Any, Literal
 import io
-from backend.docxautogenerator import generate_fully_centered_patent_doc
-from backend.mergfile import call_docx_split,call_docx_merge,call_docx_delete,TreeItem,MergeRequest,DeleteRequest,SplitResponse,DeleteResponse
+from docxautogenerator import generate_fully_centered_patent_doc
+from mergfile import call_docx_split,call_docx_merge,call_docx_delete,TreeItem,MergeRequest,DeleteRequest,SplitResponse,DeleteResponse
 import json
 
 from docxhtmlcoverter import DocxHtmlConverter
