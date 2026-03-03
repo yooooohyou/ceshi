@@ -123,12 +123,12 @@ def generate_unique_file_id() -> str:
 def docx_to_html(file_path: str) -> str:
     """Word转HTML的实现函数"""
     try:
-        abs_file_path = os.path.abspath(file_path)
-        if not os.path.exists(abs_file_path):
-            return f"<p>转换失败：文件不存在: {abs_file_path}</p>"
+        # abs_file_path = os.path.abspath(file_path)
+        # if not os.path.exists(abs_file_path):
+        #     return f"<p>转换失败：文件不存在: {abs_file_path}</p>"
 
         # 文件大小检查
-        file_size = os.path.getsize(abs_file_path)
+        file_size = os.path.getsize(file_path)
         if file_size > 10 * 1024 * 1024:
             print(f"警告：文件过大（{file_size / 1024 / 1024:.2f}MB），可能转换失败")
 
@@ -137,7 +137,7 @@ def docx_to_html(file_path: str) -> str:
         temp_html_path = os.path.join(UPLOAD_DIR, temp_html_filename)
 
         # 执行DOCX转HTML
-        converter.docx_to_single_html(abs_file_path, temp_html_path)
+        converter.docx_to_single_html(file_path, temp_html_path)
 
         # 读取并返回HTML内容
         html_content = ""
