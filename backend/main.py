@@ -1336,6 +1336,31 @@ async def html_to_docx_api(request: Request,
         )
 
 
+def deduplicate_dict_list(dict_list):
+    """
+    对包含字典的列表进行去重
+
+    Args:
+        dict_list: 包含字典的列表
+
+    Returns:
+        去重后的新列表，保留第一次出现的字典
+    """
+    seen = set()  # 用于记录已经出现过的字典特征
+    result = []  # 存储去重后的结果
+
+    for d in dict_list:
+        # 将字典转换为可哈希的元组（排序后），确保键值对顺序不影响去重
+        # sorted(d.items()) 保证 {'a':1, 'b':2} 和 {'b':2, 'a':1} 被视为同一个字典
+        tuple_repr = tuple(sorted(d.items()))
+
+        if tuple_repr not in seen:
+            seen.add(tuple_repr)
+            result.append(d)
+
+    return result
+
+
 # ====================== 新增：合并接口 ======================
 @app.post("/doc_editor/merge_docx_office_server", summary="合并拆分的DOCX节点")
 async def merge_docx_office_server(request: Request,
@@ -1397,6 +1422,7 @@ async def merge_docx_office_server(request: Request,
             conn.commit()
     tree_ = recover_split_tree_nodes(result_record_id)
     files_ = get_tree_node_file_paths(result_record_id)
+    files_ = deduplicate_dict_list(files_)
     # split_result = call_docx_merge(MergeRequest(tree=tree_, files=[], format_args={}))
 
     format_config = {
