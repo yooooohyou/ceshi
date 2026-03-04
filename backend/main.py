@@ -1386,6 +1386,14 @@ async def merge_docx_office_server(request: Request,
             conn.commit()
     tree_ = recover_split_tree_nodes(result_record_id)
     files_ = get_tree_node_file_paths(result_record_id)
+    return unified_response(
+        code=200,
+        message="节点HTML内容更新成功",
+        data={
+            "tree_ ": tree_,
+            "files_": files_
+        }
+    )
     # split_result = call_docx_merge(MergeRequest(tree=tree_, files=[], format_args={}))
     print(1111111111111)
     print(tree_)
