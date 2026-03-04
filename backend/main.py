@@ -1101,7 +1101,7 @@ async def get_html_by_node(request: Request,node_id: int) -> JSONResponse:
 
         if result["is_conversion_completion"] == 0:
             html_content, temp_file_docx_ = docx_to_html(result["origin_file_path"])
-            temp_file_docx = local_upload_path_to_web_path(temp_file_docx_, request)
+            temp_file_docx = temp_file_docx_
             eid = os.path.splitext(os.path.basename(temp_file_docx_))[0]
             with get_db_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cursor:
