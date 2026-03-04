@@ -811,26 +811,26 @@ def get_tree_node_file_paths(record_id: int) -> List[str]:
     if not isinstance(record_id, int) or record_id <= 0:
         raise ValueError("record_id必须是正整数")
 
-    # select_sql = """
-    # SELECT
-    #     CASE
-    #         WHEN is_conversion_completion = 1 AND update_file_path IS NOT NULL AND update_file_path != ''
-    #         THEN update_file_path
-    #         ELSE origin_file_path
-    #     END AS file_path
-    # FROM "yxdl_docx_title_trees"
-    # WHERE record_id = %s;
-    # """
     select_sql = """
-        SELECT 
-            CASE 
-                WHEN is_conversion_completion = 1 AND update_file_path IS NOT NULL AND update_file_path != '' 
-                THEN origin_file_path
-                ELSE origin_file_path
-            END AS file_path
-        FROM "yxdl_docx_title_trees" 
-        WHERE record_id = %s;
-        """
+    SELECT
+        CASE
+            WHEN is_conversion_completion = 1 AND update_file_path IS NOT NULL AND update_file_path != ''
+            THEN update_file_path
+            ELSE origin_file_path
+        END AS file_path
+    FROM "yxdl_docx_title_trees"
+    WHERE record_id = %s;
+    """
+    # select_sql = """
+    #     SELECT
+    #         CASE
+    #             WHEN is_conversion_completion = 1 AND update_file_path IS NOT NULL AND update_file_path != ''
+    #             THEN origin_file_path
+    #             ELSE origin_file_path
+    #         END AS file_path
+    #     FROM "yxdl_docx_title_trees"
+    #     WHERE record_id = %s;
+    #     """
 
     file_paths = []
     try:
