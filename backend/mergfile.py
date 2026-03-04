@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
 # 配置目标服务地址（根据实际情况修改）
-TARGET_BASE_URL = "http://10.13.6.62:20067"
+TARGET_BASE_URL = "http://10.13.6.180:21001"
 # 超时配置（秒）
 TIMEOUT_CONFIG = {
     "split": 600,
