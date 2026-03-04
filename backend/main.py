@@ -1904,7 +1904,7 @@ span.Strong { font-weight:bold }
         raise HTTPException(status_code=500, detail=f"生成文档时出错: {str(e)}")
 
 
-@app.get("/test-use-config", summary="测试在业务逻辑中使用配置")
+@app.get("/test-use-config", summary="1测试在业务逻辑中使用配置")
 async def test_use_config():
     """
     示例：在实际业务逻辑中读取并使用上传路径配置
