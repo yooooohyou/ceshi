@@ -1166,7 +1166,7 @@ async def update_html_by_node(request: Request,
                 data={}
             )
         success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
-        temp_docx_path_ = local_upload_path_to_web_path(temp_docx_path_1, request)
+        temp_docx_path_ = temp_docx_path_1
         eid = os.path.splitext(os.path.basename(temp_docx_path_1))[0]
         update_fields = ["html_content = %s", "update_time = %s", "update_file_path = %s", "eid = %s"]
         update_values = [html_content, datetime.datetime.now(), temp_docx_path_, eid]
