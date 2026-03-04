@@ -3,6 +3,7 @@ from fastapi import FastAPI, UploadFile, File, Body, Request, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 import os
 import datetime
 import random
@@ -25,6 +26,13 @@ from docxhtmlcoverter import DocxHtmlConverter
 
 # ====================== 配置项 ======================
 app = FastAPI(title="DOCX文件上传&HTML转换接口", version="1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 生产环境请替换为具体的允许域名，如["http://localhost:3000", "http://192.168.1.100"]
+    allow_credentials=True,
+    allow_methods=["*"],  # 允许所有HTTP方法
+    allow_headers=["*"],  # 允许所有请求头
+)
 
 # 基础路径配置
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1752,6 +1760,50 @@ async def generate_default_patent_doc_patent_generator():
 
 
 @app.post("/doc_editor/generate_patent_doc/financial_report_generator", summary="财报生成器")
+async def generate_default_patent_doc_financial_report_generator():
+    """使用默认的专利数据和图片路径生成文档并返回下载"""
+    try:
+        title = "2024年年度报告"  # 第一行标题
+        main_img = "./pic/图片1.jpg"  # 第二行主图片路径
+        other_imgs = ["./pic/图片2.jpg", "./pic/图片3.jpg", "./pic/图片4.jpg", "./pic/图片5.jpg", "./pic/图片3.jpg",
+                      "./pic/图片4.jpg", "./pic/图片5.jpg"]
+        save_path = os.path.join(UPLOAD_DIR, "2024年度报告.docx")
+
+        # 调用函数生成文档
+        generate_report_doc(
+            title_text=title,
+            second_row_img_path=main_img,
+            other_img_paths=other_imgs,
+            save_path=save_path,
+            columns_per_row=4
+        )
+
+        # 检查文件是否生成成功
+        if not os.path.exists(save_path):
+            raise HTTPException(status_code=404, detail="文档生成失败，文件不存在")
+        html_content, temp_file_docx = docx_to_html(save_path)
+        print(save_path)
+        save_path2 = os.path.join(UPLOAD_DIR, "专利报告.html")
+        with open(save_path2, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        try:
+            if os.path.exists(save_path):
+                os.remove(save_path)
+        except Exception as e:
+            print(f"警告：无法删除临时文件 {save_path} - {e}")
+        return unified_response(
+            code=200,
+            message="节点HTML内容更新成功",
+            data={
+                "html_content": html_content
+            }
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成文档时出错: {str(e)}")
+
+
+@app.post("/doc_editor/generate_patent_doc/vehicle_generator", summary="财报生成器")
 async def generate_default_patent_doc_financial_report_generator():
     """使用默认的专利数据和图片路径生成文档并返回下载"""
     try:
