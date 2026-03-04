@@ -106,7 +106,7 @@ if system == "Windows":
     # 静态目录的本地绝对路径（与mount的directory保持一致）
     UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
     # 静态文件的Web访问前缀（与mount的第一个参数保持一致）
-    STATIC_WEB_PREFIX = "/uploads"
+    STATIC_WEB_PREFIX = ""
     try:
         os.makedirs(UPLOAD_DIR, exist_ok=True)
     except PermissionError:
@@ -164,7 +164,9 @@ def local_upload_path_to_web_path(local_abs_path: str, request: Request) -> str:
     Returns:
         包含web_path和full_url的字典
     """
-    # 标准化路径
+    if STATIC_WEB_PREFIX:
+        return STATIC_WEB_PREFIX
+
     local_abs_path = os.path.normpath(local_abs_path)
     uploads_local_dir = os.path.normpath(UPLOAD_DIR)
 
