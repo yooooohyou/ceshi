@@ -114,14 +114,12 @@ def call_docx_merge(merge_request: MergeRequest):
     :return: 合并后的文件字节流
     """
     url = f"{TARGET_BASE_URL}/api/tool_api/docx/megre"  # 文档中为megre（merge笔误）
-    print(222222222222222222222222)
     try:
         data_ = merge_request.dict(exclude_unset=True)
         data_["user_key"] = "DC4096F87722AD140F01AF8C3315B9A6"
-        print(data_)
         response = requests.post(
             url,
-            data=data_,
+            json=data_,
             timeout=TIMEOUT_CONFIG["split"]
         )
         # response = requests.post(
@@ -132,8 +130,6 @@ def call_docx_merge(merge_request: MergeRequest):
         # )
         response.raise_for_status()
         # 返回合并后的文件字节流
-        print(response.json())
-        print(3333333333333)
         return SplitResponse(**response.json())
     except requests.exceptions.HTTPError as e:
         raise HTTPException(

@@ -1,3 +1,4 @@
+import pathlib
 from fastapi import FastAPI, UploadFile, File, Body, Request, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.exceptions import RequestValidationError
@@ -11,13 +12,14 @@ from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 from typing import Optional, Tuple, Union, List, Dict, Any, Literal
 import io
-from docxautogenerator import generate_fully_centered_patent_doc
+from docxautogenerator import generate_fully_centered_patent_doc, generate_report_doc
 from mergfile import call_docx_split,call_docx_merge, TreeItem,MergeRequest
 import json
 import requests
 import os
 import tempfile
 from urllib.parse import urlparse
+import file_resp
 
 from docxhtmlcoverter import DocxHtmlConverter
 
@@ -30,6 +32,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 # 静态文件的Web访问前缀（与mount的第一个参数保持一致）
 STATIC_WEB_PREFIX = "/uploads"
+try:
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+except PermissionError:
+    UPLOAD_DIR = os.path.join(os.gettempdir(), "docx_uploads")
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    print(f"警告：无法在当前目录创建uploads文件夹，已切换到系统临时目录：{UPLOAD_DIR}")
 app.mount(STATIC_WEB_PREFIX,StaticFiles(directory=UPLOAD_DIR),name="uploads")
 app.mount(
     STATIC_WEB_PREFIX,  # Web访问前缀：http://localhost:8000/uploads/
@@ -37,12 +45,7 @@ app.mount(
     name="uploads"
 )
 # 确保目录存在（增加权限检查）
-try:
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-except PermissionError:
-    UPLOAD_DIR = os.path.join(os.gettempdir(), "docx_uploads")
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    print(f"警告：无法在当前目录创建uploads文件夹，已切换到系统临时目录：{UPLOAD_DIR}")
+
 
 # PostgreSQL数据库配置（请替换为你的实际配置）
 POSTGRES_CONFIG = {
@@ -1013,7 +1016,7 @@ async def upload_and_generate_tree(
 
 # ====================== 保留原有接口 ======================
 @app.get("/doc_editor/get_html_by_node/{node_id}", summary="根据节点ID查询HTML文本")
-async def get_html_by_node(node_id: int) -> JSONResponse:
+async def get_html_by_node(request: Request,node_id: int) -> JSONResponse:
     """根据标题树节点ID查询存储的HTML文本"""
     try:
         select_sql = """
@@ -1041,13 +1044,15 @@ async def get_html_by_node(node_id: int) -> JSONResponse:
             return time_obj.strftime("%Y-%m-%d %H:%M:%S") if time_obj else ""
 
         if result["is_conversion_completion"] == 0:
-            html_content, temp_file_docx = docx_to_html(result["origin_file_path"])
+            html_content, temp_file_docx_ = docx_to_html(result["origin_file_path"])
+            temp_file_docx = local_upload_path_to_web_path(temp_file_docx_, request)
+            eid = os.path.splitext(os.path.basename(temp_file_docx_))[0]
             with get_db_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                     update_sql = """UPDATE "yxdl_docx_title_trees"
-SET html_content = %s, update_time = NOW(), is_conversion_completion = 1, update_file_path = %s
+SET html_content = %s, update_time = NOW(), is_conversion_completion = 1, update_file_path = %s, eid = %s
 WHERE id = %s"""
-                    cursor.execute(update_sql, (html_content, temp_file_docx, node_id))
+                    cursor.execute(update_sql, (html_content, temp_file_docx, eid, node_id))
                     conn.commit()  # 提交事务
 
                     # 3. 重新查询更新后的完整数据（可选，用于返回最新状态）
@@ -1105,8 +1110,9 @@ async def update_html_by_node(request: Request,
             )
         success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
         temp_docx_path_ = local_upload_path_to_web_path(temp_docx_path_1, request)
-        update_fields = ["html_content = %s", "update_time = %s", "update_file_path = %s"]
-        update_values = [html_content, datetime.datetime.now(), temp_docx_path_]
+        eid = os.path.splitext(os.path.basename(temp_docx_path_1))[0]
+        update_fields = ["html_content = %s", "update_time = %s", "update_file_path = %s", "eid = %s"]
+        update_values = [html_content, datetime.datetime.now(), temp_docx_path_, eid]
         current_time = update_values[1]
 
         if title_text is not None and title_text.strip():
@@ -1240,10 +1246,42 @@ async def html_to_docx_api(
             data={}
         )
 
+@app.post("/doc_editor/file_slicing_download", summary="文件分片下载", response_model=None)
+async def html_to_docx_api(request: Request,
+        file_path: str = Body(..., description="文件的完整URL路径（如http://xxx/temp.docx）"),
+        filename: str = Body(..., description="文件名"),
+) -> Union[JSONResponse, StreamingResponse]:
+    """接收文件路径分片给文件流"""
+    try:
+
+
+        # 校验文件名格式
+        new_file_path = file_path
+        response = requests.get(new_file_path, timeout=30)
+        # 校验响应状态码（200表示成功）
+        response.raise_for_status()
+        temp_docx_filename = generate_unique_filename("temp.docx")
+        abs_file_path = os.path.join(UPLOAD_DIR, temp_docx_filename)
+        # abs_file_path = os.path.abspath("temp.docx")
+
+        # 将文件内容写入本地
+        with open(abs_file_path, 'wb') as f:
+            f.write(response.content)
+        file_pathlib = pathlib.Path(str(abs_file_path))
+        response = file_resp.FileResp(request, file_pathlib).start()
+        return response
+
+    except Exception as e:
+        return unified_response(
+            code=500,
+            message=f"HTML转DOCX失败：{str(e)}",
+            data={}
+        )
+
 
 # ====================== 新增：合并接口 ======================
 @app.post("/doc_editor/merge_docx_office_server", summary="合并拆分的DOCX节点")
-async def merge_docx_office_server(
+async def merge_docx_office_server(request: Request,
         node_id: int = Body(..., description="要更新的节点ID"),
         html_content: str = Body(..., description="需要转换的HTML文本"),
         filename: Optional[str] = Body("output.docx", description="下载的DOCX文件名（默认output.docx）"),
@@ -1263,9 +1301,11 @@ async def merge_docx_office_server(
             data={}
         )
 
-    success, result, temp_docx_path_ = convert_html_to_docx(html_content)
-    update_fields = ["html_content = %s", "update_time = %s", "update_file_path = %s"]
-    update_values = [html_content, datetime.datetime.now(), temp_docx_path_]
+    success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
+    temp_docx_path_ = local_upload_path_to_web_path(temp_docx_path_1, request)
+    eid = os.path.splitext(os.path.basename(temp_docx_path_1))[0]
+    update_fields = ["html_content = %s", "update_time = %s", "update_file_path = %s", "eid = %s"]
+    update_values = [html_content, datetime.datetime.now(), temp_docx_path_, eid]
 
     if title_text is not None and title_text.strip():
         update_fields.append("title_text = %s")
@@ -1296,11 +1336,14 @@ async def merge_docx_office_server(
                 result_record_id = row[1]
                 print(f"查询到的 id: {result_id}, record_id: {result_record_id}")
 
-            # cursor.execute(update_sql, tuple(update_values))
-            # conn.commit()
+            cursor.execute(update_sql, tuple(update_values))
+            conn.commit()
     tree_ = recover_split_tree_nodes(result_record_id)
     files_ = get_tree_node_file_paths(result_record_id)
     # split_result = call_docx_merge(MergeRequest(tree=tree_, files=[], format_args={}))
+    print(1111111111111)
+    print(tree_)
+    print(files_)
     format_config = {
         "Heading": {
             "Heading1": {
@@ -1514,7 +1557,7 @@ async def merge_docx_office_server(
         "Header": {
             "use": True,
             "show_logo": True,
-            "logo": "1_e772cf1c-2bfe-4f38-8373-bf299fa2877a.png",
+            "logo": "",
             "show_name": False,
             "name": "123"
         },
@@ -1536,26 +1579,17 @@ async def merge_docx_office_server(
             "right": 3.18
         }
     }
-
+    format_args = {"config_dict": format_config, "token": "984f5b0a2793eeafeeddfd2cd095ad31", "key": "984f5b0a2793eeafeeddfd2cd095ad31-1772598822992"}
 
     try:
         # 构造合并请求
-        merge_request = MergeRequest(tree=tree_, files=files_, format_args=format_config)
+        merge_request = MergeRequest(tree=tree_, files=files_, format_args=format_args)
 
         # 调用合并接口
-        merged_file_stream = call_docx_merge(merge_request)
+        merged_file_message = call_docx_merge(merge_request)
+        return merged_file_message
 
-        # 构造响应
-        headers = {
-            "Content-Disposition": "attachment; filename=merged_docx.docx",
-            "Access-Control-Expose-Headers": "Content-Disposition"
-        }
 
-        return StreamingResponse(
-            io.BytesIO(merged_file_stream),
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers=headers
-        )
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -1638,11 +1672,117 @@ async def generate_default_patent_doc():
         save_path2 = os.path.join(UPLOAD_DIR, "专利报告.html")
         with open(save_path2, 'w', encoding='utf-8') as f:
             f.write(html_content)
-        # try:
-        #     if os.path.exists(save_path):
-        #         os.remove(save_path)
-        # except Exception as e:
-        #     print(f"警告：无法删除临时文件 {save_path} - {e}")
+        try:
+            if os.path.exists(save_path):
+                os.remove(save_path)
+        except Exception as e:
+            print(f"警告：无法删除临时文件 {save_path} - {e}")
+        return unified_response(
+            code=200,
+            message="节点HTML内容更新成功",
+            data={
+                "html_content": html_content
+            }
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成文档时出错: {str(e)}")
+
+
+@app.post("/doc_editor/generate_patent_doc/patent_generator", summary="专利生成器")
+async def generate_default_patent_doc_patent_generator():
+    """使用默认的专利数据和图片路径生成文档并返回下载"""
+    try:
+        save_path = os.path.join(UPLOAD_DIR, "专利报告.docx")
+        DEFAULT_PATENT_DATA = [
+            ['1', '发明专利', '一种核岛用防爆电话电缆', 'ZL201210300077.1', '远程电缆股份有限公司', '2015-07-29'],
+            ['2', '发明专利', '一种电缆保护夹座安装方法', 'ZL201110454443.4', '远程电缆股份有限公司', '2014-06-25'],
+            ['3', '发明专利', '硅烷交联聚乙烯绝缘电缆料及其制造方法', 'ZL200710022494.3', '远程电缆股份有限公司',
+             '2010-12-08'],
+            ['4', '发明专利', '多色架空绝缘电缆及其制造方法', 'ZL200710019537.2', '远程电缆股份有限公司', '2010-01-13'],
+            ['5', '发明专利', '一种用于5G传输技术的配电专用线及其生产工艺', 'ZL201911360899.7', '远程电缆股份有限公司',
+             '2020-09-25'],
+            ['6', '发明专利', '一种核岛用防爆电话电缆', 'ZL201210300077.1', '远程电缆股份有限公司', '2015-07-29'],
+            ['7', '发明专利', '一种电缆保护夹座安装方法', 'ZL201110454443.4', '远程电缆股份有限公司', '2014-06-25'],
+            ['8', '发明专利', '硅烷交联聚乙烯绝缘电缆料及其制造方法', 'ZL200710022494.3', '远程电缆股份有限公司',
+             '2010-12-08'],
+            ['9', '发明专利', '多色架空绝缘电缆及其制造方法', 'ZL200710019537.2', '远程电缆股份有限公司', '2010-01-13'],
+            ['10', '发明专利', '一种用于5G传输技术的配电专用线及其生产工艺', 'ZL201911360899.7', '远程电缆股份有限公司',
+             '2020-09-25']
+        ]
+
+        DEFAULT_CERT_IMG_PATHS = [
+            "./pic/图片2.jpg", "./pic/图片3.jpg", "./pic/图片4.jpg",
+            "./pic/图片5.jpg", "./pic/图片6.jpg", "./pic/图片7.jpg",
+            "./pic/图片8.jpg", "./pic/图片3.jpg", "./pic/图片4.jpg",
+            "./pic/图片5.jpg", "./pic/图片6.jpg", "./pic/图片7.jpg",
+            "./pic/图片8.jpg"
+        ]
+        # 生成文档
+        generate_fully_centered_patent_doc(
+            DEFAULT_PATENT_DATA,
+            DEFAULT_CERT_IMG_PATHS,
+            save_path,
+            last_img_display_mode=1
+        )
+
+        # 检查文件是否生成成功
+        if not os.path.exists(save_path):
+            raise HTTPException(status_code=404, detail="文档生成失败，文件不存在")
+        html_content, temp_file_docx = docx_to_html(save_path)
+        print(save_path)
+        save_path2 = os.path.join(UPLOAD_DIR, "专利报告.html")
+        with open(save_path2, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        try:
+            if os.path.exists(save_path):
+                os.remove(save_path)
+        except Exception as e:
+            print(f"警告：无法删除临时文件 {save_path} - {e}")
+        return unified_response(
+            code=200,
+            message="节点HTML内容更新成功",
+            data={
+                "html_content": html_content
+            }
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成文档时出错: {str(e)}")
+
+
+@app.post("/doc_editor/generate_patent_doc/financial_report_generator", summary="财报生成器")
+async def generate_default_patent_doc_financial_report_generator():
+    """使用默认的专利数据和图片路径生成文档并返回下载"""
+    try:
+        title = "2024年年度报告"  # 第一行标题
+        main_img = "./pic/图片1.jpg"  # 第二行主图片路径
+        other_imgs = ["./pic/图片2.jpg", "./pic/图片3.jpg", "./pic/图片4.jpg", "./pic/图片5.jpg", "./pic/图片3.jpg",
+                      "./pic/图片4.jpg", "./pic/图片5.jpg"]
+        save_path = os.path.join(UPLOAD_DIR, "2024年度报告.docx")
+
+        # 调用函数生成文档
+        generate_report_doc(
+            title_text=title,
+            second_row_img_path=main_img,
+            other_img_paths=other_imgs,
+            save_path=save_path,
+            columns_per_row=4
+        )
+
+        # 检查文件是否生成成功
+        if not os.path.exists(save_path):
+            raise HTTPException(status_code=404, detail="文档生成失败，文件不存在")
+        html_content, temp_file_docx = docx_to_html(save_path)
+        print(save_path)
+        save_path2 = os.path.join(UPLOAD_DIR, "专利报告.html")
+        with open(save_path2, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        try:
+            if os.path.exists(save_path):
+                os.remove(save_path)
+        except Exception as e:
+            print(f"警告：无法删除临时文件 {save_path} - {e}")
         return unified_response(
             code=200,
             message="节点HTML内容更新成功",
