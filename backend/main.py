@@ -165,7 +165,7 @@ def local_upload_path_to_web_path(local_abs_path: str, request: Request) -> str:
         包含web_path和full_url的字典
     """
     if STATIC_WEB_PREFIX:
-        return STATIC_WEB_PREFIX+local_abs_path
+        return STATIC_WEB_PREFIX+os.path.basename(local_abs_path)
 
     local_abs_path = os.path.normpath(local_abs_path)
     uploads_local_dir = os.path.normpath(UPLOAD_DIR)
@@ -1381,8 +1381,8 @@ async def merge_docx_office_server(request: Request,
                 result_record_id = row[1]
                 print(f"查询到的 id: {result_id}, record_id: {result_record_id}")
 
-            # cursor.execute(update_sql, tuple(update_values))
-            # conn.commit()
+            cursor.execute(update_sql, tuple(update_values))
+            conn.commit()
     tree_ = recover_split_tree_nodes(result_record_id)
     files_ = get_tree_node_file_paths(result_record_id)
     # split_result = call_docx_merge(MergeRequest(tree=tree_, files=[], format_args={}))
@@ -1904,7 +1904,7 @@ span.Strong { font-weight:bold }
         raise HTTPException(status_code=500, detail=f"生成文档时出错: {str(e)}")
 
 
-@app.get("/test-use-config", summary="2测试在业务逻辑中使用配置")
+@app.get("/test-use-config", summary="3测试在业务逻辑中使用配置")
 async def test_use_config():
     """
     示例：在实际业务逻辑中读取并使用上传路径配置
