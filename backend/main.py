@@ -165,7 +165,8 @@ def local_upload_path_to_web_path(local_abs_path: str, request: Request) -> str:
         包含web_path和full_url的字典
     """
     if STATIC_WEB_PREFIX:
-        return STATIC_WEB_PREFIX+os.path.basename(local_abs_path)
+        # return STATIC_WEB_PREFIX+os.path.basename(local_abs_path)
+        return UPLOAD_DIR + os.path.basename(local_abs_path)
 
     local_abs_path = os.path.normpath(local_abs_path)
     uploads_local_dir = os.path.normpath(UPLOAD_DIR)
