@@ -28,6 +28,15 @@ class TreeItem(BaseModel):
     file_name: Optional[str] = None
     file_info: Optional[FileInfo] = None
     file_path: Optional[str] = None
+    update_file_path: Optional[str] = ""  # 更新后的文件路径
+    node_type: Optional[str] = ""  # 节点类型：main/branch
+    is_conversion_completion: Optional[int] = 0  # 是否转换完成
+
+    def __post_init__(self):
+        # 强制兜底：无论传入什么，都确保children是列表
+        if self.children is None or not isinstance(self.children, list):
+            self.children = []
+
 
 
 # 解决模型自引用问题
@@ -37,6 +46,7 @@ TreeItem.update_forward_refs()
 class MergeRequest(BaseModel):
     tree: List[TreeItem]
     files: List[str]
+    format_args: Dict[Any, Any]
 
 
 class DeleteRequest(BaseModel):
@@ -46,7 +56,7 @@ class DeleteRequest(BaseModel):
 class SplitResponse(BaseModel):
     status: int
     msg: str
-    data: Dict[str, Any] = Field(..., description="包含tree和files字段")
+    data: Dict[str, Any]
 
 
 class DeleteResponse(BaseModel):
@@ -97,23 +107,34 @@ def call_docx_split(file_stream: bytes, file_name: str, file_id: str) -> SplitRe
         )
 
 
-def call_docx_merge(merge_request: MergeRequest) -> bytes:
+def call_docx_merge(merge_request: MergeRequest):
     """
     调用文件合并接口（同步）
     :param merge_request: 合并请求参数（tree+files）
     :return: 合并后的文件字节流
     """
     url = f"{TARGET_BASE_URL}/api/tool_api/docx/megre"  # 文档中为megre（merge笔误）
+    print(222222222222222222222222)
     try:
+        data_ = merge_request.dict(exclude_unset=True)
+        data_["user_key"] = "DC4096F87722AD140F01AF8C3315B9A6"
+        print(data_)
         response = requests.post(
             url,
-            json=merge_request.dict(exclude_unset=True),
-            headers={"Content-Type": "application/json"},
-            timeout=TIMEOUT_CONFIG["merge"]
+            data=data_,
+            timeout=TIMEOUT_CONFIG["split"]
         )
+        # response = requests.post(
+        #     url,
+        #     json=merge_request.dict(exclude_unset=True),
+        #     headers={"Content-Type": "application/json"},
+        #     timeout=TIMEOUT_CONFIG["merge"]
+        # )
         response.raise_for_status()
         # 返回合并后的文件字节流
-        return response.content
+        print(response.json())
+        print(3333333333333)
+        return SplitResponse(**response.json())
     except requests.exceptions.HTTPError as e:
         raise HTTPException(
             status_code=e.response.status_code,

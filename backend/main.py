@@ -1,6 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Body, Request, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.exceptions import RequestValidationError
+from fastapi.staticfiles import StaticFiles
 import os
 import datetime
 import random
@@ -25,7 +26,16 @@ app = FastAPI(title="DOCX文件上传&HTML转换接口", version="1.0")
 
 # 基础路径配置
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 静态目录的本地绝对路径（与mount的directory保持一致）
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+# 静态文件的Web访问前缀（与mount的第一个参数保持一致）
+STATIC_WEB_PREFIX = "/uploads"
+app.mount(STATIC_WEB_PREFIX,StaticFiles(directory=UPLOAD_DIR),name="uploads")
+app.mount(
+    STATIC_WEB_PREFIX,  # Web访问前缀：http://localhost:8000/uploads/
+    StaticFiles(directory=UPLOAD_DIR),  # 本地对应的目录
+    name="uploads"
+)
 # 确保目录存在（增加权限检查）
 try:
     os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -64,6 +74,34 @@ class HTMLSafeJSONEncoder(json.JSONEncoder):
         self.escape_forward_slashes = False  # 禁用/的转义
 
 # ====================== 统一返回格式工具函数 ======================
+def local_upload_path_to_web_path(local_abs_path: str, request: Request) -> str:
+    """
+    将uploads本地绝对路径转换为Web路径，并自动生成完整URL
+
+    Args:
+        local_abs_path: 本地绝对路径
+        request: FastAPI的Request对象（用于动态获取域名/端口）
+
+    Returns:
+        包含web_path和full_url的字典
+    """
+    # 标准化路径
+    local_abs_path = os.path.normpath(local_abs_path)
+    uploads_local_dir = os.path.normpath(UPLOAD_DIR)
+
+    # 检查路径合法性
+    if not local_abs_path.startswith(uploads_local_dir):
+        raise ValueError(f"路径 {local_abs_path} 不在uploads目录下")
+
+    # 生成Web路径
+    relative_path = local_abs_path[len(uploads_local_dir):]
+
+    # 从Request对象动态获取：协议(http/https) + 域名/IP + 端口 + Web路径
+    full_url = request.url_for("uploads", path=relative_path.lstrip(os.sep))
+
+    return str(full_url)  # 转为字符串，方便使用
+
+
 
 def is_web_path(path_str):
     """
@@ -78,6 +116,38 @@ def is_web_path(path_str):
     # 常见的网页协议头
     web_schemes = {'http', 'https', 'ftp', 'ftps'}
     return parsed.scheme in web_schemes
+
+
+def local_static_path_to_web_path(local_abs_path: str) -> str:
+    """
+    将静态文件的本地绝对路径转换为Web访问路径
+
+    Args:
+        local_abs_path: 静态文件的本地绝对路径，如 "/home/user/project/static/test.jpg"
+
+    Returns:
+        对应的Web访问路径，如 "/static/test.jpg"
+
+    Raises:
+        ValueError: 如果传入的路径不是静态目录下的文件，抛出异常
+    """
+    # 标准化路径（处理不同系统的路径分隔符，比如Windows的\和Linux的/）
+    local_abs_path = os.path.normpath(local_abs_path)
+    static_local_dir = os.path.normpath(UPLOAD_DIR)
+
+    # 检查路径是否在静态目录下
+    if not local_abs_path.startswith(static_local_dir):
+        raise ValueError(
+            f"路径 {local_abs_path} 不在静态目录 {static_local_dir} 下，无法转换为Web路径"
+        )
+
+    # 替换本地目录为Web前缀，生成Web路径
+    # 1. 去掉静态目录的前缀，得到相对路径（如 "test.jpg" 或 "subdir/test.css"）
+    relative_path = local_abs_path[len(static_local_dir):]
+    # 2. 替换本地路径分隔符为Web的/（兼容Windows），并拼接Web前缀
+    web_path = os.path.join(STATIC_WEB_PREFIX, relative_path.lstrip(os.sep)).replace(os.sep, "/")
+
+    return web_path
 
 
 def is_local_path(path_str):
@@ -189,19 +259,22 @@ def convert_path1_to_path2(path1):
     return path2
 
 
-def docx_to_html(file_path: str) -> str:
+def docx_to_html(file_path: str):
     """Word转HTML的实现函数"""
 
     try:
-        abs_file_path = os.path.abspath("temp.docx")
+        # abs_file_path = os.path.abspath("temp.docx")
         # if not os.path.exists(abs_file_path):
         #     return f"<p>转换失败：文件不存在: {abs_file_path}</p>"
         if judge_path_type(file_path) == 'web':
-            new_file_path = convert_path1_to_path2(file_path)
+            # new_file_path = convert_path1_to_path2(file_path)
+            new_file_path = file_path
             response = requests.get(new_file_path, timeout=30)
             # 校验响应状态码（200表示成功）
             response.raise_for_status()
-            abs_file_path = os.path.abspath("temp.docx")
+            temp_docx_filename = generate_unique_filename("temp.docx")
+            abs_file_path = os.path.join(UPLOAD_DIR, temp_docx_filename)
+            # abs_file_path = os.path.abspath("temp.docx")
 
             # 将文件内容写入本地
             with open(abs_file_path, 'wb') as f:
@@ -225,7 +298,7 @@ def docx_to_html(file_path: str) -> str:
 
         # 读取并返回HTML内容
         html_content = ""
-        print(html_content)
+        # print(html_content)
         if os.path.exists(temp_html_path):
             try:
                 with open(temp_html_path, 'r', encoding='utf-8') as f:
@@ -235,18 +308,18 @@ def docx_to_html(file_path: str) -> str:
                     html_content = f.read()
             finally:
                 try:
-                    # os.remove(temp_html_path)
+                    os.remove(temp_html_path)
                     pass
                 except Exception as e:
                     print(f"警告：无法删除临时文件 {temp_html_path} - {e}")
-
-        return html_content or ""
+        result_html = html_content or ""
+        return result_html, abs_file_path
     except Exception as e:
         print(f"Word转HTML失败: {str(e)}")
         return f"<p>转换失败：{str(e)}</p>"
 
 
-def convert_html_to_docx(html_content: str) -> Tuple[bool, Union[io.BytesIO, str]]:
+def convert_html_to_docx(html_content: str) -> Tuple[bool, Union[io.BytesIO, str], str]:
     """HTML转DOCX的实现函数"""
     try:
         if not html_content.strip():
@@ -259,7 +332,7 @@ def convert_html_to_docx(html_content: str) -> Tuple[bool, Union[io.BytesIO, str
         converter.html_text_to_docx(html_content, temp_docx_path)
 
         if not os.path.exists(temp_docx_path):
-            return False, f"转换失败：未生成文件 {temp_docx_path}"
+            return False, f"转换失败：未生成文件 {temp_docx_path}", temp_docx_path
 
         # 读取文件到内存流
         docx_stream = io.BytesIO()
@@ -267,18 +340,18 @@ def convert_html_to_docx(html_content: str) -> Tuple[bool, Union[io.BytesIO, str
             docx_stream.write(f.read())
         docx_stream.seek(0)
 
-        # 删除临时文件
-        try:
-            if os.path.exists(temp_docx_path):
-                os.remove(temp_docx_path)
-        except Exception as e:
-            print(f"警告：无法删除临时文件 {temp_docx_path} - {e}")
+        # # 删除临时文件
+        # try:
+        #     if os.path.exists(temp_docx_path):
+        #         os.remove(temp_docx_path)
+        # except Exception as e:
+        #     print(f"警告：无法删除临时文件 {temp_docx_path} - {e}")
 
-        return True, docx_stream
+        return True, docx_stream, temp_docx_path
     except PermissionError:
-        return False, "权限错误：无法创建/读取临时文件"
+        return False, "权限错误：无法创建/读取临时文件", ""
     except Exception as e:
-        return False, f"HTML转DOCX失败：{str(e)}"
+        return False, f"HTML转DOCX失败：{str(e)}", ""
 
 
 # ====================== 数据库工具函数 ======================
@@ -518,6 +591,209 @@ def process_split_tree_nodes(
     return result_nodes
 
 
+def _tree_item_to_dict(node: Dict[str, Any], file_name: str) -> Dict[str, Any]:
+    """
+    辅助函数：将节点数据转换为目标字典格式
+    """
+    # 构建基础字段
+    node_dict = {
+        "eid": node.get("eid") or "",
+        "text": node.get("title_text") or "",
+        "level": node.get("level", 0),
+        "id": node.get("id", -1),  # 数据库id，无则默认-1
+        "idx": node.get("idx", 0),
+        "file_info": {
+            "is_had_title": 1  # 固定值，按示例要求
+        },
+        "file_name": file_name,  # 文件名（从路径提取或传入）
+        "children": []  # 初始化子节点
+    }
+    return node_dict
+
+
+def _build_nested_dict(nodes: List[Dict[str, Any]], file_name: str) -> List[Dict[str, Any]]:
+    """
+    递归构建嵌套的字典结构（核心函数）
+    """
+    result = []
+    # 先按level分组
+    level_map = {}
+    for node in nodes:
+        level = node.get("level", 0)
+        if level not in level_map:
+            level_map[level] = []
+        level_map[level].append(node)
+
+    # 排序层级
+    sorted_levels = sorted(level_map.keys())
+    if not sorted_levels:
+        return result
+
+    # 递归构建父子关系
+    def build_children(parent_level: int, parent_node: Dict[str, Any] = None):
+        """递归为父节点添加子节点"""
+        # 找到下一级
+        next_level = parent_level + 1
+        if next_level not in level_map:
+            return []
+
+        # 筛选当前父节点的子节点（按idx顺序）
+        child_nodes = level_map[next_level]
+        child_result = []
+
+        for child in child_nodes:
+            # 转换为目标字典格式
+            child_dict = _tree_item_to_dict(child, file_name)
+            # 递归添加子节点的子节点
+            child_dict["children"] = build_children(next_level, child)
+            child_result.append(child_dict)
+
+        return child_result
+
+    # 处理根节点（最小层级）
+    root_level = sorted_levels[0]
+    root_nodes = level_map[root_level]
+
+    for root_node in root_nodes:
+        root_dict = _tree_item_to_dict(root_node, file_name)
+        # 为根节点添加子节点
+        root_dict["children"] = build_children(root_level, root_node)
+        result.append(root_dict)
+
+    return result
+
+
+def recover_split_tree_nodes(record_id: int) -> List[Dict[str, Any]]:
+    """
+    通过record_id获取节点数据，并返回指定格式的嵌套字典列表
+
+    Args:
+        record_id: 关联文件记录ID
+
+    Returns:
+        目标格式的节点列表，包含eid、text、level、id、idx、file_info、file_name、children等字段
+    """
+    # 1. 参数校验
+    if not isinstance(record_id, int) or record_id <= 0:
+        raise ValueError("record_id必须是正整数")
+
+    # 2. 数据库查询：获取该record_id下的所有节点（包含所有需要的字段）
+    select_sql = """
+    SELECT 
+        id, title_text, level, eid, idx, origin_file_path, update_file_path,
+        is_conversion_completion
+    FROM "yxdl_docx_title_trees" 
+    WHERE record_id = %s
+    ORDER BY level ASC, idx ASC;
+    """
+
+    node_records = []
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(select_sql, (record_id,))
+                node_records = cursor.fetchall()  # 获取字典格式的记录
+    except Exception as e:
+        raise RuntimeError(f"查询数据库失败：{str(e)}") from e
+
+    if not node_records:
+        return []  # 无数据返回空列表
+
+    # 3. 提取file_name（从文件路径中提取，示例中为"测试项目2-招标"）
+    # 逻辑：取第一条记录的文件路径，提取文件名（无后缀），无则默认空
+    file_name = ""
+    first_record = node_records[0]
+    # 动态选择文件路径（同之前的逻辑）
+    if first_record.get("is_conversion_completion") == 1 and first_record.get("update_file_path"):
+        file_path = first_record["update_file_path"]
+    else:
+        file_path = first_record.get("origin_file_path", "")
+
+    if file_path:
+        # 提取文件名（去掉路径和后缀）
+        file_name = os.path.splitext(os.path.basename(file_path))[0]
+    # 如果提取失败，可手动指定（根据你的业务调整）
+    if not file_name:
+        file_name = f"项目_{record_id}"
+
+    # 4. 构建嵌套字典结构
+    result = _build_nested_dict(node_records, file_name)
+
+    return result
+
+
+def get_tree_node_file_paths(record_id: int) -> List[str]:
+    """保持不变，适配新的recover_split_tree_nodes函数"""
+    if not isinstance(record_id, int) or record_id <= 0:
+        raise ValueError("record_id必须是正整数")
+
+    select_sql = """
+    SELECT 
+        CASE 
+            WHEN is_conversion_completion = 1 AND update_file_path IS NOT NULL AND update_file_path != '' 
+            THEN update_file_path
+            ELSE origin_file_path
+        END AS file_path
+    FROM "yxdl_docx_title_trees" 
+    WHERE record_id = %s;
+    """
+
+    file_paths = []
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(select_sql, (record_id,))
+                raw_paths = [row[0] for row in cursor.fetchall()]
+                file_paths = [path for path in raw_paths if path and isinstance(path, str) and path.strip() != ""]
+    except Exception as e:
+        raise RuntimeError(f"查询文件路径失败：{str(e)}") from e
+
+    unique_file_paths = []
+    seen = set()
+    for path in file_paths:
+        if path not in seen:
+            seen.add(path)
+            unique_file_paths.append(path)
+
+    return unique_file_paths
+
+
+def get_tree_node_file_paths(record_id: int) -> List[str]:
+    """保持不变，仅适配修复后的recover_split_tree_nodes"""
+    if not isinstance(record_id, int) or record_id <= 0:
+        raise ValueError("record_id必须是正整数")
+
+    select_sql = """
+    SELECT 
+        CASE 
+            WHEN is_conversion_completion = 1 AND update_file_path IS NOT NULL AND update_file_path != '' 
+            THEN update_file_path
+            ELSE origin_file_path
+        END AS file_path
+    FROM "yxdl_docx_title_trees" 
+    WHERE record_id = %s;
+    """
+
+    file_paths = []
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(select_sql, (record_id,))
+                raw_paths = [row[0] for row in cursor.fetchall()]
+                file_paths = [path for path in raw_paths if path and isinstance(path, str) and path.strip() != ""]
+    except Exception as e:
+        raise RuntimeError(f"查询文件路径失败：{str(e)}") from e
+
+    unique_file_paths = []
+    seen = set()
+    for path in file_paths:
+        if path not in seen:
+            seen.add(path)
+            unique_file_paths.append(path)
+
+    return unique_file_paths
+
+
 # ====================== 工具函数：创建单个主节点 ======================
 def create_single_main_node(
         record_id: int,
@@ -529,7 +805,7 @@ def create_single_main_node(
     :return: 主节点ID
     """
     # 1. 转换整个文档为HTML
-    html_content = docx_to_html(file_path)
+    html_content, temp_file_docx = docx_to_html(file_path)
 
     # 2. 插入主节点到数据库（完整字段）
     insert_tree_sql = """
@@ -687,15 +963,6 @@ async def upload_and_generate_tree(
                 file_id=split_file_id
             )
 
-            # # 校验拆分结果
-            # if split_result.status != 200:
-            #     return unified_response(
-            #         code=split_result.status,
-            #         message=f"文件拆分：{split_result.msg}",
-            #         data={"split_data": split_result.dict(), "process_mode": process_mode}
-            #     )
-            # 处理拆分后的树节点
-            # tree_nodes = [TreeItem(**item) for item in split_result.data.get("tree", [])]
             tree_nodes = [TreeItem(**item) for item in split_result.data.get("tree", [])]
 
             # 2. 构建 eid-文件路径 映射
@@ -774,13 +1041,13 @@ async def get_html_by_node(node_id: int) -> JSONResponse:
             return time_obj.strftime("%Y-%m-%d %H:%M:%S") if time_obj else ""
 
         if result["is_conversion_completion"] == 0:
-            html_content = docx_to_html(result["origin_file_path"])
+            html_content, temp_file_docx = docx_to_html(result["origin_file_path"])
             with get_db_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                     update_sql = """UPDATE "yxdl_docx_title_trees"
-SET html_content = %s, update_time = NOW(), is_conversion_completion = 1
+SET html_content = %s, update_time = NOW(), is_conversion_completion = 1, update_file_path = %s
 WHERE id = %s"""
-                    cursor.execute(update_sql, (html_content, node_id))
+                    cursor.execute(update_sql, (html_content, temp_file_docx, node_id))
                     conn.commit()  # 提交事务
 
                     # 3. 重新查询更新后的完整数据（可选，用于返回最新状态）
@@ -817,7 +1084,7 @@ WHERE id = %s"""
 
 
 @app.post("/doc_editor/update_html_by_node", summary="更新节点HTML文本")
-async def update_html_by_node(
+async def update_html_by_node(request: Request,
         node_id: int = Body(..., description="要更新的节点ID"),
         html_content: str = Body(..., description="更新后的HTML文本"),
         title_text: Optional[str] = Body(None, description="可选：更新节点标题文本")
@@ -836,9 +1103,10 @@ async def update_html_by_node(
                 message="HTML内容不能为空",
                 data={}
             )
-
-        update_fields = ["html_content = %s", "update_time = %s"]
-        update_values = [html_content, datetime.datetime.now()]
+        success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
+        temp_docx_path_ = local_upload_path_to_web_path(temp_docx_path_1, request)
+        update_fields = ["html_content = %s", "update_time = %s", "update_file_path = %s"]
+        update_values = [html_content, datetime.datetime.now(), temp_docx_path_]
         current_time = update_values[1]
 
         if title_text is not None and title_text.strip():
@@ -941,7 +1209,7 @@ async def html_to_docx_api(
         filename = os.path.basename(filename).replace('/', '_').replace('\\', '_').replace(':', '_')
 
         # 调用HTML转DOCX函数
-        success, result = convert_html_to_docx(html_content)
+        success, result, temp_docx_path_ = convert_html_to_docx(html_content)
         if not success:
             return unified_response(
                 code=500,
@@ -974,6 +1242,326 @@ async def html_to_docx_api(
 
 
 # ====================== 新增：合并接口 ======================
+@app.post("/doc_editor/merge_docx_office_server", summary="合并拆分的DOCX节点")
+async def merge_docx_office_server(
+        node_id: int = Body(..., description="要更新的节点ID"),
+        html_content: str = Body(..., description="需要转换的HTML文本"),
+        filename: Optional[str] = Body("output.docx", description="下载的DOCX文件名（默认output.docx）"),
+        title_text: Optional[str] = Body(None, description="可选：更新节点标题文本")
+):
+    """调用合并接口生成合并后的DOCX文件流"""
+    if node_id <= 0:
+        return unified_response(
+            code=400,
+            message="节点ID必须为正整数",
+            data={}
+        )
+    if not html_content.strip():
+        return unified_response(
+            code=400,
+            message="HTML内容不能为空",
+            data={}
+        )
+
+    success, result, temp_docx_path_ = convert_html_to_docx(html_content)
+    update_fields = ["html_content = %s", "update_time = %s", "update_file_path = %s"]
+    update_values = [html_content, datetime.datetime.now(), temp_docx_path_]
+
+    if title_text is not None and title_text.strip():
+        update_fields.append("title_text = %s")
+        update_values.append(title_text.strip())
+
+    update_sql = f"""
+            UPDATE "yxdl_docx_title_trees" 
+            SET {', '.join(update_fields)}
+            WHERE id = %s
+            """
+    update_values.append(node_id)
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT id, record_id FROM \"yxdl_docx_title_trees\" WHERE id = %s", (node_id,))
+            row = cursor.fetchone()
+
+            # 判断是否查询到数据
+            if not row:
+                return unified_response(
+                    code=404,
+                    message=f"未找到ID为{node_id}的标题树节点",
+                    data={}
+                )
+            else:
+                # 从结果中提取 id 和 record_id（row 是元组，按查询字段顺序取值）
+                result_id = row[0]
+                result_record_id = row[1]
+                print(f"查询到的 id: {result_id}, record_id: {result_record_id}")
+
+            # cursor.execute(update_sql, tuple(update_values))
+            # conn.commit()
+    tree_ = recover_split_tree_nodes(result_record_id)
+    files_ = get_tree_node_file_paths(result_record_id)
+    # split_result = call_docx_merge(MergeRequest(tree=tree_, files=[], format_args={}))
+    format_config = {
+        "Heading": {
+            "Heading1": {
+                "use": True,
+                "style": {
+                    "alignment": "left",
+                    "line_spacing": "single",
+                    "line_spacing_value": 1,
+                    "left_indent": 0,
+                    "right_indent": 0,
+                    "space_before": 0,
+                    "space_after": 0,
+                    "first_line_indent": 0,
+                    "font_name": "仿宋",
+                    "font_size": "初号",
+                    "bold": True,
+                    "italic": True,
+                    "underline": None,
+                    "color": None
+                }
+            },
+            "Heading2": {
+                "use": False,
+                "style": {
+                    "alignment": "left",
+                    "line_spacing": "single",
+                    "line_spacing_value": 1,
+                    "left_indent": 0,
+                    "right_indent": 0,
+                    "space_before": 0,
+                    "space_after": 0,
+                    "first_line_indent": 0,
+                    "font_name": "仿宋",
+                    "font_size": "三号",
+                    "bold": True,
+                    "italic": False,
+                    "underline": None,
+                    "color": None
+                }
+            },
+            "Heading3": {
+                "use": False,
+                "style": {
+                    "alignment": "left",
+                    "line_spacing": "single",
+                    "line_spacing_value": 1,
+                    "left_indent": 0,
+                    "right_indent": 0,
+                    "space_before": 0,
+                    "space_after": 0,
+                    "first_line_indent": 0,
+                    "font_name": "仿宋",
+                    "font_size": "三号",
+                    "bold": True,
+                    "italic": False,
+                    "underline": None,
+                    "color": None
+                }
+            },
+            "Heading4": {
+                "use": False,
+                "style": {
+                    "alignment": "left",
+                    "line_spacing": "single",
+                    "line_spacing_value": 1,
+                    "left_indent": 0,
+                    "right_indent": 0,
+                    "space_before": 0,
+                    "space_after": 0,
+                    "first_line_indent": 0,
+                    "font_name": "仿宋",
+                    "font_size": "四号",
+                    "bold": True,
+                    "italic": False,
+                    "underline": None,
+                    "color": None
+                }
+            },
+            "Heading5": {
+                "use": False,
+                "style": {
+                    "alignment": "left",
+                    "line_spacing": "single",
+                    "line_spacing_value": 1,
+                    "left_indent": 0,
+                    "right_indent": 0,
+                    "space_before": 0,
+                    "space_after": 0,
+                    "first_line_indent": 0,
+                    "font_name": "仿宋",
+                    "font_size": "四号",
+                    "bold": True,
+                    "italic": False,
+                    "underline": None,
+                    "color": None
+                }
+            },
+            "Heading6": {
+                "use": False,
+                "style": {
+                    "alignment": "left",
+                    "line_spacing": "single",
+                    "line_spacing_value": 1,
+                    "left_indent": 0,
+                    "right_indent": 0,
+                    "space_before": 0,
+                    "space_after": 0,
+                    "first_line_indent": 0,
+                    "font_name": "仿宋",
+                    "font_size": "小四",
+                    "bold": True,
+                    "italic": False,
+                    "underline": None,
+                    "color": None
+                }
+            },
+            "Heading7": {
+                "use": False,
+                "style": {
+                    "alignment": "left",
+                    "line_spacing": "single",
+                    "line_spacing_value": 1,
+                    "left_indent": 0,
+                    "right_indent": 0,
+                    "space_before": 0,
+                    "space_after": 0,
+                    "first_line_indent": 0,
+                    "font_name": "仿宋",
+                    "font_size": "小四",
+                    "bold": True,
+                    "italic": False,
+                    "underline": None,
+                    "color": None
+                }
+            },
+            "Heading8": {
+                "use": False,
+                "style": {
+                    "alignment": "left",
+                    "line_spacing": "single",
+                    "line_spacing_value": 1,
+                    "left_indent": 0,
+                    "right_indent": 0,
+                    "space_before": 0,
+                    "space_after": 0,
+                    "first_line_indent": 0,
+                    "font_name": "仿宋",
+                    "font_size": "小四",
+                    "bold": True,
+                    "italic": False,
+                    "underline": None,
+                    "color": None
+                }
+            },
+            "Heading9": {
+                "use": False,
+                "style": {
+                    "alignment": "left",
+                    "line_spacing": "single",
+                    "line_spacing_value": 1,
+                    "left_indent": 0,
+                    "right_indent": 0,
+                    "space_before": 0,
+                    "space_after": 0,
+                    "first_line_indent": 0,
+                    "font_name": "仿宋",
+                    "font_size": "五号",
+                    "bold": True,
+                    "italic": False,
+                    "underline": None,
+                    "color": None
+                }
+            }
+        },
+        "Text": {
+            "use": True,
+            "style": {
+                "alignment": "left",
+                "line_spacing": "single",
+                "line_spacing_value": 1,
+                "left_indent": 0,
+                "right_indent": 0,
+                "space_before": 0,
+                "space_after": 0,
+                "first_line_indent": 0,
+                "font_name": "仿宋",
+                "font_size": "小四",
+                "bold": None,
+                "italic": None,
+                "underline": True,
+                "color": None
+            }
+        },
+        "Table": {
+            "use": False,
+            "style": {
+                "repeat_header": False,
+                "line_break": False,
+                "alignment": "left",
+                "font_name": "仿宋",
+                "font_size": "五号",
+                "left_indent": 0,
+                "right_indent": 0,
+                "first_line_indent": 0,
+                "bold": None,
+                "italic": None,
+                "underline": None,
+                "color": None
+            }
+        },
+        "Header": {
+            "use": True,
+            "show_logo": True,
+            "logo": "1_e772cf1c-2bfe-4f38-8373-bf299fa2877a.png",
+            "show_name": False,
+            "name": "123"
+        },
+        "Footer": {
+            "use": False,
+            "style": {
+                "alignment": "left"
+            }
+        },
+        "other": {
+            "numbering": True,
+            "use": False
+        },
+        "Margin": {
+            "use": False,
+            "top": 2.54,
+            "bottom": 2.54,
+            "left": 3.18,
+            "right": 3.18
+        }
+    }
+
+
+    try:
+        # 构造合并请求
+        merge_request = MergeRequest(tree=tree_, files=files_, format_args=format_config)
+
+        # 调用合并接口
+        merged_file_stream = call_docx_merge(merge_request)
+
+        # 构造响应
+        headers = {
+            "Content-Disposition": "attachment; filename=merged_docx.docx",
+            "Access-Control-Expose-Headers": "Content-Disposition"
+        }
+
+        return StreamingResponse(
+            io.BytesIO(merged_file_stream),
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers=headers
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"文件合并失败：{str(e)}"
+        )
+
 @app.post("/doc_editor/merge_docx", summary="合并拆分的DOCX节点")
 async def merge_docx(
         tree: List[Dict[str, Any]] = Body(..., description="节点树结构"),
@@ -1045,7 +1633,7 @@ async def generate_default_patent_doc():
         # 检查文件是否生成成功
         if not os.path.exists(save_path):
             raise HTTPException(status_code=404, detail="文档生成失败，文件不存在")
-        html_content = docx_to_html(save_path)
+        html_content, temp_file_docx = docx_to_html(save_path)
         print(save_path)
         save_path2 = os.path.join(UPLOAD_DIR, "专利报告.html")
         with open(save_path2, 'w', encoding='utf-8') as f:
@@ -1065,6 +1653,15 @@ async def generate_default_patent_doc():
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"生成文档时出错: {str(e)}")
+
+
+@app.get("/test-url-without-request")
+async def test_url_without_request(request: Request):
+    local_file_path = r"D:\\work\\collectbits\\yxdl_bid_manage_agent\\yxdl_bid_manage_agent\\backend\\uploads\\20260303173117_xaCA73.docx"
+    # 不传入request，使用环境变量配置的基础URL
+    result = local_upload_path_to_web_path(local_file_path, request)
+    return result
+
 
 # ====================== 启动服务 ======================
 if __name__ == "__main__":
