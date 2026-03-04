@@ -201,12 +201,15 @@ def docx_to_html(file_path: str) -> str:
             response = requests.get(new_file_path, timeout=30)
             # 校验响应状态码（200表示成功）
             response.raise_for_status()
+            abs_file_path = os.path.abspath("temp.docx")
 
             # 将文件内容写入本地
             with open(abs_file_path, 'wb') as f:
                 f.write(response.content)
 
             # print(f"文件下载成功，本地路径：{save_path}")
+        else:
+            abs_file_path = file_path
 
         # 文件大小检查
         file_size = os.path.getsize(abs_file_path)
