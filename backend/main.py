@@ -1382,8 +1382,8 @@ async def merge_docx_office_server(request: Request,
                 result_record_id = row[1]
                 print(f"查询到的 id: {result_id}, record_id: {result_record_id}")
 
-            cursor.execute(update_sql, tuple(update_values))
-            conn.commit()
+            # cursor.execute(update_sql, tuple(update_values))
+            # conn.commit()
     tree_ = recover_split_tree_nodes(result_record_id)
     files_ = get_tree_node_file_paths(result_record_id)
     # split_result = call_docx_merge(MergeRequest(tree=tree_, files=[], format_args={}))
@@ -1631,8 +1631,6 @@ async def merge_docx_office_server(request: Request,
 
         # 调用合并接口
         merged_file_message = call_docx_merge(merge_request)
-        merged_file_message["tree_"] = tree_
-        merged_file_message["files_"] = files_
 
         return merged_file_message
 
