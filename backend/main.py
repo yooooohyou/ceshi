@@ -1420,9 +1420,11 @@ async def merge_docx_office_server(request: Request,
 
             cursor.execute(update_sql, tuple(update_values))
             conn.commit()
+    print(111111111111111111111)
     tree_ = recover_split_tree_nodes(result_record_id)
     files_ = get_tree_node_file_paths(result_record_id)
-    files_ = deduplicate_dict_list(files_)
+    tree_ = deduplicate_dict_list(tree_)
+    print(files_)
     # split_result = call_docx_merge(MergeRequest(tree=tree_, files=[], format_args={}))
 
     format_config = {
