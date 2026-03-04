@@ -1110,7 +1110,8 @@ WHERE id = %s"""
                     "node_id": node_id,
                     "title_text": updated_result["title_text"],
                     "level": updated_result["level"],
-                    "html_content": updated_result["html_content"]
+                    "html_content": updated_result["html_content"],
+                    "temp_file_docx_": temp_file_docx_
                 }
             )
         else:
@@ -1904,7 +1905,7 @@ span.Strong { font-weight:bold }
         raise HTTPException(status_code=500, detail=f"生成文档时出错: {str(e)}")
 
 
-@app.get("/test-use-config", summary="3测试在业务逻辑中使用配置")
+@app.get("/test-use-config", summary="4测试在业务逻辑中使用配置")
 async def test_use_config():
     """
     示例：在实际业务逻辑中读取并使用上传路径配置
