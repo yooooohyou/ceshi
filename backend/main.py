@@ -165,7 +165,7 @@ def local_upload_path_to_web_path(local_abs_path: str, request: Request) -> str:
         包含web_path和full_url的字典
     """
     if STATIC_WEB_PREFIX:
-        return STATIC_WEB_PREFIX
+        return STATIC_WEB_PREFIX+local_abs_path
 
     local_abs_path = os.path.normpath(local_abs_path)
     uploads_local_dir = os.path.normpath(UPLOAD_DIR)
@@ -1904,7 +1904,7 @@ span.Strong { font-weight:bold }
         raise HTTPException(status_code=500, detail=f"生成文档时出错: {str(e)}")
 
 
-@app.get("/test-use-config", summary="1测试在业务逻辑中使用配置")
+@app.get("/test-use-config", summary="2测试在业务逻辑中使用配置")
 async def test_use_config():
     """
     示例：在实际业务逻辑中读取并使用上传路径配置
