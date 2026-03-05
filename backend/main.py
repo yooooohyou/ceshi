@@ -24,7 +24,7 @@ import tempfile
 from urllib.parse import urlparse
 import file_resp
 import platform
-
+import re
 from docxhtmlcoverter import DocxHtmlConverter
 
 # ====================== 配置项 ======================
@@ -109,19 +109,21 @@ if system_path == "Windows":
     # # 静态目录的本地绝对路径（与mount的directory保持一致）
     UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
     # # 静态文件的Web访问前缀（与mount的第一个参数保持一致）
-    STATIC_WEB_PREFIX = "uploads"
+    STATIC_WEB_PREFIX = "/uploads"
+    WEB_File_Path = False
     try:
         os.makedirs(UPLOAD_DIR, exist_ok=True)
     except PermissionError:
         UPLOAD_DIR = os.path.join(os.gettempdir(), "docx_uploads")
         os.makedirs(UPLOAD_DIR, exist_ok=True)
         print(f"警告：无法在当前目录创建uploads文件夹，已切换到系统临时目录：{UPLOAD_DIR}")
-        app.mount(STATIC_WEB_PREFIX, StaticFiles(directory=UPLOAD_DIR), name="uploads")
+    app.mount(STATIC_WEB_PREFIX, StaticFiles(directory=UPLOAD_DIR), name="uploads")
     pass
 else:
     uploads_config = get_server_uploads_config()
     UPLOAD_DIR = uploads_config["user_local_path"]
     STATIC_WEB_PREFIX = uploads_config["web_path"]
+    WEB_File_Path = True
 
 
 # 确保目录存在（增加权限检查）
@@ -168,7 +170,7 @@ def local_upload_path_to_web_path(local_abs_path: str, request: Request) -> str:
     Returns:
         包含web_path和full_url的字典
     """
-    if STATIC_WEB_PREFIX:
+    if WEB_File_Path:
         # return STATIC_WEB_PREFIX+os.path.basename(local_abs_path)
         return UPLOAD_DIR + "/" +os.path.basename(local_abs_path)
 
@@ -255,6 +257,30 @@ def unified_response(code: int, message: str, data: dict = None) -> JSONResponse
         }
     )
 
+
+def is_ends_with_path_separator(s: str) -> bool:
+    """
+    判断字符串是否以路径分隔符（/、\\、//、\\\\等）结尾
+
+    Args:
+        s: 要检查的字符串
+
+    Returns:
+        bool: 如果以路径分隔符结尾返回True，否则返回False
+    """
+    # 处理空字符串的特殊情况
+    if not s:
+        return False
+
+    # 正则表达式解释：
+    # $ 表示匹配字符串结尾
+    # [/\\]+ 表示匹配一个或多个 / 或 \（\需要双重转义）
+    pattern = r'[/\\]+$'
+
+    # 使用re.search检查是否匹配
+    match = re.search(pattern, s)
+
+    return match is not None
 
 # ====================== 全局异常处理 ======================
 @app.exception_handler(RequestValidationError)
@@ -1080,8 +1106,8 @@ async def upload_and_generate_tree(
         # 清理临时文件
         try:
             pass
-            # if file_path and os.path.exists(file_path):
-            #     os.remove(file_path)
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
             # # 清理拆分接口的远端文件
             # if split_file_id and process_mode == "split":
             #     delete_request = DeleteRequest(id=split_file_id)
@@ -1093,6 +1119,294 @@ async def upload_and_generate_tree(
             code=500,
             message=f"上传处理失败（模式：{process_mode}）：{str(e)}",
             data={"process_mode": process_mode, "split_file_id": split_file_id}
+        )
+
+
+@app.post("/doc_editor/route_generate_tree", summary="文件路径生成标题树节点")
+async def route_generate_tree(
+        file_source_type: str = Body("url", description="文件来源类型：url-从URL下载，static-从静态路径读取"),
+        file_source: str = Body(..., description="文件来源：URL地址 或 服务器静态文件路径"),
+        process_mode: ProcessMode = Body("split", description="处理模式：single-单个主节点，split-接口拆分多节点（默认）")
+) -> JSONResponse:
+    """
+    获取文件（URL下载/静态路径读取）并生成标题树节点
+    - file_source_type: url（从URL下载）/ static（从静态路径读取）
+    - file_source: 对应类型的文件地址/路径
+    - 默认模式（不传参数）：split，调用拆分接口生成多个分支节点
+    - single模式：生成单个主节点
+    """
+    file_path = ""
+    split_file_id = ""
+    file_content = b""
+    original_filename = ""
+    try:
+        # 1. 根据文件来源类型获取文件内容和文件名
+        if file_source_type == "url":
+            # 替换为requests同步下载（FastAPI中异步函数内使用同步库需注意，或用run_in_threadpool）
+            try:
+                response = requests.get(file_source, timeout=30)  # 设置30秒超时
+                response.raise_for_status()  # 抛出HTTP错误（4xx/5xx）
+            except requests.exceptions.RequestException as req_e:
+                return unified_response(
+                    code=400,
+                    message=f"下载文件失败：{str(req_e)}",
+                    data={}
+                )
+
+            # 获取文件名（从响应头或URL提取）
+            content_disposition = response.headers.get("Content-Disposition", "")
+            if "filename=" in content_disposition:
+                original_filename = content_disposition.split("filename=")[-1].strip('"\'')
+            else:
+                # 从URL路径提取文件名
+                original_filename = file_source.split("/")[-1]
+            # 读取文件内容
+            file_content = response.content
+
+        elif file_source_type == "static":
+            # 静态路径读取逻辑（无变化）
+            static_file_path = os.path.abspath(file_source)
+            if not os.path.exists(static_file_path):
+                return unified_response(
+                    code=400,
+                    message=f"静态文件不存在：{static_file_path}",
+                    data={}
+                )
+            if not static_file_path.lower().endswith(".docx"):
+                ext = static_file_path.split('.')[-1] if '.' in static_file_path else '无后缀'
+                return unified_response(
+                    code=400,
+                    message=f"仅支持docx格式文件，当前文件格式：{ext}",
+                    data={}
+                )
+            # 读取文件内容
+            with open(static_file_path, "rb") as f:
+                file_content = f.read()
+            # 获取文件名
+            original_filename = os.path.basename(static_file_path)
+
+        else:
+            return unified_response(
+                code=400,
+                message=f"不支持的文件来源类型：{file_source_type}，仅支持url/static",
+                data={}
+            )
+
+        # 2. 校验文件格式（无变化）
+        if not original_filename.lower().endswith(".docx"):
+            ext = original_filename.split('.')[-1] if '.' in original_filename else '无后缀'
+            return unified_response(
+                code=400,
+                message=f"仅支持docx格式文件，当前文件格式：{ext}",
+                data={}
+            )
+
+        # 3. 保存文件（无变化）
+        new_filename = generate_unique_filename(original_filename)
+        file_path = os.path.join(UPLOAD_DIR, new_filename)
+        abs_file_path = os.path.abspath(file_path)
+
+        with open(abs_file_path, "wb") as f:
+            f.write(file_content)
+
+        # 4. 生成文件记录（无变化）
+        current_time = datetime.datetime.now()
+        insert_file_sql = """
+        INSERT INTO "yxdl_docx_upload_records" 
+        (
+            original_filename, 
+            new_filename, 
+            save_path, 
+            upload_time, 
+            update_time, 
+            split_file_id, 
+            process_mode
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        RETURNING id;
+        """
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(insert_file_sql, (
+                    original_filename,
+                    new_filename,
+                    abs_file_path,
+                    current_time,
+                    current_time,
+                    split_file_id,
+                    process_mode
+                ))
+                record_id = cursor.fetchone()[0]
+                conn.commit()
+
+        # ====================== single模式（无变化） ======================
+        if process_mode == "single":
+            node_id = create_single_main_node(
+                record_id=record_id,
+                current_time=current_time,
+                file_path=abs_file_path
+            )
+
+            return unified_response(
+                code=200,
+                message="文件获取成功，生成单个主节点",
+                data={
+                    "record_id": record_id,
+                    "process_mode": process_mode,
+                    "original_filename": original_filename,
+                    "file_path": abs_file_path,
+                    "create_time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "node_count": 1,
+                    "node_ids": node_id,
+                    "node_type": "main",
+                    "split_file_id": "",
+                    "split_files": [],
+                    "node_level": DEFAULT_MAIN_NODE["level"],
+                    "node_eid": DEFAULT_MAIN_NODE["eid"],
+                    "node_idx": DEFAULT_MAIN_NODE["idx"],
+                    "tips": "可使用node_id调用查询接口获取HTML文本"
+                }
+            )
+
+        # ====================== split模式（无变化） ======================
+        elif process_mode == "split":
+            split_file_id = generate_unique_file_id()
+
+            update_file_sql = """
+            UPDATE "yxdl_docx_upload_records" 
+            SET split_file_id = %s, update_time = %s
+            WHERE id = %s;
+            """
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(update_file_sql, (split_file_id, current_time, record_id))
+                    conn.commit()
+
+            split_result = call_docx_split(
+                file_stream=file_content,
+                file_name=original_filename,
+                file_id=split_file_id
+            )
+
+            tree_nodes = [TreeItem(**item) for item in split_result.data.get("tree", [])]
+            eid_path_map = build_eid_path_mapping(split_result.data.get("files", []))
+
+            for node in tree_nodes:
+                assign_file_path_to_tree(node, eid_path_map)
+            print(tree_nodes)
+            node_ids = process_split_tree_nodes(
+                nodes=tree_nodes,
+                record_id=record_id,
+                current_time=current_time,
+                file_base_path=abs_file_path
+            )
+
+            return unified_response(
+                code=200,
+                message=f"文件获取拆分成功，共生成{len(node_ids)}个分支节点",
+                data={
+                    "record_id": record_id,
+                    "node_ids": node_ids,
+                    "node_type": "branch",
+                    "split_file_id": split_file_id
+                }
+            )
+
+    except Exception as e:
+        # 清理临时文件（无变化）
+        try:
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception as cleanup_e:
+            print(f"清理临时文件失败：{cleanup_e}")
+
+        return unified_response(
+            code=500,
+            message=f"文件处理失败（模式：{process_mode}）：{str(e)}",
+            data={"process_mode": process_mode, "split_file_id": split_file_id}
+        )
+
+@app.post("/doc_editor/split_uploads", summary="分片上传文件")
+async def split_upload_and_generate_tree(
+    request: Request,
+    # 文件参数（File类型，带描述）
+    file: UploadFile = File(..., description="需要上传的分片文件"),
+    # 表单参数（Body类型，带描述和默认值）
+    file_no: str = Body(..., description="分片编号"),
+    file_sign: str = Body(..., description="文件唯一标识"),
+    file_name: str = Body(..., description="原始文件名"),
+    files_total_count: str = Body(..., description="分片总数"),
+    # 可选：如果有处理模式参数，参考你的示例添加
+) -> JSONResponse:
+    """
+    模板文件分片上传接口（FastAPI优化版）
+
+    - 采用FastAPI原生参数定义方式，更直观
+    - 保留原有分片上传核心逻辑
+    - 支持参数描述和类型校验
+    """
+
+    try:
+        # 读取配置
+        split_file_path = UPLOAD_DIR
+
+        # 拼接文件名（保持原有逻辑）
+        full_file_name = f"{file_sign}_{file_name}"
+        # new_filename = generate_unique_filename(file_name)
+        file_path = UPLOAD_DIR
+        abs_file_path = os.path.abspath(file_path)
+        path_ = local_upload_path_to_web_path(abs_file_path, request)
+        if not abs_file_path.endswith(os.path.sep):
+            real_file_path = abs_file_path + os.path.sep + full_file_name
+        else:
+            real_file_path = abs_file_path + full_file_name
+
+        # 读取上传文件内容
+        file_content = await file.read()
+
+        # 调用分片上传核心逻辑
+        status, result, msg = file_resp.SplitUpload(
+            split_file_path,
+            file_no,
+            full_file_name,
+            files_total_count,
+            file_sign,
+            file_content
+        )
+
+        # 日志记录
+        if status == 0:
+            print(f"finish upload. sign:{file_sign} | file_no :{file_no} | total count:{files_total_count}")
+        if status == 1:
+            print(
+                f"upload fail. error info:{msg} | sign:{file_sign} | file_no :{file_no} | total count:{files_total_count}")
+
+        # 处理文件路径返回
+        if result == 1:
+            file_path = f"{path_}{full_file_name}"
+            print("--------TemplateUploadFile-finish--------")
+            print(f"file path : {file_path}")
+        else:
+            file_path = ''
+            real_file_path = ''
+        # 返回响应
+        return JSONResponse(content={
+            'status': status,
+            'is_finish': result,
+            'msg': msg,
+            "data": {
+                "file_path": file_path,
+                "real_file_path": real_file_path
+            }
+        })
+
+    except Exception as e:
+        print("--------TemplateUploadFile-fail--------")
+        print(f"TemplateUploadFile-失败：{str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={'status': 1, 'is_finish': 0, 'msg': '接口异常', "data": ""}
         )
 
 
