@@ -7,6 +7,10 @@
 import pathlib
 import re
 from urllib import parse
+import json
+import os
+import shutil
+import time
 from fastapi import Request, HTTPException
 from fastapi.responses import StreamingResponse, Response
 
@@ -99,3 +103,80 @@ class FileResp:
             response.headers["Content-Length"] = str(file_size)
 
         return response
+
+
+def SplitUpload(split_file_path, file_no, file_name, files_total_count, file_sign, file):
+    """
+    文件分块上传
+    :param split_file_path: 文件上传存储根目录
+    :param file_no: 当前块序号
+    :param file_name: 源文件名称
+    :param files_total_count: 文件总块数
+    :param file_sign: 文件标识（MD5）
+    :param file: 文件（request.FILES.get所得值）
+    :return: 当前块文件处理是否成功(0:成功,1:失败)[int],文件最终步骤（合并）是否完成(0:未完成,1:完成)[int],错误信息[str]
+    """
+    sign_file_lock = sign_file_path = None
+    try:
+        if file_no and file_name and files_total_count and file_sign and file:
+            root_path = os.path.join(split_file_path, file_sign)  # 分块文件存储目录
+            sign_file_path = os.path.join(str(root_path), 'sign.json')  # 分块信息文件
+            out_file = os.path.join(split_file_path, file_name)  # 最终输出文件
+            sign_file_lock = os.path.join(str(root_path), f'sign_lock.json')
+            if not os.path.exists(split_file_path):
+                return 1, 0, '根目录不存在'
+
+            # 临时文件夹初始化
+            if not os.path.exists(root_path):
+                os.mkdir(root_path)
+                file_dict = {str(x): 0 for x in range(1, int(files_total_count) + 1)}
+                with open(sign_file_path, 'w', encoding='utf-8') as f:
+                    f.write(json.dumps(file_dict))
+
+            # 保存拆分文件
+            with open(os.path.join(str(root_path), str(file_no)), 'wb') as f:
+                for chunk in file.chunks():
+                    f.write(chunk)
+
+            # 读取并修改拆分文件标识文件(加锁)
+            while 1:
+                try:
+                    os.rename(sign_file_path, sign_file_lock)
+                    str_conf = open(sign_file_lock, 'r', encoding='utf-8').read()
+                    break
+                except FileNotFoundError:
+                    time.sleep(0.05)
+            sign_data = json.loads(str_conf)
+            if str(files_total_count) not in sign_data or str(int(files_total_count)+1) in sign_data:
+                os.rename(sign_file_lock, sign_file_path)
+                return 1, 0, '文件分块信息错误，请从新上传！'
+            sign_data[str(file_no)] = 1
+            with open(sign_file_lock, 'w', encoding='utf-8') as f:
+                f.write(json.dumps(sign_data))
+            os.rename(sign_file_lock, sign_file_path)
+
+            # 判断所有文件是否上传完毕,完成则合并文件
+            finish = 1
+            for i in range(1, int(files_total_count) + 1):
+                if sign_data[str(i)] == 0:
+                    finish = 0
+                    break
+            if finish:
+                with open(out_file, 'wb') as outfile:
+                    for i in range(1, int(files_total_count) + 1):
+                        file_path = os.path.join(str(root_path), str(i))
+                        with open(file_path, 'rb') as infile:
+                            while True:
+                                chunk = infile.read(4096)  # 读取4KB大小的块
+                                if not chunk:
+                                    break
+                                outfile.write(chunk)
+                shutil.rmtree(root_path)
+            return 0, finish, '成功'
+        else:
+            return 1, 0, '参数有空值'
+    except Exception as e:
+        if sign_file_lock and sign_file_path:
+            if os.path.exists(sign_file_lock):
+                os.rename(sign_file_lock, sign_file_path)
+        raise e
