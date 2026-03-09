@@ -34,9 +34,42 @@ import platform
 import re
 from PIL import Image
 from docxhtmlcoverter import DocxHtmlConverter
-
+import logging
+from logging.handlers import RotatingFileHandler
+import sys
 # ====================== 配置项 ======================
+def setup_logging():
+    # 日志格式：时间 - 日志级别 - 模块 - 行号 - 信息
+    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s"
+    log_level = logging.INFO  # 生产环境建议 INFO，调试用 DEBUG
 
+    # 配置根日志器
+    logging.basicConfig(
+        level=log_level,
+        format=log_format,
+        handlers=[
+            # 输出到终端（窗口）
+            logging.StreamHandler(sys.stdout),
+            # 可选：同时输出到文件（生产环境建议保留，防止日志丢失）
+            RotatingFileHandler(
+                "app.log",
+                maxBytes=10*1024*1024,  # 10MB
+                backupCount=5,  # 最多保留5个备份文件
+                encoding="utf-8"
+            )
+        ]
+    )
+
+    # 调整第三方库（如uvicorn、fastapi）的日志级别，避免冗余
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.error").setLevel(logging.INFO)
+    logging.getLogger("fastapi").setLevel(logging.INFO)
+
+# 初始化日志配置
+setup_logging()
+
+# 获取当前模块的日志器（推荐每个模块单独获取，便于定位日志来源）
+logger = logging.getLogger(__name__)
 app = FastAPI(title="DOCX文件上传&HTML转换接口", version="1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -1833,7 +1866,8 @@ async def update_html_by_node(request: Request,
                 message="HTML内容不能为空",
                 data={}
             )
-        # html_content, status_ = html_img_url_to_base64(html_content)
+        logger.info(html_content)
+        html_content, status_ = html_img_url_to_base64(html_content)
         success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
         temp_docx_path_ = temp_docx_path_1
         eid = os.path.splitext(os.path.basename(temp_docx_path_1))[0]
