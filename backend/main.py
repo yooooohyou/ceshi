@@ -4,7 +4,7 @@ import shutil
 import time
 
 import aiohttp
-from fastapi import FastAPI, UploadFile, File, Body, Request, HTTPException
+from fastapi import FastAPI, UploadFile, File, Body, Request, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
@@ -39,36 +39,31 @@ from logging.handlers import RotatingFileHandler
 import sys
 # ====================== 配置项 ======================
 def setup_logging():
-    # 日志格式：时间 - 日志级别 - 模块 - 行号 - 信息
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s"
-    log_level = logging.INFO  # 生产环境建议 INFO，调试用 DEBUG
+    log_level = logging.INFO
+    log_file = "app.log"
 
     # 配置根日志器
     logging.basicConfig(
         level=log_level,
         format=log_format,
         handlers=[
-            # 输出到终端（窗口）
-            logging.StreamHandler(sys.stdout),
-            # 可选：同时输出到文件（生产环境建议保留，防止日志丢失）
-            RotatingFileHandler(
-                "app.log",
-                maxBytes=10*1024*1024,  # 10MB
-                backupCount=5,  # 最多保留5个备份文件
+            logging.StreamHandler(sys.stdout),  # 输出到终端
+            RotatingFileHandler(  # 输出到文件（按大小分割）
+                log_file,
+                maxBytes=10*1024*1024,  # 10MB/文件
+                backupCount=5,  # 保留5个备份
                 encoding="utf-8"
             )
         ]
     )
 
-    # 调整第三方库（如uvicorn、fastapi）的日志级别，避免冗余
+    # 调整第三方库日志级别
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-    logging.getLogger("uvicorn.error").setLevel(logging.INFO)
-    logging.getLogger("fastapi").setLevel(logging.INFO)
+    return log_file
 
-# 初始化日志配置
-setup_logging()
-
-# 获取当前模块的日志器（推荐每个模块单独获取，便于定位日志来源）
+# 初始化日志和日志文件路径
+log_file_path = setup_logging()
 logger = logging.getLogger(__name__)
 app = FastAPI(title="DOCX文件上传&HTML转换接口", version="1.0")
 app.add_middleware(
@@ -141,7 +136,57 @@ def get_server_uploads_config() -> dict:
 
 system_path = platform.system()
 
+def read_logs(
+    file_path: str,
+    level: Optional[str] = None,
+    keyword: Optional[str] = None,
+    limit: int = 100
+) -> list:
+    """读取日志文件，支持筛选和限制条数"""
+    if not os.path.exists(file_path):
+        return ["日志文件不存在"]
 
+    # 按行读取日志（从末尾开始，取最新的）
+    logs = []
+    with open(file_path, "r", encoding="utf-8") as f:
+        # 先获取所有行，再反转（最新的在前）
+        all_lines = f.readlines()
+        reversed_lines = reversed(all_lines)  # 从最后一行开始读
+
+        for line in reversed_lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            # 按级别筛选
+            if level and f" - {level.upper()} - " not in line:
+                continue
+
+            # 按关键词筛选
+            if keyword and keyword not in line:
+                continue
+
+            logs.append(line)
+            if len(logs) >= limit:
+                break
+
+    # 再次反转，让最新的在最后（符合阅读习惯）
+    return logs[::-1]
+
+# 4. 日志查询接口
+@app.get("/api/logs")
+async def get_logs(
+    level: Optional[str] = Query(None, description="日志级别（INFO/WARNING/ERROR）"),
+    keyword: Optional[str] = Query(None, description="日志关键词"),
+    limit: int = Query(100, ge=1, le=1000, description="返回日志条数（1-1000）")
+):
+    logs = read_logs(log_file_path, level, keyword, limit)
+    return {
+        "log_file": log_file_path,
+        "total": len(logs),
+        "limit": limit,
+        "logs": logs
+    }
 
 # 简化的系统判断
 if system_path == "Windows":
