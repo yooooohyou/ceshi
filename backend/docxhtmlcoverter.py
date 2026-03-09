@@ -306,20 +306,7 @@ class DocxHtmlConverter:
                     print(f"⚠️ 清理临时HTML文件失败：{e}")
 
 
-# ------------------------------ 外部调用示例 ------------------------------
-if __name__ == "__main__":
-    # 初始化转换器
-    converter = DocxHtmlConverter()
 
-    # 示例1：DOCX转单文件HTML（支持外部调用）
-    # 建议使用绝对路径，避免工作目录问题
-    input_docx = r"C:\Users\you62\PyCharmMiscProject\word2html\input.docx"  # 替换为你的绝对路径
-    output_html = r"C:\Users\you62\PyCharmMiscProject\word2html\output.html"  # 替换为你的绝对路径
-    html_content = converter.docx_to_single_html(input_docx, output_html)
-
-    # 示例2：HTML转DOCX
-    if html_content:
-        converter.html_text_to_docx(html_content, r"C:\Users\you62\PyCharmMiscProject\word2html\result.docx")
 # # ------------------------------ 调用示例 ------------------------------
 if __name__ == "__main__":
     # 1. 初始化转换器

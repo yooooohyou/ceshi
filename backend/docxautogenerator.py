@@ -4,7 +4,10 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
 from docx.oxml.ns import qn
 from docx.oxml.shared import OxmlElement
+from docx.oxml.shared import qn as qn_shared
+from docx.oxml import parse_xml
 import os
+from PIL import Image
 
 
 def generate_report_doc(
@@ -326,6 +329,150 @@ def generate_fully_centered_patent_doc(
     return save_path
 
 
+def generate_car_info_doc(car_data, save_path='公司车辆信息.docx', table_title='公司车辆信息'):
+    """
+    1:1复刻原文档+匹配指定字体/边框样式
+    :param car_data: 车辆数据，二维列表[[序号,车牌号,行驶证图片路径,车辆图片路径], ...]
+    :param save_path: 文档保存路径
+    :param table_title: 表格顶部大标题
+    """
+    # 初始化文档
+    doc = Document()
+    # 页面边距设置
+    sec = doc.sections[0]
+    sec.top_margin = Cm(1.0)
+    sec.bottom_margin = Cm(1.0)
+    sec.left_margin = Cm(1.0)
+    sec.right_margin = Cm(1.0)
+
+    # 核心配色（按指定函数定义：蓝色4472C4、白色、黑色）
+    COLOR_BLUE = '4472C4'       # 边框/表头底纹色
+    COLOR_WHITE = RGBColor(255, 255, 255)  # 表头文字色
+    COLOR_BLACK = RGBColor(0, 0, 0)        # 正文文字色
+    # 列宽配置（适配A4，匹配原文档比例）
+    COL_WIDTHS = [Cm(1.5), Cm(2.5), Cm(8.0), Cm(5.0)]
+    # 图片插入宽度（适配列宽无变形）
+    IMG_WIDTH_DRIVE = Cm(7.5)
+    IMG_WIDTH_CAR = Cm(4.5)
+
+    # ===================== 按指令要求定义的字体/边框函数 =====================
+    def set_font(run, color):
+        run.font.name = '宋体'
+        run._element.rPr.rFonts.set(qn('w:eastAsia'), '宋体')
+        run.font.size = Pt(12)
+        run.font.color.rgb = color
+
+    def set_head_font(run):
+        set_font(run, RGBColor(255, 255, 255))
+        run.bold = True
+
+    def set_border(cell, color='4472C4', sz='2'):
+        for k in ['top', 'left', 'bottom', 'right']:
+            b = OxmlElement(f'w:{k}')
+            b.set(qn('w:val'), 'single')
+            b.set(qn('w:color'), color)
+            b.set(qn('w:sz'), sz)
+            cell._element.tcPr.append(b)
+    # ==========================================================================
+
+    # 自定义工具函数（基于指定函数扩展，保证样式统一）
+    def set_cell_bg(cell, bg_color=COLOR_BLUE):
+        """设置单元格底纹（表头蓝色底纹）"""
+        shd = OxmlElement('w:shd')
+        shd.set(qn('w:fill'), bg_color)
+        cell._element.tcPr.append(shd)
+
+    def add_text_to_cell(cell, text, is_header=False):
+        """向单元格添加文字，区分表头/正文样式"""
+        # 清空原有内容
+        for para in cell.paragraphs:
+            for run in para.runs:
+                para._element.remove(run._element)
+        # 文字居中排版
+        para = cell.paragraphs[0]
+        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        para.paragraph_format.space_before = Pt(0)
+        para.paragraph_format.space_after = Pt(0)
+        # 插入文字并应用样式
+        run = para.add_run(str(text))
+        if is_header:
+            set_head_font(run)  # 表头：白色+加粗+12号宋体
+        else:
+            set_font(run, COLOR_BLACK)  # 正文：黑色+12号宋体
+        # 单元格基础样式：垂直居中+蓝色边框
+        cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+        set_border(cell)
+        # 表头添加蓝色底纹
+        if is_header:
+            set_cell_bg(cell)
+
+    def add_img_to_cell(cell, img_path, img_width):
+        """向单元格插入图片，带蓝色边框+居中"""
+        # 清空原有内容
+        for para in cell.paragraphs:
+            for run in para.runs:
+                para._element.remove(run._element)
+        # 图片居中
+        para = cell.paragraphs[0]
+        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        # 插入图片/缺失提示
+        if os.path.exists(img_path):
+            para.add_run().add_picture(img_path, width=img_width)
+        else:
+            run = para.add_run(f'图片缺失：{os.path.basename(img_path)}')
+            set_font(run, RGBColor(255, 0, 0))  # 红色提示
+        # 单元格样式：垂直居中+蓝色边框
+        cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+        set_border(cell)
+
+    # 数据校验
+    if not isinstance(car_data, list) or len(car_data) == 0:
+        raise ValueError("car_data必须是非空的二维列表")
+    for idx, row in enumerate(car_data):
+        if len(row) != 4:
+            raise ValueError(f"car_data第{idx+1}行必须包含[序号,车牌号,行驶证路径,车辆图片路径]4个元素")
+
+    # 表格创建：2行表头 + 数据行
+    total_rows = 2 + len(car_data)
+    total_cols = 4
+    table = doc.add_table(rows=total_rows, cols=total_cols)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER  # 表格整体页面居中
+    table.autofit = False  # 关闭自动适应，固定列宽
+
+    # 设置固定列宽（修复index错误，正确遍历）
+    for row in table.rows:
+        for col_idx in range(total_cols):
+            row.cells[col_idx].width = COL_WIDTHS[col_idx]
+
+    # 第一行：合并4列+大标题（表头样式：白字+蓝底+蓝色边框）
+    first_row_cells = table.rows[0].cells
+    main_title_cell = first_row_cells[0]
+    for cell in first_row_cells[1:]:
+        main_title_cell.merge(cell)
+    add_text_to_cell(main_title_cell, table_title, is_header=True)
+
+    # 第二行：二级表头（序号/车牌号/行驶证/车辆图片，表头样式）
+    second_headers = ['序号', '车牌号', '行驶证', '车辆图片']
+    second_row_cells = table.rows[1].cells
+    for col_idx, header in enumerate(second_headers):
+        add_text_to_cell(second_row_cells[col_idx], header, is_header=True)
+
+    # 数据行：填充车辆信息+插入图片（正文样式）
+    for data_idx, car_row in enumerate(car_data, start=2):
+        seq, plate_num, drive_img, car_img = car_row
+        current_cells = table.rows[data_idx].cells
+        # 序号、车牌号（文字）
+        add_text_to_cell(current_cells[0], seq, is_header=False)
+        add_text_to_cell(current_cells[1], plate_num, is_header=False)
+        # 行驶证、车辆图片（图片）
+        add_img_to_cell(current_cells[2], drive_img, IMG_WIDTH_DRIVE)
+        add_img_to_cell(current_cells[3], car_img, IMG_WIDTH_CAR)
+
+    # 保存文档
+    doc.save(save_path)
+    print(f"✅ 文档生成成功！路径：{os.path.abspath(save_path)}")
+    return save_path
+
 if __name__ == "__main__":
     # 示例参数
     title = "2024年年度报告"  # 第一行标题
@@ -362,4 +509,17 @@ if __name__ == "__main__":
 
     save_path = "./专利报告.docx"
     generate_fully_centered_patent_doc(patent_data, cert_img_paths, save_path, last_img_display_mode=1)
-    pass
+    car_info_data = [
+        [1, '苏BSG126', './pic/图片13.jpg', './pic/图片14.jpg'],
+        [2, '苏B5706L', './pic/图片15.jpg', './pic/图片16.jpg'],
+        [3, '苏B950UF', './pic/图片17.jpg', './pic/图片18.jpg'],
+        [4, '苏BJ0106', './pic/图片19.jpg', './pic/图片20.jpg'],
+        # [5, '苏BU533V', './pic/图片21.jpg', './pic/图片22.jpg'],
+    ]
+
+    # 调用函数生成文档
+    generate_car_info_doc(
+        car_data=car_info_data,
+        save_path='公司车辆信息.docx',
+        table_title='公司车辆信息'
+    )
