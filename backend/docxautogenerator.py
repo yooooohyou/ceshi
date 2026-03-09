@@ -419,8 +419,10 @@ def generate_car_info_doc(car_data, save_path='公司车辆信息.docx', table_t
         if os.path.exists(img_path):
             para.add_run().add_picture(img_path, width=img_width)
         else:
-            run = para.add_run(f'图片缺失：{os.path.basename(img_path)}')
-            set_font(run, RGBColor(255, 0, 0))  # 红色提示
+            # run = para.add_run(f'图片缺失：{os.path.basename(img_path)}')
+            # set_font(run, RGBColor(255, 0, 0))  # 红色提示
+            run = para.add_run(f'')
+            # set_font(run, RGBColor(255, 0, 0))  # 红色提示
         # 单元格样式：垂直居中+蓝色边框
         cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
         set_border(cell)
@@ -475,44 +477,44 @@ def generate_car_info_doc(car_data, save_path='公司车辆信息.docx', table_t
 
 if __name__ == "__main__":
     # 示例参数
-    title = "2024年年度报告"  # 第一行标题
-    main_img = "./pic/图片1.jpg"  # 第二行主图片路径
-    other_imgs = ["./pic/图片2.jpg", "./pic/图片3.jpg", "./pic/图片4.jpg", "./pic/图片5.jpg",  "./pic/图片3.jpg", "./pic/图片4.jpg", "./pic/图片5.jpg"]
-    save_file = "./2024年度报告.docx"  # 保存路径
-
-    # 调用函数生成文档
-    generate_report_doc(
-        title_text=title,
-        second_row_img_path=main_img,
-        other_img_paths=other_imgs,
-        save_path=save_file,
-        columns_per_row=4
-    )
-    patent_data = [
-        ['1', '发明专利', '一种核岛用防爆电话电缆', 'ZL201210300077.1', '远程电缆股份有限公司', '2015-07-29'],
-        ['2', '发明专利', '一种电缆保护夹座安装方法', 'ZL201110454443.4', '远程电缆股份有限公司', '2014-06-25'],
-        ['3', '发明专利', '硅烷交联聚乙烯绝缘电缆料及其制造方法', 'ZL200710022494.3', '远程电缆股份有限公司',
-         '2010-12-08'],
-        ['4', '发明专利', '多色架空绝缘电缆及其制造方法', 'ZL200710019537.2', '远程电缆股份有限公司', '2010-01-13'],
-        ['5', '发明专利', '一种用于5G传输技术的配电专用线及其生产工艺', 'ZL201911360899.7', '远程电缆股份有限公司',
-         '2020-09-25'],
-        ['6', '发明专利', '一种核岛用防爆电话电缆', 'ZL201210300077.1', '远程电缆股份有限公司', '2015-07-29'],
-        ['7', '发明专利', '一种电缆保护夹座安装方法', 'ZL201110454443.4', '远程电缆股份有限公司', '2014-06-25'],
-        ['8', '发明专利', '硅烷交联聚乙烯绝缘电缆料及其制造方法', 'ZL200710022494.3', '远程电缆股份有限公司',
-         '2010-12-08'],
-        ['9', '发明专利', '多色架空绝缘电缆及其制造方法', 'ZL200710019537.2', '远程电缆股份有限公司', '2010-01-13'],
-        ['10', '发明专利', '一种用于5G传输技术的配电专用线及其生产工艺', 'ZL201911360899.7', '远程电缆股份有限公司',
-         '2020-09-25']
-    ]
-
-    cert_img_paths = ["./pic/图片2.jpg", "./pic/图片3.jpg", "./pic/图片4.jpg", "./pic/图片5.jpg", "./pic/图片6.jpg", "./pic/图片7.jpg", "./pic/图片8.jpg", "./pic/图片3.jpg", "./pic/图片4.jpg", "./pic/图片5.jpg", "./pic/图片6.jpg", "./pic/图片7.jpg", "./pic/图片8.jpg"]
-
-    save_path = "./专利报告.docx"
-    generate_fully_centered_patent_doc(patent_data, cert_img_paths, save_path, last_img_display_mode=1)
+    # title = "2024年年度报告"  # 第一行标题
+    # main_img = "./pic/图片1.jpg"  # 第二行主图片路径
+    # other_imgs = ["./pic/图片2.jpg", "./pic/图片3.jpg", "./pic/图片4.jpg", "./pic/图片5.jpg",  "./pic/图片3.jpg", "./pic/图片4.jpg", "./pic/图片5.jpg"]
+    # save_file = "./2024年度报告.docx"  # 保存路径
+    #
+    # # 调用函数生成文档
+    # generate_report_doc(
+    #     title_text=title,
+    #     second_row_img_path=main_img,
+    #     other_img_paths=other_imgs,
+    #     save_path=save_file,
+    #     columns_per_row=4
+    # )
+    # patent_data = [
+    #     ['1', '发明专利', '一种核岛用防爆电话电缆', 'ZL201210300077.1', '远程电缆股份有限公司', '2015-07-29'],
+    #     ['2', '发明专利', '一种电缆保护夹座安装方法', 'ZL201110454443.4', '远程电缆股份有限公司', '2014-06-25'],
+    #     ['3', '发明专利', '硅烷交联聚乙烯绝缘电缆料及其制造方法', 'ZL200710022494.3', '远程电缆股份有限公司',
+    #      '2010-12-08'],
+    #     ['4', '发明专利', '多色架空绝缘电缆及其制造方法', 'ZL200710019537.2', '远程电缆股份有限公司', '2010-01-13'],
+    #     ['5', '发明专利', '一种用于5G传输技术的配电专用线及其生产工艺', 'ZL201911360899.7', '远程电缆股份有限公司',
+    #      '2020-09-25'],
+    #     ['6', '发明专利', '一种核岛用防爆电话电缆', 'ZL201210300077.1', '远程电缆股份有限公司', '2015-07-29'],
+    #     ['7', '发明专利', '一种电缆保护夹座安装方法', 'ZL201110454443.4', '远程电缆股份有限公司', '2014-06-25'],
+    #     ['8', '发明专利', '硅烷交联聚乙烯绝缘电缆料及其制造方法', 'ZL200710022494.3', '远程电缆股份有限公司',
+    #      '2010-12-08'],
+    #     ['9', '发明专利', '多色架空绝缘电缆及其制造方法', 'ZL200710019537.2', '远程电缆股份有限公司', '2010-01-13'],
+    #     ['10', '发明专利', '一种用于5G传输技术的配电专用线及其生产工艺', 'ZL201911360899.7', '远程电缆股份有限公司',
+    #      '2020-09-25']
+    # ]
+    #
+    # cert_img_paths = ["./pic/图片2.jpg", "./pic/图片3.jpg", "./pic/图片4.jpg", "./pic/图片5.jpg", "./pic/图片6.jpg", "./pic/图片7.jpg", "./pic/图片8.jpg", "./pic/图片3.jpg", "./pic/图片4.jpg", "./pic/图片5.jpg", "./pic/图片6.jpg", "./pic/图片7.jpg", "./pic/图片8.jpg"]
+    #
+    # save_path = "./专利报告.docx"
+    # generate_fully_centered_patent_doc(patent_data, cert_img_paths, save_path, last_img_display_mode=1)
     car_info_data = [
         [1, '苏BSG126', './pic/图片13.jpg', './pic/图片14.jpg'],
         [2, '苏B5706L', './pic/图片15.jpg', './pic/图片16.jpg'],
-        [3, '苏B950UF', './pic/图片17.jpg', './pic/图片18.jpg'],
+        [3, '苏B950UF', '', './pic/图片18.jpg'],
         [4, '苏BJ0106', './pic/图片19.jpg', './pic/图片20.jpg'],
         # [5, '苏BU533V', './pic/图片21.jpg', './pic/图片22.jpg'],
     ]

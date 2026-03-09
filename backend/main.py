@@ -159,20 +159,32 @@ ProcessMode = Literal["single", "split"]
 
 
 
-class HTMLSafeJSONEncoder(json.JSONEncoder):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.ensure_ascii = False  # 保留中文等非ASCII字符
-        self.escape_forward_slashes = False  # 禁用/的转义
+class UnescapedJSONResponse(JSONResponse):
+    def render(self, content: any) -> bytes:
+        # ensure_ascii=False: 保留非 ASCII 字符（如中文）
+        # separators: 优化 JSON 格式，可选
+        # default: 处理其他特殊类型的默认序列化逻辑
+        return json.dumps(
+            content,
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=None,
+            separators=(",", ":"),
+            default=str
+        ).encode("utf-8")
 
 # ====================== 统一返回格式工具函数 ======================
 async def download_image(url: str, save_dir: str = UPLOAD_DIR) -> str:
     """
-    异步下载网络图片到本地临时目录
-    :param url: 图片网络地址
+    异步下载网络图片到本地临时目录（支持空URL）
+    :param url: 图片网络地址（允许空字符串/None）
     :param save_dir: 保存目录
-    :return: 本地文件路径
+    :return: 本地文件路径（空URL返回空字符串）
     """
+    # 处理空URL
+    if not url or url.strip() == "":
+        return ""
+
     try:
         # 生成唯一文件名
         file_ext = url.split(".")[-1].split("?")[0]  # 处理URL带参数的情况
@@ -185,7 +197,8 @@ async def download_image(url: str, save_dir: str = UPLOAD_DIR) -> str:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
                 if response.status != 200:
-                    raise HTTPException(status_code=400, detail=f"图片下载失败：{url}，状态码：{response.status}")
+                    print(f"⚠️ 图片下载失败：{url}，状态码：{response.status}，返回空路径")
+                    return ""
 
                 # 保存图片到本地
                 with open(file_path, "wb") as f:
@@ -197,24 +210,26 @@ async def download_image(url: str, save_dir: str = UPLOAD_DIR) -> str:
                 img.verify()  # 验证图片完整性
         except Exception as e:
             os.remove(file_path)
-            raise HTTPException(status_code=400, detail=f"图片文件无效：{url}，错误：{str(e)}")
+            print(f"⚠️ 图片文件无效：{url}，错误：{str(e)}，返回空路径")
+            return ""
 
         return file_path
 
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"下载图片失败：{url}，错误：{str(e)}")
+        print(f"⚠️ 下载图片失败：{url}，错误：{str(e)}，返回空路径")
+        return ""
 
 
 async def download_images(urls: List[str]) -> List[str]:
     """
-    批量下载图片
-    :param urls: 图片URL列表
-    :return: 本地文件路径列表
+    批量下载图片（支持空URL）
+    :param urls: 图片URL列表（允许包含空字符串/None）
+    :return: 本地文件路径列表（空URL对应空字符串）
     """
     if not urls:
         return []
 
-    # 并发下载所有图片
+    # 并发下载所有图片（空URL会被跳过）
     tasks = [download_image(url) for url in urls]
     local_paths = await asyncio.gather(*tasks)
 
@@ -246,11 +261,11 @@ def generate_and_convert_to_html(generate_func, *args, **kwargs):
         converter = DocxHtmlConverter()
         html_content = converter.docx_to_single_html(docx_path, html_path)
 
-        # 5. 读取HTML内容（确保内容完整）
-        with open(html_path, 'r', encoding='utf-8') as f:
-            final_html = f.read()
+        # # 5. 读取HTML内容（确保内容完整）
+        # with open(html_path, 'r', encoding='utf-8') as f:
+        #     final_html = f.read()
 
-        return final_html
+        return html_content
 
     finally:
         # 6. 强制清理所有临时文件（延迟清理，确保文件锁释放）
@@ -484,10 +499,10 @@ def docx_to_html(file_path: str):
         temp_html_path = os.path.join(UPLOAD_DIR, temp_html_filename)
 
         # 执行DOCX转HTML
-        converter.docx_to_single_html(abs_file_path, temp_html_path)
+        html_content = converter.docx_to_single_html(abs_file_path, temp_html_path)
 
         # 读取并返回HTML内容
-        html_content = ""
+        # html_content = ""
         # print(html_content)
         if os.path.exists(temp_html_path):
             try:
@@ -2291,7 +2306,7 @@ async def generate_default_patent_doc_vehicle_generator(
         min_length=1,
         max_length=50
     )
-):
+) -> JSONResponse:
     try:
         # 下载所有车辆相关图片
         car_data_with_local_paths = []
@@ -2322,6 +2337,9 @@ async def generate_default_patent_doc_vehicle_generator(
             table_title=table_title
         )
 
+        html_content_dict = {
+                "html_content": html_content
+            }
         # 清理下载的图片文件
         try:
             for img_path in img_paths:
@@ -2335,9 +2353,7 @@ async def generate_default_patent_doc_vehicle_generator(
         return unified_response(
             code=200,
             message="生成车辆生成器HTML内容成功",
-            data={
-                "html_content": html_content
-            }
+            data=html_content_dict
         )
 
     except Exception as e:

@@ -228,7 +228,6 @@ class DocxHtmlConverter:
         # 9. 保存最终HTML（强制覆盖）
         with open(html_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
-
         # 10. 清理临时文件（忽略删除失败的情况）
         temp_paths = [spire_temp_dir, css_file_path]
         for temp_path in temp_paths:
