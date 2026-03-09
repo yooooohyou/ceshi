@@ -1833,7 +1833,7 @@ async def update_html_by_node(request: Request,
                 message="HTML内容不能为空",
                 data={}
             )
-        html_content, status_ = html_img_url_to_base64(html_content)
+        # html_content, status_ = html_img_url_to_base64(html_content)
         success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
         temp_docx_path_ = temp_docx_path_1
         eid = os.path.splitext(os.path.basename(temp_docx_path_1))[0]
