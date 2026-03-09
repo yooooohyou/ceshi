@@ -651,13 +651,15 @@ def init_db_tables():
 def download_image_to_base64(image_url, base_url=None, timeout=10):
     """
     下载图片到临时文件 → 转换为Base64 → 立即删除临时文件
-    :param image_url: 图片URL（相对/绝对）
-    :param base_url: 基础URL（处理相对路径）
-    :param timeout: 下载超时时间
-    :return: (base64_str, content_type) 或 (None, None)
     """
+    temp_file = None
     temp_file_path = None
     try:
+        # 清理URL中的多余字符
+        image_url = image_url.strip().split()[0]
+        if image_url.startswith(('"', "'")) and image_url.endswith(('"', "'")):
+            image_url = image_url[1:-1]
+
         # 处理相对路径
         if base_url and not image_url.startswith(('http://', 'https://')):
             image_url = f"{base_url.rstrip('/')}/{image_url.lstrip('/')}"
@@ -667,23 +669,24 @@ def download_image_to_base64(image_url, base_url=None, timeout=10):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
 
-        # 下载图片
+        # 下载图片（启用SSL验证）
         response = requests.get(
             image_url,
             headers=headers,
             timeout=timeout,
             stream=True,
-            verify=False
+            verify=True
         )
         response.raise_for_status()
 
         # 获取图片MIME类型
         content_type = response.headers.get('Content-Type', 'image/jpeg')
 
-        # 创建临时文件
+        # 创建临时文件并关闭句柄（避免Windows占用）
         suffix = f".{content_type.split('/')[-1]}" if '/' in content_type else '.jpg'
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
         temp_file_path = temp_file.name
+        temp_file.close()
 
         # 写入临时文件
         with open(temp_file_path, 'wb') as f:
@@ -703,77 +706,102 @@ def download_image_to_base64(image_url, base_url=None, timeout=10):
         return None, None
 
     finally:
-        # 清理临时文件
+        # 清理临时文件（增加重试机制）
         if temp_file_path and os.path.exists(temp_file_path):
-            try:
-                os.unlink(temp_file_path)
-                print(f"临时文件已清理：{temp_file_path}")
-            except Exception as e:
-                print(f"清理临时文件失败 {temp_file_path}: {str(e)}")
+            retry = 3
+            while retry > 0:
+                try:
+                    os.unlink(temp_file_path)
+                    print(f"临时文件已清理：{temp_file_path}")
+                    break
+                except Exception as e:
+                    retry -= 1
+                    if retry == 0:
+                        print(f"清理临时文件失败 {temp_file_path}: {str(e)}")
+                    else:
+                        import time
+                        time.sleep(0.1)
 
 
 def html_img_url_to_base64(html_text, base_url=None, timeout=10):
     """
-    用正则表达式替换HTML文本中的图片URL为Base64编码
-    入参/出参均为HTML文本字符串，且保证临时文件被清理
-    :param html_text: 原始HTML文本
-    :param base_url: 基础URL（处理相对路径）
-    :param timeout: 下载超时时间
-    :return: (处理后的HTML文本, 统计信息字典)
+    一对一精准替换：每个img标签独立处理，确保所有匹配项都被替换
     """
-    # 创建临时目录（批量管理）
     temp_dir = tempfile.mkdtemp(prefix="img_base64_re_")
     try:
-        # 正则匹配img标签的src属性（兼容单引号、双引号、无引号）
-        # 正则说明：匹配 <img ... src=xxx ...> 中的 xxx
-        img_src_pattern = re.compile(
-            r'<img[^>]+src\s*=\s*(["\']?)(?P<src>[^\1>]+)\1[^>]*>',
-            re.IGNORECASE | re.DOTALL
-        )
+        # 步骤1：匹配所有完整的img标签（保留原始内容）
+        # 正则：匹配完整的<img ...>标签
+        full_img_pattern = re.compile(r'<img[^>]+>', re.IGNORECASE | re.DOTALL)
 
-        # 统计信息
+        # 步骤2：提取所有img标签的列表（有序，保证一对一）
+        img_tags = full_img_pattern.findall(html_text)
+        if not img_tags:
+            print("未找到任何img标签，直接返回原HTML")
+            return html_text, {"success": 0, "fail": 0}
+
+        # 步骤3：为每个img标签生成替换后的版本
+        replacement_map = {}  # 原始标签 → 替换后的标签
         success_count = 0
         fail_count = 0
-        processed_html = html_text  # 初始化处理后的HTML
 
-        # 遍历所有匹配的img标签
-        for match in img_src_pattern.finditer(html_text):
-            img_tag = match.group(0)  # 完整的img标签字符串
-            img_url = match.group('src').strip()  # 提取的src值
+        for original_img_tag in img_tags:
+            # 跳过已处理的相同标签（但保留顺序）
+            if original_img_tag in replacement_map:
+                continue
+
+            # 提取当前标签的src值
+            src_pattern = re.compile(r'src\s*=\s*(?:"([^"]+)"|\'([^\']+)\'|([^\s>]+))', re.IGNORECASE)
+            src_match = src_pattern.search(original_img_tag)
+
+            if not src_match:
+                replacement_map[original_img_tag] = original_img_tag
+                fail_count += 1
+                print(f"跳过无src的img标签：{original_img_tag[:50]}...")
+                continue
+
+            # 获取纯净的src值
+            src_values = src_match.groups()
+            img_url = next((v for v in src_values if v is not None), "").strip()
 
             if not img_url:
-                print("跳过空src的img标签")
+                replacement_map[original_img_tag] = original_img_tag
                 fail_count += 1
+                print(f"跳过空src的img标签：{original_img_tag[:50]}...")
                 continue
 
             # 下载并转换为Base64
             base64_str, content_type = download_image_to_base64(img_url, base_url, timeout)
 
             if base64_str and content_type:
-                # 构建Base64格式的src
-                new_src = f'data:{content_type};base64,{base64_str}'
-                # 替换当前img标签中的src值（保留其他属性）
-                # 这里用正则替换当前标签的src属性
-                new_img_tag = re.sub(
-                    r'src\s*=\s*(["\']?)([^\1>]+)\1',
-                    f'src="{new_src}"',
-                    img_tag,
-                    count=1,  # 只替换第一个src
-                    flags=re.IGNORECASE
+                # 替换当前标签的src属性（只替换当前标签内的src）
+                new_img_tag = src_pattern.sub(
+                    f'src="data:{content_type};base64,{base64_str}"',
+                    original_img_tag,
+                    count=1  # 只替换当前标签内的第一个src
                 )
-                # 替换到整个HTML文本中
-                processed_html = processed_html.replace(img_tag, new_img_tag)
+                replacement_map[original_img_tag] = new_img_tag
                 success_count += 1
-                print(f"成功替换图片：{img_url}")
+                print(f"成功替换图片：{img_url} → 标签已更新")
             else:
+                replacement_map[original_img_tag] = original_img_tag
                 fail_count += 1
-                print(f"替换失败：{img_url}")
+                print(f"替换失败：{img_url} → 保留原标签")
+
+        # 步骤4：按顺序替换HTML中的所有img标签（一对一）
+        processed_html = html_text
+        for original_img_tag in img_tags:
+            # 用replace替换当前标签（保证顺序和数量一致）
+            processed_html = processed_html.replace(
+                original_img_tag,
+                replacement_map[original_img_tag],
+                1  # 每次只替换一个，避免批量替换错位
+            )
 
         # 统计信息
         stats = {
             "success": success_count,
             "fail": fail_count,
-            "total": success_count + fail_count
+            "total": len(img_tags)
         }
         return processed_html, stats
 
@@ -782,9 +810,9 @@ def html_img_url_to_base64(html_text, base_url=None, timeout=10):
         if os.path.exists(temp_dir):
             try:
                 shutil.rmtree(temp_dir)
-                print(f"临时目录已清理：{temp_dir}")
+                print(f"\n临时目录已清理：{temp_dir}")
             except Exception as e:
-                print(f"清理临时目录失败 {temp_dir}: {str(e)}")
+                print(f"\n清理临时目录失败 {temp_dir}: {str(e)}")
 
 def build_eid_path_mapping(files: List[str]) -> Dict[str, str]:
     """
