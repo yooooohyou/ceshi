@@ -1,3 +1,4 @@
+import base64
 import pathlib
 import shutil
 import time
@@ -647,6 +648,143 @@ def init_db_tables():
 # init_db_tables()
 
 # ====================== 工具函数：处理拆分节点 ======================
+def download_image_to_base64(image_url, base_url=None, timeout=10):
+    """
+    下载图片到临时文件 → 转换为Base64 → 立即删除临时文件
+    :param image_url: 图片URL（相对/绝对）
+    :param base_url: 基础URL（处理相对路径）
+    :param timeout: 下载超时时间
+    :return: (base64_str, content_type) 或 (None, None)
+    """
+    temp_file_path = None
+    try:
+        # 处理相对路径
+        if base_url and not image_url.startswith(('http://', 'https://')):
+            image_url = f"{base_url.rstrip('/')}/{image_url.lstrip('/')}"
+
+        # 模拟浏览器请求头
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+
+        # 下载图片
+        response = requests.get(
+            image_url,
+            headers=headers,
+            timeout=timeout,
+            stream=True,
+            verify=False
+        )
+        response.raise_for_status()
+
+        # 获取图片MIME类型
+        content_type = response.headers.get('Content-Type', 'image/jpeg')
+
+        # 创建临时文件
+        suffix = f".{content_type.split('/')[-1]}" if '/' in content_type else '.jpg'
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        temp_file_path = temp_file.name
+
+        # 写入临时文件
+        with open(temp_file_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+
+        # 转换为Base64
+        with open(temp_file_path, 'rb') as f:
+            image_data = f.read()
+            base64_encoded = base64.b64encode(image_data).decode('utf-8')
+
+        return base64_encoded, content_type
+
+    except Exception as e:
+        print(f"下载/转换图片失败 {image_url}: {str(e)}")
+        return None, None
+
+    finally:
+        # 清理临时文件
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.unlink(temp_file_path)
+                print(f"临时文件已清理：{temp_file_path}")
+            except Exception as e:
+                print(f"清理临时文件失败 {temp_file_path}: {str(e)}")
+
+
+def html_img_url_to_base64(html_text, base_url=None, timeout=10):
+    """
+    用正则表达式替换HTML文本中的图片URL为Base64编码
+    入参/出参均为HTML文本字符串，且保证临时文件被清理
+    :param html_text: 原始HTML文本
+    :param base_url: 基础URL（处理相对路径）
+    :param timeout: 下载超时时间
+    :return: (处理后的HTML文本, 统计信息字典)
+    """
+    # 创建临时目录（批量管理）
+    temp_dir = tempfile.mkdtemp(prefix="img_base64_re_")
+    try:
+        # 正则匹配img标签的src属性（兼容单引号、双引号、无引号）
+        # 正则说明：匹配 <img ... src=xxx ...> 中的 xxx
+        img_src_pattern = re.compile(
+            r'<img[^>]+src\s*=\s*(["\']?)(?P<src>[^\1>]+)\1[^>]*>',
+            re.IGNORECASE | re.DOTALL
+        )
+
+        # 统计信息
+        success_count = 0
+        fail_count = 0
+        processed_html = html_text  # 初始化处理后的HTML
+
+        # 遍历所有匹配的img标签
+        for match in img_src_pattern.finditer(html_text):
+            img_tag = match.group(0)  # 完整的img标签字符串
+            img_url = match.group('src').strip()  # 提取的src值
+
+            if not img_url:
+                print("跳过空src的img标签")
+                fail_count += 1
+                continue
+
+            # 下载并转换为Base64
+            base64_str, content_type = download_image_to_base64(img_url, base_url, timeout)
+
+            if base64_str and content_type:
+                # 构建Base64格式的src
+                new_src = f'data:{content_type};base64,{base64_str}'
+                # 替换当前img标签中的src值（保留其他属性）
+                # 这里用正则替换当前标签的src属性
+                new_img_tag = re.sub(
+                    r'src\s*=\s*(["\']?)([^\1>]+)\1',
+                    f'src="{new_src}"',
+                    img_tag,
+                    count=1,  # 只替换第一个src
+                    flags=re.IGNORECASE
+                )
+                # 替换到整个HTML文本中
+                processed_html = processed_html.replace(img_tag, new_img_tag)
+                success_count += 1
+                print(f"成功替换图片：{img_url}")
+            else:
+                fail_count += 1
+                print(f"替换失败：{img_url}")
+
+        # 统计信息
+        stats = {
+            "success": success_count,
+            "fail": fail_count,
+            "total": success_count + fail_count
+        }
+        return processed_html, stats
+
+    finally:
+        # 清理临时目录
+        if os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+                print(f"临时目录已清理：{temp_dir}")
+            except Exception as e:
+                print(f"清理临时目录失败 {temp_dir}: {str(e)}")
 
 def build_eid_path_mapping(files: List[str]) -> Dict[str, str]:
     """
@@ -1667,6 +1805,7 @@ async def update_html_by_node(request: Request,
                 message="HTML内容不能为空",
                 data={}
             )
+        html_content, status_ = html_img_url_to_base64(html_content)
         success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
         temp_docx_path_ = temp_docx_path_1
         eid = os.path.splitext(os.path.basename(temp_docx_path_1))[0]
@@ -1771,7 +1910,7 @@ async def merge_docx_office_server(request: Request,
             message="HTML内容不能为空",
             data={}
         )
-
+    html_content, status_ = html_img_url_to_base64(html_content)
     success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
     temp_docx_path_ = local_upload_path_to_web_path(temp_docx_path_1, request)
     eid = os.path.splitext(os.path.basename(temp_docx_path_1))[0]
