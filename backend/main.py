@@ -2383,7 +2383,7 @@ async def generate_default_patent_doc():
     """
 )
 async def generate_default_patent_doc_patent_generator(
-        patent_data: List[List[str]] = Body(
+        patent_data: List[List[Any]] = Body(
             ...,
             description="专利数据二维列表（必填），每行对应一条专利信息，顺序：[序号,专利类型,专利名称,专利号,专利权人,授权公告日]",
             example=[
@@ -2629,6 +2629,63 @@ async def test_use_config():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/format-storage/query-by-type")
+async def query_format_storage_by_type(request: Request, formant_type: str = Body(..., description="要更新的节点ID"),table_title: str = Body(
+        "公司车辆信息",
+        description="表格标题",
+        example="2024年运营车辆信息",
+        min_length=1,
+        max_length=50
+    )) -> JSONResponse:
+    """
+    通过 type 查询配置格式存储数据
+    - request.body.type: 类型值（1=默认格式），必填且为整数
+    """
+    # 1. 解析并验证请求体
+    try:
+        # 获取请求体并解析为 JSON
+        request_body = await request.json()
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="请求体格式错误，必须是有效的 JSON")
+
+    # 检查 type 参数是否存在
+    if "formant_type" not in request_body:
+        raise HTTPException(status_code=400, detail="缺少必填参数：formant_type")
+
+    # 验证 type 参数类型（必须是整数）
+    type_value = formant_type
+    if not isinstance(type_value, int):
+        # 尝试转换为整数（兼容前端传字符串数字的情况）
+        try:
+            type_value = int(type_value)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="参数 type 必须是整数")
+
+    # 2. 执行原生 SQL 查询
+    query_sql = """
+        SELECT id, format_name, base64_img 
+        FROM cfg_format_storage
+        WHERE type = %s  and status = 1;
+    """
+
+    try:
+        # 获取数据库连接并执行查询
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # 执行参数化查询，防止 SQL 注入
+                cur.execute(query_sql, (type_value,))
+                # 获取查询结果并转换为普通字典列表
+                results = [dict(row) for row in cur.fetchall()]
+
+        # 3. 返回查询结果
+        return unified_response(200,"查询成功", results)
+
+    except psycopg2.Error as e:
+        raise HTTPException(status_code=500, detail=f"数据库查询失败：{str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"查询失败：{str(e)}")
 
 
 # ====================== 启动服务 ======================
