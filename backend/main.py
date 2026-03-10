@@ -2631,13 +2631,11 @@ async def test_use_config():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/format-storage/query-by-type")
-async def query_format_storage_by_type(request: Request, formant_type: str = Body(..., description="要更新的节点ID"),table_title: str = Body(
-        "公司车辆信息",
-        description="表格标题",
-        example="2024年运营车辆信息",
-        min_length=1,
-        max_length=50
+@app.post("/api/format-storage/generator_query_by_type", summary="查询生成器格式")
+async def query_format_storage_by_type(request: Request, formant_type: str = Body(..., description="type类型，format_storage_id"),table_title: str = Body(
+        "",
+        description="站位数据",
+        example=""
     )) -> JSONResponse:
     """
     通过 type 查询配置格式存储数据
