@@ -1148,10 +1148,6 @@ def recover_split_tree_nodes(record_id: int) -> List[Dict[str, Any]]:
     if not node_records:
         return []  # 无数据返回空列表
 
-    # 3. 提取file_name（从文件路径中提取，示例中为"测试项目2-招标"）
-    # 逻辑：取第一条记录的文件路径，提取文件名（无后缀），无则默认空
-    # print(11111111111111111111)
-    # print(node_records)
     file_name = ""
     first_record = node_records[0]
     # 动态选择文件路径（同之前的逻辑）
@@ -1186,6 +1182,7 @@ def build_simplified_tree(rows):
             "eid": item['eid'],
             "level": item['level'],
             "idx": item['idx'],
+            "text": item['title_text'],
             "children": []
         }
 
