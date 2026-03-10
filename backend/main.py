@@ -2631,8 +2631,8 @@ async def test_use_config():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/format-storage/generator_query_by_type", summary="查询生成器格式")
-async def query_format_storage_by_type(request: Request, formant_type: str = Body(..., description="type类型，format_storage_id"),table_title: str = Body(
+@app.post("/doc_editor/generator_query_by_type", summary="查询生成器格式")
+async def query_format_storage_by_type(request: Request, formant_type: Any = Body(..., description="type类型，format_storage_id"),table_title: str = Body(
         "",
         description="站位数据",
         example=""
