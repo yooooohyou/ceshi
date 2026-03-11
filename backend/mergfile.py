@@ -104,7 +104,9 @@ def call_docx_split(file_stream: bytes, file_name: str, file_id: str) -> SplitRe
             timeout=TIMEOUT_CONFIG["split"]
         )
         response.raise_for_status()  # 抛出HTTP状态码异常
-        return SplitResponse(**response.json())
+        result = response.json()
+        print(result)
+        return SplitResponse(**result)
     except requests.exceptions.HTTPError as e:
         raise HTTPException(
             status_code=e.response.status_code,

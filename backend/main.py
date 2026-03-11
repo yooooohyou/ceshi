@@ -16,6 +16,8 @@ import string
 import psycopg2
 import configparser
 from pathlib import Path
+
+from kombu.transport.native_delayed_delivery import MAX_LEVEL
 from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 from typing import Optional, Tuple, Union, List, Dict, Any, Literal
@@ -32,6 +34,7 @@ from urllib.parse import urlparse
 import file_resp
 import platform
 import re
+from bs4 import BeautifulSoup
 from PIL import Image
 from docxhtmlcoverter import DocxHtmlConverter
 import logging
@@ -636,6 +639,93 @@ def convert_html_to_docx(html_content: str) -> Tuple[bool, Union[io.BytesIO, str
         return False, "权限错误：无法创建/读取临时文件", ""
     except Exception as e:
         return False, f"HTML转DOCX失败：{str(e)}", ""
+
+
+def get_html_heading_levels(html_content):
+    """
+    判断HTML中包含的标题层级
+
+    参数:
+        html_content: str - 待解析的HTML文本
+
+    返回:
+        dict - 包含两个键：
+            - 'existing_levels': list - 实际存在的标题层级（如[1,2,4]）
+            - 'max_level': int - 最大的标题层级（如4）
+    """
+    # 处理空输入
+    if not html_content or not isinstance(html_content, str):
+        return {'existing_levels': [], 'max_level': 0}
+
+    # 解析HTML
+    soup = BeautifulSoup(html_content, 'html.parser')
+
+    # 查找所有h1-h6标签
+    headings = soup.find_all(re.compile(r'^h[1-6]$', re.IGNORECASE))
+
+    # 提取标题层级
+    existing_levels = []
+    for heading in headings:
+        # 提取h标签后的数字（如h3提取3）
+        level = int(heading.name.lower().replace('h', ''))
+        if level not in existing_levels:
+            existing_levels.append(level)
+
+    # 排序并计算最大层级
+    existing_levels.sort()
+    max_level = max(existing_levels) if existing_levels else 0
+
+    return existing_levels, max_level
+
+
+def limit_html_heading_levels(html_content, max_allowed_level):
+    """
+    将HTML中超过指定层级的标题替换为指定的最大层级；层级为0时移除标题标签，仅保留内容
+
+    参数:
+        html_content: str - 待处理的HTML文本
+        max_allowed_level: int - 允许的最大标题层级（0-6）：
+                               0 = 移除标题标签，仅保留内容（不丢失任何文本）
+                               1-6 = 替换为对应层级标题
+
+    返回:
+        str - 处理后的HTML文本
+    """
+    # 校验输入参数
+    if not isinstance(max_allowed_level, int) or max_allowed_level < 0 or max_allowed_level > 6:
+        raise ValueError("max_allowed_level必须是0-6之间的整数")
+    if not html_content or not isinstance(html_content, str):
+        return html_content
+
+    # 解析HTML（使用html5lib解析器，更好地保留结构）
+    soup = BeautifulSoup(html_content, 'html5lib')
+
+    # 查找所有h1-h6标签
+    headings = soup.find_all(re.compile(r'^h[1-6]$', re.IGNORECASE))
+
+    # 替换标题标签
+    for heading in headings:
+        current_level = int(heading.name.lower().replace('h', ''))
+
+        # 层级为0：移除标题标签，仅保留其内部所有内容（不丢失任何文本/子标签）
+        if max_allowed_level == 0:
+            # 提取标题内的所有子节点（文本+标签）
+            contents = heading.contents
+            # 将标题标签替换为其内部内容（直接插入，不包裹任何标签）
+            heading.replace_with(*contents)
+
+        # 层级1-6：替换超过层级的标题
+        elif current_level > max_allowed_level:
+            # 创建新的标题标签
+            new_heading = soup.new_tag(f'h{max_allowed_level}')
+            # 保留原标签的所有内容和属性
+            new_heading.contents = heading.contents
+            new_heading.attrs = heading.attrs
+            # 替换原标签
+            heading.replace_with(new_heading)
+
+    # 返回处理后的HTML文本（格式化输出，更易读）
+    return soup.prettify()
 
 
 # ====================== 数据库工具函数 ======================
@@ -1908,9 +1998,21 @@ async def update_html_by_node(request: Request,
                 message="HTML内容不能为空",
                 data={}
             )
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT id FROM \"yxdl_docx_title_trees\" WHERE id = %s", (node_id,))
+                if not cursor.fetchone():
+                    return unified_response(
+                        code=404,
+                        message=f"未找到ID为{node_id}的标题树节点",
+                        data={}
+                    )
         logger.error(html_content)
+        # html内部img转换base64
         html_content, status_ = html_img_url_to_base64(html_content)
+        # html转换成docx
         success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
+        # 拼接sql
         temp_docx_path_ = temp_docx_path_1
         eid = os.path.splitext(os.path.basename(temp_docx_path_1))[0]
         update_fields = ["html_content = %s", "update_time = %s", "update_file_path = %s", "eid = %s"]
@@ -1930,16 +2032,7 @@ async def update_html_by_node(request: Request,
 
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT id FROM \"yxdl_docx_title_trees\" WHERE id = %s", (node_id,))
-                if not cursor.fetchone():
-                    return unified_response(
-                        code=404,
-                        message=f"未找到ID为{node_id}的标题树节点",
-                        data={}
-                    )
-
                 cursor.execute(update_sql, tuple(update_values))
-                affected_rows = cursor.rowcount
                 conn.commit()
 
         return unified_response(
@@ -1948,10 +2041,158 @@ async def update_html_by_node(request: Request,
             data={
                 "node_id": node_id,
                 "updated_title": "标题更新为" + title_text.strip() if title_text else "标题未更新",
-                "affected_rows": affected_rows,
                 "update_time": current_time.strftime("%Y-%m-%d %H:%M:%S")
             }
         )
+
+    except Exception as e:
+        return unified_response(
+            code=500,
+            message=f"更新节点HTML失败：{str(e)}",
+            data={}
+        )
+
+@app.post("/doc_editor/update_html_by_node_new", summary="更新节点HTML文本")
+async def update_html_by_node_new(request: Request,
+        node_id: int = Body(..., description="要更新的节点ID"),
+        html_content: str = Body(..., description="更新后的HTML文本"),
+        title_text: Optional[str] = Body(None, description="可选：更新节点标题文本")
+) -> JSONResponse:
+    """更新指定节点ID的HTML文本"""
+    MAX_LEVEL_NODE = 9
+    try:
+        if node_id <= 0:
+            return unified_response(
+                code=400,
+                message="节点ID必须为正整数",
+                data={}
+            )
+        if not html_content.strip():
+            return unified_response(
+                code=400,
+                message="HTML内容不能为空",
+                data={}
+            )
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT id, record_id, level FROM \"yxdl_docx_title_trees\" WHERE id = %s", (node_id,))
+                record_id_cursor = cursor.fetchone()
+                record_id = record_id_cursor[1]
+                now_level = record_id_cursor[2]
+                if not record_id_cursor:
+                    return unified_response(
+                        code=404,
+                        message=f"未找到ID为{node_id}的标题树节点",
+                        data={}
+                    )
+        logger.error(html_content)
+        # html内部img转换base64
+        html_content, status_ = html_img_url_to_base64(html_content)
+        existing_levels, max_level = get_html_heading_levels(html_content)
+        max_now_level = MAX_LEVEL_NODE - int(now_level)
+        # html转换成docx
+
+        if max_level == 0:
+            success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
+            # 拼接sql
+            temp_docx_path_ = temp_docx_path_1
+            original_filename = os.path.abspath(temp_docx_path_)
+            # 单层没标题的数据插入html
+            eid = os.path.splitext(os.path.basename(temp_docx_path_1))[0]
+            update_fields = ["html_content = %s", "update_time = %s", "update_file_path = %s", "eid = %s"]
+            update_values = [html_content, datetime.datetime.now(), temp_docx_path_, eid]
+            current_time = update_values[1]
+
+            if title_text is not None and title_text.strip():
+                update_fields.append("title_text = %s")
+                update_values.append(title_text.strip())
+
+            update_sql = f"""
+            UPDATE "yxdl_docx_title_trees" 
+            SET {', '.join(update_fields)}
+            WHERE id = %s
+            """
+            update_values.append(node_id)
+
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(update_sql, tuple(update_values))
+                    conn.commit()
+
+            return unified_response(
+                code=200,
+                message="节点HTML内容更新成功",
+                data={
+                    "node_id": node_id,
+                    "updated_title": "标题更新为" + title_text.strip() if title_text else "标题未更新",
+                    "update_time": current_time.strftime("%Y-%m-%d %H:%M:%S")
+                }
+            )
+        else:
+            success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
+            # 拼接sql
+            temp_docx_path_ = temp_docx_path_1
+            original_filename = os.path.abspath(temp_docx_path_)
+            # 3. 生成文件记录（默认process_mode改为split）
+            split_file_id = generate_unique_file_id()
+            current_time = datetime.datetime.now()
+            insert_file_sql = """
+                    INSERT INTO "yxdl_docx_upload_records" 
+                    (
+                        original_filename, 
+                        new_filename, 
+                        save_path, 
+                        upload_time, 
+                        update_time, 
+                        split_file_id, 
+                        process_mode
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id;
+                    """
+
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(insert_file_sql, (
+                        original_filename,  # original_filename
+                        original_filename,  # new_filename
+                        temp_docx_path_,  # save_path
+                        current_time,  # upload_time
+                        current_time,  # update_time
+                        split_file_id,  # split_file_id（初始为空）
+                        "split"  # process_mode（默认split）
+                    ))
+                    conn.commit()
+            split_result = call_docx_split(
+                file_stream=result,
+                file_name=title_text,
+                file_id=str(node_id)
+            )
+            tree_nodes = [TreeItem(**item) for item in split_result.data.get("tree", [])]
+
+            # 2. 构建 eid-文件路径 映射
+            eid_path_map = build_eid_path_mapping(split_result.data.get("files", []))
+
+            # 3. 为每个树节点分配文件路径
+            for node in tree_nodes:
+                assign_file_path_to_tree(node, eid_path_map)
+            print(tree_nodes)
+            node_ids = process_split_tree_nodes(
+                nodes=tree_nodes,
+                record_id=record_id,
+                current_time=current_time,
+                file_base_path=temp_docx_path_
+            )
+            return unified_response(
+                code=200,
+                message="更新成功",
+                data={
+                    "record_id": record_id,
+                    "node_ids": node_ids,
+                    "node_type": "branch",
+                    "split_file_id": split_file_id
+                }
+            )
 
     except Exception as e:
         return unified_response(

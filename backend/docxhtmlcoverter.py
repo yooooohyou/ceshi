@@ -311,16 +311,16 @@ if __name__ == "__main__":
     # 1. 初始化转换器
     converter = DocxHtmlConverter()
 
-    # 2. 示例1：DOCX转单文件HTML
-    input_docx = r"input.docx"  # 替换为你的DOCX路径
-    output_html = r"output.html"  # 输出HTML路径
-    html_content_a = converter.docx_to_single_html(input_docx, output_html)
-    # 写入最终HTML文件
-    with open(output_html, 'w', encoding='utf-8') as f:
-        f.write(html_content_a)
-#
-#     # 3. 示例2：DOCX转单文件HTML
-#     sample_html = """自定义html"""
-#
-#     # 调用函数转换
-#     converter.html_text_to_docx(html_content_a, "html_text_result.docx")
+    # # 2. 示例1：DOCX转单文件HTML
+    # input_docx = r"input.docx"  # 替换为你的DOCX路径
+    # output_html = r"output.html"  # 输出HTML路径
+    # html_content_a = converter.docx_to_single_html(input_docx, output_html)
+    # # 写入最终HTML文件
+    # with open(output_html, 'w', encoding='utf-8') as f:
+    #     f.write(html_content_a)
+
+    # 3. 示例2：DOCX转单文件HTML
+    sample_html = """自定义html"""
+
+    # 调用函数转换
+    converter.html_text_to_docx(sample_html, "html_text_result.docx")
