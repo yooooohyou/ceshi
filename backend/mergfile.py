@@ -81,12 +81,13 @@ class DeleteResponse(BaseModel):
 
 
 # -------------------------- 核心接口调用函数 --------------------------
-def call_docx_split(file_stream: bytes, file_name: str, file_id: str) -> SplitResponse:
+def call_docx_split(file_stream: bytes, file_name: str, file_id: str, had_title:int) -> SplitResponse:
     """
     调用文件拆分接口（同步）
     :param file_stream: 文件字节流
     :param file_name: 原始文件名
     :param file_id: 唯一标识id
+    :param had_title: 是否含有标题
     :return: 拆分接口返回结果
     """
     url = f"{TARGET_BASE_URL}/api/tool_api/docx/split"
@@ -95,7 +96,7 @@ def call_docx_split(file_stream: bytes, file_name: str, file_id: str) -> SplitRe
         files = {
             "file": (file_name, file_stream, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         }
-        data = {"id": file_id, "user_key": "DC4096F87722AD140F01AF8C3315B9A6"}
+        data = {"id": file_id, "user_key": "DC4096F87722AD140F01AF8C3315B9A6", "had_title":had_title}
 
         response = requests.post(
             url,

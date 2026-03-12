@@ -1552,7 +1552,8 @@ async def upload_and_generate_tree(
             split_result = call_docx_split(
                 file_stream=file_content,
                 file_name=original_filename,
-                file_id=split_file_id
+                file_id=split_file_id,
+                had_title=0
             )
 
             tree_nodes = [TreeItem(**item) for item in split_result.data.get("tree", [])]
@@ -1771,7 +1772,8 @@ async def route_generate_tree(
             split_result = call_docx_split(
                 file_stream=file_content,
                 file_name=original_filename,
-                file_id=split_file_id
+                file_id=split_file_id,
+                had_title=0
             )
 
             tree_nodes = [TreeItem(**item) for item in split_result.data.get("tree", [])]
@@ -2051,6 +2053,93 @@ async def update_html_by_node(request: Request,
             message=f"更新节点HTML失败：{str(e)}",
             data={}
         )
+def process_split_tree_nodes_with_select(
+        tree_nodes_org: List[TreeItem],  # 入参改为tree_nodes_org
+        record_id: int,
+        current_time: datetime.datetime,
+        file_base_path: str
+) -> List[Dict[str, Any]]:
+    """
+    递归处理从数据库查询的树节点（tree_nodes_org），返回带层级结构的节点信息
+    （已移除数据库插入操作）
+
+    Args:
+        tree_nodes_org: 从数据库查询的TreeItem列表
+        record_id: 记录ID
+        current_time: 当前时间
+        file_base_path: 文件基础路径
+
+    Returns:
+        嵌套结构的节点列表，格式：
+        [
+            {
+                "name": "节点标题",
+                "node_id": 虚拟ID（基于数据库id/特征生成）,
+                "level": 节点层级,
+                "file_name": 文件路径,
+                "children": [...]
+            }
+        ]
+    """
+    # 参数校验
+    if not isinstance(tree_nodes_org, list) or not tree_nodes_org:
+        return []
+
+    if not isinstance(record_id, int) or record_id <= 0:
+        raise ValueError("record_id必须是正整数")
+
+    result_nodes = []
+
+    for node in tree_nodes_org:
+        if not isinstance(node, TreeItem):
+            continue
+        try:
+            # 1. 生成节点标题（优先使用text，无则基于数据库字段生成）
+            node_title = node.text.strip() if (node.text and isinstance(node.text, str)) else f"节点_{node.eid or '未知'}_{node.level}_{node.idx}"
+
+            # 2. 提取文件路径相关字段（适配tree_nodes_org的字段）
+            node_file_path = node.file_path or ""
+            file_name = node_file_path
+            level = node.level
+
+            # 3. 生成虚拟node_id（优先使用数据库返回的id，无则用哈希）
+            if node.id is not None:
+                node_id = node.id  # 使用数据库查询到的原始ID
+            else:
+                # 备用：基于节点特征生成哈希ID
+                unique_identifier = f"{record_id}_{node.level}_{node.idx}_{node.eid or 'no_eid'}"
+                node_id = hash(unique_identifier) % (10 ** 8)
+
+            # 4. 构建当前节点的返回字典
+            current_node = {
+                "name": node_title,
+                "node_id": node_id,  # 优先使用数据库原始ID
+                "level": level,
+                "file_name": file_name,
+                "update_file_path": node.update_file_path,  # 新增数据库返回的更新文件路径
+                "is_conversion_completion": node.is_conversion_completion,  # 新增转换完成状态
+                "children": []
+            }
+
+            # 5. 递归处理子节点并赋值给children
+            if node.children:
+                child_nodes = process_split_tree_nodes(
+                    node.children,
+                    record_id,
+                    current_time,
+                    file_base_path
+                )
+                current_node["children"] = child_nodes
+
+            # 6. 将当前节点添加到结果列表
+            result_nodes.append(current_node)
+
+        except ValueError as ve:
+            continue
+        except Exception as e:
+            continue
+
+    return result_nodes
 
 @app.post("/doc_editor/update_html_by_node_new", summary="更新节点HTML文本")
 async def update_html_by_node_new(request: Request,
@@ -2089,9 +2178,10 @@ async def update_html_by_node_new(request: Request,
         # html内部img转换base64
         html_content, status_ = html_img_url_to_base64(html_content)
         existing_levels, max_level = get_html_heading_levels(html_content)
-        print(existing_levels, max_level)
+
         max_now_level = MAX_LEVEL_NODE - int(now_level)
         # html转换成docx
+
 
         if max_level == 0:
             success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
@@ -2119,19 +2209,63 @@ async def update_html_by_node_new(request: Request,
                 with conn.cursor() as cursor:
                     cursor.execute(update_sql, tuple(update_values))
                     conn.commit()
+            select_sql = """
+                SELECT 
+                    id, title_text, level, eid, idx, origin_file_path, update_file_path,
+                    is_conversion_completion
+                FROM "yxdl_docx_title_trees" 
+                WHERE record_id = %s
+                ORDER BY level ASC, idx ASC;
+                """
+
+            node_records = []
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                        cursor.execute(select_sql, (record_id,))
+                        node_records = cursor.fetchall()  # 获取字典格式的记录
+            except Exception as e:
+                raise RuntimeError(f"查询数据库失败：{str(e)}") from e
+            tree_nodes_org = []
+            for item in node_records:
+                # 字段映射：数据库字段 → TreeItem字段
+                tree_item_data = {
+                    "id": item.get("id"),
+                    "text": item.get("title_text"),  # title_text 映射到 text
+                    "level": item.get("level"),
+                    "eid": item.get("eid"),
+                    "idx": item.get("idx"),
+                    "file_path": item.get("origin_file_path"),  # origin_file_path 映射到 file_path
+                    "update_file_path": item.get("update_file_path", ""),
+                    "is_conversion_completion": item.get("is_conversion_completion", 0),
+                    # 以下字段数据库未返回，使用默认值
+                    "children": [],
+                    "file_name": None,
+                    "file_info": None,
+                    "node_type": ""
+                }
+
+                # 创建TreeItem实例并添加到列表
+                tree_node = TreeItem(**tree_item_data)
+                tree_nodes_org.append(tree_node)
+            # tree_nodes.extend(tree_nodes_org)
+            node_ids = process_split_tree_nodes_with_select(tree_nodes_org=tree_nodes_org,
+                record_id=record_id,
+                current_time=current_time,
+                file_base_path=temp_docx_path_)
 
             return unified_response(
                 code=200,
                 message="节点HTML内容更新成功",
                 data={
                     "node_id": node_id,
+                    "node_ids": node_ids,
                     "updated_title": "标题更新为" + title_text.strip() if title_text else "标题未更新",
                     "update_time": current_time.strftime("%Y-%m-%d %H:%M:%S")
                 }
             )
         else:
             success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
-            print(temp_docx_path_1)
             # 拼接sql
             temp_docx_path_ = temp_docx_path_1
             original_filename = os.path.abspath(temp_docx_path_)
@@ -2170,16 +2304,17 @@ async def update_html_by_node_new(request: Request,
             split_result = call_docx_split(
                 file_stream=result,
                 file_name=original_filename,
-                file_id=str(node_id)
+                file_id=str(node_id),
+                had_title=0
             )
-            print(1111111111111111111)
-            print(split_result)
+
             if split_result.status == 1:
                 return unified_response(
                     code=500,
                     message=split_result.msg,
                     data={}
                 )
+
 
             tree_nodes = [TreeItem(**item) for item in split_result.data.get("tree", [])]
 
@@ -2189,13 +2324,57 @@ async def update_html_by_node_new(request: Request,
             # 3. 为每个树节点分配文件路径
             for node in tree_nodes:
                 assign_file_path_to_tree(node, eid_path_map)
-            print(tree_nodes)
+
             node_ids = process_split_tree_nodes(
                 nodes=tree_nodes,
                 record_id=record_id,
                 current_time=current_time,
                 file_base_path=temp_docx_path_
             )
+            select_sql = """
+                SELECT 
+                    id, title_text, level, eid, idx, origin_file_path, update_file_path,
+                    is_conversion_completion
+                FROM "yxdl_docx_title_trees" 
+                WHERE record_id = %s
+                ORDER BY level ASC, idx ASC;
+                """
+
+            node_records = []
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                        cursor.execute(select_sql, (record_id,))
+                        node_records = cursor.fetchall()  # 获取字典格式的记录
+            except Exception as e:
+                raise RuntimeError(f"查询数据库失败：{str(e)}") from e
+            tree_nodes_org = []
+            for item in node_records:
+                # 字段映射：数据库字段 → TreeItem字段
+                tree_item_data = {
+                    "id": item.get("id"),
+                    "text": item.get("title_text"),  # title_text 映射到 text
+                    "level": item.get("level"),
+                    "eid": item.get("eid"),
+                    "idx": item.get("idx"),
+                    "file_path": item.get("origin_file_path"),  # origin_file_path 映射到 file_path
+                    "update_file_path": item.get("update_file_path", ""),
+                    "is_conversion_completion": item.get("is_conversion_completion", 0),
+                    # 以下字段数据库未返回，使用默认值
+                    "children": [],
+                    "file_name": None,
+                    "file_info": None,
+                    "node_type": ""
+                }
+
+                # 创建TreeItem实例并添加到列表
+                tree_node = TreeItem(**tree_item_data)
+                tree_nodes_org.append(tree_node)
+            # tree_nodes.extend(tree_nodes_org)
+            node_ids = process_split_tree_nodes_with_select(tree_nodes_org=tree_nodes_org,
+                record_id=record_id,
+                current_time=current_time,
+                file_base_path=temp_docx_path_)
             return unified_response(
                 code=200,
                 message="更新成功",
