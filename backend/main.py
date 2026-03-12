@@ -2141,6 +2141,114 @@ def process_split_tree_nodes_with_select(
 
     return result_nodes
 
+
+def process_single_tree_node(
+        node: TreeItem,
+        record_id: int,
+        id_: int,
+        current_time: datetime.datetime,
+) -> Dict[str, Any]:
+    """
+    处理单个树节点，转换HTML并更新数据库字段，返回节点信息
+
+    Args:
+        node: 单个树节点
+        record_id: 记录ID
+        current_time: 当前时间
+        file_base_path: 文件基础路径
+
+    Returns:
+        单个节点信息字典，格式：
+        {
+            "name": "节点标题",
+            "node_id": 数据库ID,
+            "level": 节点层级,
+            "file_name": 文件名,
+            "update_success": 是否更新成功
+        }
+    """
+    # 默认返回结果（初始化）
+    print(1111111111111111111111)
+    print(node)
+    result_node = {
+        "name": "",
+        "node_id": None,
+        "level": node.level,
+        "file_name": node.file_path,
+        "update_success": False
+    }
+
+    # ========== 1. 严格参数校验 ==========
+    # 校验节点类型
+    if not isinstance(node, TreeItem):
+        # logger.warning(f"无效的节点类型: {type(node)}")
+        result_node["name"] = "无效节点类型"
+        return result_node
+
+    # 校验record_id
+    if not isinstance(record_id, int) or record_id <= 0:
+        # logger.error(f"无效的record_id: {record_id}")
+        raise ValueError("record_id必须是正整数")
+
+    # ========== 2. 处理节点核心逻辑 ==========
+    try:
+        # 生成节点标题
+        node_title = node.text.strip() if (node.text and isinstance(node.text, str)) else \
+            f"节点_{node.eid or '未知'}_{node.level}_{node.idx}"
+
+        # 准备更新数据（可根据实际需求调整更新字段）
+        # 注：这里默认使用eid作为更新条件，你可根据实际业务替换为node_id/idx等
+        update_tree_sql = """
+        UPDATE "yxdl_docx_title_trees" 
+        SET 
+            update_time = %s,
+            level = %s,
+            origin_file_path = %s,
+            is_conversion_completion = %s,
+            eid = %s
+        WHERE 
+            record_id = %s AND id = %s
+        RETURNING id;
+        """
+
+        # 执行数据库更新
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(update_tree_sql, (
+                    current_time,  # 更新时间
+                    node.level,  # 节点层级
+                    node.file_path,  # 原始文件路径
+                    0,  # 标记转换完成（可根据需求调整）
+                    node.eid,
+                    record_id,  # 筛选条件：记录ID
+                    id_  # 筛选条件：节点EID（唯一标识）
+                ))
+                conn.commit()
+
+                # 获取更新后的节点ID
+                update_result = cursor.fetchone()
+                if update_result:
+                    node_id = update_result[0]
+                    result_node["node_id"] = node_id
+                    result_node["update_success"] = True
+                    # logger.info(f"成功更新节点：ID={node_id}, EID={node.eid}, 标题={node_title}")
+                else:
+                    # logger.warning(f"未找到匹配节点，更新失败：record_id={record_id}, eid={node.eid}")
+                    pass
+
+        # 填充返回结果的基础信息
+        result_node["name"] = node_title
+
+    except ValueError as ve:
+        # logger.error(f"节点参数错误（eid={node.eid}）：{str(ve)}", exc_info=True)
+        pass
+    except Exception as e:
+        # logger.error(f"处理节点失败（eid={node.eid}）：{str(e)}", exc_info=True)
+        pass
+
+    return result_node
+
+
 @app.post("/doc_editor/update_html_by_node_new", summary="更新节点HTML文本")
 async def update_html_by_node_new(request: Request,
         node_id: int = Body(..., description="要更新的节点ID"),
@@ -2317,6 +2425,15 @@ async def update_html_by_node_new(request: Request,
 
 
             tree_nodes = [TreeItem(**item) for item in split_result.data.get("tree", [])]
+            eid_path_map = build_eid_path_mapping(split_result.data.get("files", []))
+            for node in tree_nodes:
+                assign_file_path_to_tree(node, eid_path_map)
+            first_node = tree_nodes.pop(0)
+
+
+            # 3. 为每个树节点分配文件路径
+
+            process_single_tree_node(first_node, record_id, node_id, current_time)
 
             # 2. 构建 eid-文件路径 映射
             eid_path_map = build_eid_path_mapping(split_result.data.get("files", []))
