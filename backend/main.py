@@ -17,7 +17,6 @@ import psycopg2
 import configparser
 from pathlib import Path
 
-from kombu.transport.native_delayed_delivery import MAX_LEVEL
 from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 from typing import Optional, Tuple, Union, List, Dict, Any, Literal
@@ -626,6 +625,7 @@ def convert_html_to_docx(html_content: str) -> Tuple[bool, Union[io.BytesIO, str
         with open(temp_docx_path, 'rb') as f:
             docx_stream.write(f.read())
         docx_stream.seek(0)
+
 
         # # 删除临时文件
         # try:
@@ -2089,6 +2089,7 @@ async def update_html_by_node_new(request: Request,
         # html内部img转换base64
         html_content, status_ = html_img_url_to_base64(html_content)
         existing_levels, max_level = get_html_heading_levels(html_content)
+        print(existing_levels, max_level)
         max_now_level = MAX_LEVEL_NODE - int(now_level)
         # html转换成docx
 
@@ -2130,9 +2131,11 @@ async def update_html_by_node_new(request: Request,
             )
         else:
             success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
+            print(temp_docx_path_1)
             # 拼接sql
             temp_docx_path_ = temp_docx_path_1
             original_filename = os.path.abspath(temp_docx_path_)
+
             # 3. 生成文件记录（默认process_mode改为split）
             split_file_id = generate_unique_file_id()
             current_time = datetime.datetime.now()
@@ -2163,11 +2166,21 @@ async def update_html_by_node_new(request: Request,
                         "split"  # process_mode（默认split）
                     ))
                     conn.commit()
+            # title_text = ""
             split_result = call_docx_split(
                 file_stream=result,
-                file_name=title_text,
+                file_name=original_filename,
                 file_id=str(node_id)
             )
+            print(1111111111111111111)
+            print(split_result)
+            if split_result.status == 1:
+                return unified_response(
+                    code=500,
+                    message=split_result.msg,
+                    data={}
+                )
+
             tree_nodes = [TreeItem(**item) for item in split_result.data.get("tree", [])]
 
             # 2. 构建 eid-文件路径 映射
