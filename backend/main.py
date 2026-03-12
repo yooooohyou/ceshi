@@ -2,6 +2,7 @@ import base64
 import pathlib
 import shutil
 import time
+import urllib
 
 import aiohttp
 from fastapi import FastAPI, UploadFile, File, Body, Request, HTTPException, Query
@@ -1553,7 +1554,7 @@ async def upload_and_generate_tree(
                 file_stream=file_content,
                 file_name=original_filename,
                 file_id=split_file_id,
-                had_title=1
+                had_title=0
             )
 
             tree_nodes = [TreeItem(**item) for item in split_result.data.get("tree", [])]
@@ -1773,7 +1774,7 @@ async def route_generate_tree(
                 file_stream=file_content,
                 file_name=original_filename,
                 file_id=split_file_id,
-                had_title=1
+                had_title=0
             )
 
             tree_nodes = [TreeItem(**item) for item in split_result.data.get("tree", [])]
@@ -2737,7 +2738,7 @@ async def html_to_docx_api(
 
         # 调用HTML转DOCX函数
         success, result, path_ = convert_html_to_docx(html_content)
-        logger.error(success, result, path_)
+        # logging.error(success, result, path_)
         if not success:
             return unified_response(
                 code=500,
@@ -2746,9 +2747,14 @@ async def html_to_docx_api(
             )
 
         # 构造响应头
+        encoded_filename = urllib.parse.quote(filename)
+
+        # 2. 构造兼容的响应头（修复核心问题）
         headers = {
-            "Content-Disposition": f"attachment; filename={filename}",
+            # 使用RFC 5987标准格式，兼容所有浏览器且避免latin-1编码错误
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}; filename={encoded_filename}",
             "Access-Control-Expose-Headers": "Content-Disposition",
+            # 时间格式本身是ASCII字符，无需编码，保持原样
             "X-Update-Time": current_time.strftime("%Y-%m-%d %H:%M:%S")
         }
 
