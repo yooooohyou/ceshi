@@ -1821,6 +1821,33 @@ async def route_generate_tree(
             message=f"文件处理失败（模式：{process_mode}）：{str(e)}",
             data={"process_mode": process_mode, "split_file_id": split_file_id}
         )
+def merge_html_texts(html_list: list[str]) -> str:
+    """
+    合并多个 HTML 文本，返回合并后的单个 HTML 字符串。
+
+    参数:
+        html_list: 待合并的 HTML 字符串列表
+        strategy:  合并策略
+            - "body"     : 提取每个文档的 <body> 内容，拼接后包裹成完整 HTML（默认）
+            - "full"     : 保留第一个文档的结构，将其余文档的 <body> 追加进去
+            - "concat"   : 直接拼接原始 HTML 字符串（最简单，不解析）
+
+    返回:
+        合并后的 HTML 字符串
+    """
+
+    merged_body_parts = []
+    for html in html_list:
+        soup = BeautifulSoup(html, "html.parser")
+        body = soup.body
+        if body:
+            merged_body_parts.append(body.decode_contents())
+        else:
+            # 没有 <body> 标签时，取全部内容
+            merged_body_parts.append(str(soup))
+
+    merged_body = "\n".join(merged_body_parts)
+    return f"<!DOCTYPE html>\n<html>\n<body>\n{merged_body}\n</body>\n</html>"
 
 @app.post("/doc_editor/route_docx2html_marge", summary="文件路径docx转化html")
 async def route_docx2html_marge(
@@ -1961,19 +1988,22 @@ async def route_docx2html_marge(
             had_title=0
         )
         print(333333333333333333333333)
-
+        logger.info(33333333333333333333333333)
         # 2. 构建 eid-文件路径 映射
         files__ = split_result.data.get("files", [])
-        print(files__)
+        logger.info(files__)
+        html_list = []
+        for file__ in files__:
+            html_content, temp_file_docx_ = docx_to_html(file__)
+            html_list.append(html_content)
+        total_html_content = merge_html_texts(html_list)
         # html_content, temp_file_docx_ = docx_to_html(result["origin_file_path"])
         # 返回结果（保持原有结构）
         return unified_response(
             code=200,
-            message=f"文件获取拆分成功",
+            message=f"文件html转换成功",
             data={
-                "record_id": record_id,
-                "node_type": "branch",
-                "split_file_id": split_file_id
+                "html_content": total_html_content,
             }
         )
 
