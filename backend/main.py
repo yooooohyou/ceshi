@@ -1553,7 +1553,7 @@ async def upload_and_generate_tree(
                 file_stream=file_content,
                 file_name=original_filename,
                 file_id=split_file_id,
-                had_title=0
+                had_title=1
             )
 
             tree_nodes = [TreeItem(**item) for item in split_result.data.get("tree", [])]
@@ -1773,7 +1773,7 @@ async def route_generate_tree(
                 file_stream=file_content,
                 file_name=original_filename,
                 file_id=split_file_id,
-                had_title=0
+                had_title=1
             )
 
             tree_nodes = [TreeItem(**item) for item in split_result.data.get("tree", [])]
@@ -1820,6 +1820,179 @@ async def route_generate_tree(
             code=500,
             message=f"文件处理失败（模式：{process_mode}）：{str(e)}",
             data={"process_mode": process_mode, "split_file_id": split_file_id}
+        )
+
+@app.post("/doc_editor/route_docx2html_marge", summary="文件路径docx转化html")
+async def route_docx2html_marge(
+        # 替换原有的file参数，新增文件来源参数
+        file_source_type: str = Body("url", description="文件来源类型：url-从URL下载，static-从静态路径读取"),
+        file_source: str = Body(..., description="文件来源：URL地址 或 服务器静态文件路径"),
+) -> JSONResponse:
+    """
+    获取文件（URL下载/静态路径读取）并生成标题树节点
+    - file_source_type: url（从URL下载）/ static（从静态路径读取）
+    - file_source: 对应类型的文件地址/路径
+    - 默认模式（不传参数）：split，调用拆分接口生成多个分支节点
+    - single模式：生成单个主节点
+    """
+    file_path = ""
+    split_file_id = ""
+    file_content = b""
+    original_filename = ""
+
+    try:
+        # 1. 根据文件来源类型获取文件内容和文件名
+        if file_source_type == "url":
+            # 从URL下载文件
+            async with aiohttp.ClientSession() as session:
+                async with session.get(file_source) as response:
+                    if response.status != 200:
+                        return unified_response(
+                            code=400,
+                            message=f"下载文件失败，HTTP状态码：{response.status}",
+                            data={}
+                        )
+                    # 获取文件名（从URL或响应头提取）
+                    content_disposition = response.headers.get("Content-Disposition", "")
+                    if "filename=" in content_disposition:
+                        original_filename = content_disposition.split("filename=")[-1].strip('"\'')
+                    else:
+                        # 从URL路径提取文件名
+                        original_filename = file_source.split("/")[-1]
+                    # 读取文件内容
+                    file_content = await response.read()
+
+        elif file_source_type == "static":
+            # 从服务器静态路径读取文件
+            static_file_path = os.path.abspath(file_source)
+            if not os.path.exists(static_file_path):
+                return unified_response(
+                    code=400,
+                    message=f"静态文件不存在：{static_file_path}",
+                    data={}
+                )
+            if not static_file_path.lower().endswith(".docx"):
+                ext = static_file_path.split('.')[-1] if '.' in static_file_path else '无后缀'
+                return unified_response(
+                    code=400,
+                    message=f"仅支持docx格式文件，当前文件格式：{ext}",
+                    data={}
+                )
+            # 读取文件内容
+            with open(static_file_path, "rb") as f:
+                file_content = f.read()
+            # 获取文件名
+            original_filename = os.path.basename(static_file_path)
+
+        else:
+            return unified_response(
+                code=400,
+                message=f"不支持的文件来源类型：{file_source_type}，仅支持url/static",
+                data={}
+            )
+
+        # 2. 校验文件格式（补充URL下载文件的格式校验）
+        if not original_filename.lower().endswith(".docx"):
+            ext = original_filename.split('.')[-1] if '.' in original_filename else '无后缀'
+            return unified_response(
+                code=400,
+                message=f"仅支持docx格式文件，当前文件格式：{ext}",
+                data={}
+            )
+
+        # 3. 保存文件（和原有逻辑一致）
+        new_filename = generate_unique_filename(original_filename)
+        file_path = os.path.join(UPLOAD_DIR, new_filename)
+        abs_file_path = os.path.abspath(file_path)
+
+        with open(abs_file_path, "wb") as f:
+            f.write(file_content)
+
+        # 4. 生成文件记录（和原有逻辑一致）
+        current_time = datetime.datetime.now()
+        insert_file_sql = """
+        INSERT INTO "yxdl_docx_upload_records" 
+        (
+            original_filename, 
+            new_filename, 
+            save_path, 
+            upload_time, 
+            update_time, 
+            split_file_id, 
+            process_mode
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        RETURNING id;
+        """
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(insert_file_sql, (
+                    original_filename,  # original_filename
+                    new_filename,  # new_filename
+                    abs_file_path,  # save_path
+                    current_time,  # upload_time
+                    current_time,  # update_time
+                    split_file_id,  # split_file_id（初始为空）
+                    "split"  # process_mode（默认split）
+                ))
+                record_id = cursor.fetchone()[0]
+                conn.commit()
+        # 生成唯一file_id
+        split_file_id = generate_unique_file_id()
+
+        # 更新文件记录的split_file_id
+        update_file_sql = """
+        UPDATE "yxdl_docx_upload_records" 
+        SET split_file_id = %s, update_time = %s
+        WHERE id = %s;
+        """
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(update_file_sql, (split_file_id, current_time, record_id))
+                conn.commit()
+
+        # 调用拆分接口
+        print(22222222222222222222222222222222)
+        split_result = call_docx_split(
+            file_stream=file_content,
+            file_name=original_filename,
+            file_id=split_file_id,
+            had_title=0
+        )
+        print(333333333333333333333333)
+
+        # 2. 构建 eid-文件路径 映射
+        files__ = split_result.data.get("files", [])
+        print(files__)
+        # html_content, temp_file_docx_ = docx_to_html(result["origin_file_path"])
+        # 返回结果（保持原有结构）
+        return unified_response(
+            code=200,
+            message=f"文件获取拆分成功",
+            data={
+                "record_id": record_id,
+                "node_type": "branch",
+                "split_file_id": split_file_id
+            }
+        )
+
+    except Exception as e:
+        # 清理临时文件
+        try:
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+            # # 清理拆分接口的远端文件
+            # if split_file_id and process_mode == "split":
+            #     delete_request = DeleteRequest(id=split_file_id)
+            #     call_docx_delete(delete_request)
+        except Exception as cleanup_e:
+            print(f"清理临时文件失败：{cleanup_e}")
+
+        return unified_response(
+            code=500,
+            message=f"文件处理失败：{str(e)}",
+            data={"split_file_id": split_file_id}
         )
 
 @app.post("/doc_editor/split_uploads", summary="分片上传文件")
@@ -2413,7 +2586,7 @@ async def update_html_by_node_new(request: Request,
                 file_stream=result,
                 file_name=original_filename,
                 file_id=str(node_id),
-                had_title=0
+                had_title=1
             )
 
             if split_result.status == 1:
