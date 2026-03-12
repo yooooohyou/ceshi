@@ -1980,15 +1980,12 @@ async def route_docx2html_marge(
                 conn.commit()
 
         # 调用拆分接口
-        print(22222222222222222222222222222222)
         split_result = call_docx_split(
             file_stream=file_content,
             file_name=original_filename,
             file_id=split_file_id,
             had_title=0
         )
-        print(333333333333333333333333)
-        logger.info(33333333333333333333333333)
         # 2. 构建 eid-文件路径 映射
         files__ = split_result.data.get("files", [])
         logger.info(files__)
@@ -2714,29 +2711,53 @@ async def update_html_by_node_new(request: Request,
         )
 
 
-@app.post("/doc_editor/file_slicing_download", summary="文件分片下载", response_model=None)
-async def html_to_docx_api(request: Request,
-        file_path: str = Body(..., description="文件的完整URL路径（如http://xxx/temp.docx）"),
-        filename: str = Body(..., description="文件名"),
+@app.post("/doc_editor/html_to_docx", summary="HTML转DOCX文件流", response_model=None)
+async def html_to_docx_api(
+        html_content: str = Body(..., description="需要转换的HTML文本"),
+        filename: Optional[str] = Body("output.docx", description="下载的DOCX文件名（默认output.docx）"),
 ) -> Union[JSONResponse, StreamingResponse]:
-    """接收文件路径分片给文件流"""
+    """接收HTML文本生成DOCX文件流"""
     try:
+        if not html_content.strip():
+            return unified_response(
+                code=400,
+                message="HTML内容不能为空",
+                data={}
+            )
+
+        update_fields = ["html_content = %s", "update_time = %s"]
+        update_values = [html_content, datetime.datetime.now()]
+        current_time = update_values[1]
 
 
         # 校验文件名格式
-        new_file_path = file_path
-        response = requests.get(new_file_path, timeout=30)
-        # 校验响应状态码（200表示成功）
-        response.raise_for_status()
-        temp_docx_filename = generate_unique_filename("temp.docx")
-        abs_file_path = os.path.join(UPLOAD_DIR, temp_docx_filename)
-        # abs_file_path = os.path.abspath("temp.docx")
+        if not filename.lower().endswith(".docx"):
+            filename += ".docx"
+        filename = os.path.basename(filename).replace('/', '_').replace('\\', '_').replace(':', '_')
 
-        # 将文件内容写入本地
-        with open(abs_file_path, 'wb') as f:
-            f.write(response.content)
-        file_pathlib = pathlib.Path(str(abs_file_path))
-        response = file_resp.FileResp(request, file_pathlib).start()
+        # 调用HTML转DOCX函数
+        success, result, path_ = convert_html_to_docx(html_content)
+        if not success:
+            return unified_response(
+                code=500,
+                message=result,
+                data={}
+            )
+
+        # 构造响应头
+        headers = {
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Access-Control-Expose-Headers": "Content-Disposition",
+            "X-Update-Time": current_time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+
+        # 返回文件流
+        response = StreamingResponse(
+            result,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers=headers
+        )
+        response.status_code = 200
         return response
 
     except Exception as e:
@@ -2745,7 +2766,6 @@ async def html_to_docx_api(request: Request,
             message=f"HTML转DOCX失败：{str(e)}",
             data={}
         )
-
 # ====================== 新增：合并接口 ======================
 @app.post("/doc_editor/merge_docx_office_server", summary="合并拆分的DOCX节点")
 async def merge_docx_office_server(request: Request,

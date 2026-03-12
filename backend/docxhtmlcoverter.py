@@ -320,7 +320,7 @@ if __name__ == "__main__":
     #     f.write(html_content_a)
 
     # 3. 示例2：DOCX转单文件HTML
-    sample_html = """自定义html"""
+    sample_html = """"""
 
     # 调用函数转换
     converter.html_text_to_docx(sample_html, "html_text_result.docx")
