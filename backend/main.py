@@ -2737,6 +2737,7 @@ async def html_to_docx_api(
 
         # 调用HTML转DOCX函数
         success, result, path_ = convert_html_to_docx(html_content)
+        logger.error(success, result, path_)
         if not success:
             return unified_response(
                 code=500,
