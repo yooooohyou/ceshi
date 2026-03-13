@@ -3082,7 +3082,37 @@ async def merge_docx_office_server(request: Request,
             detail=f"文件合并失败：{str(e)}"
         )
 
+@app.post("/doc_editor/file_slicing_download", summary="文件分片下载", response_model=None)
+async def html_to_docx_api(request: Request,
+        file_path: str = Body(..., description="文件的完整URL路径（如http://xxx/temp.docx）"),
+        filename: str = Body(..., description="文件名"),
+) -> Union[JSONResponse, StreamingResponse]:
+    """接收文件路径分片给文件流"""
+    try:
 
+
+        # 校验文件名格式
+        new_file_path = file_path
+        response = requests.get(new_file_path, timeout=30)
+        # 校验响应状态码（200表示成功）
+        response.raise_for_status()
+        temp_docx_filename = generate_unique_filename("temp.docx")
+        abs_file_path = os.path.join(UPLOAD_DIR, temp_docx_filename)
+        # abs_file_path = os.path.abspath("temp.docx")
+
+        # 将文件内容写入本地
+        with open(abs_file_path, 'wb') as f:
+            f.write(response.content)
+        file_pathlib = pathlib.Path(str(abs_file_path))
+        response = file_resp.FileResp(request, file_pathlib).start()
+        return response
+
+    except Exception as e:
+        return unified_response(
+            code=500,
+            message=f"HTML转DOCX失败：{str(e)}",
+            data={}
+        )
 
 @app.post("/doc_editor/generate_patent_doc/default", summary="生成器示例接口")
 async def generate_default_patent_doc():
