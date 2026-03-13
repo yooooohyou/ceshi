@@ -25,12 +25,13 @@ class TreeItem(BaseModel):
     children: Optional[List["TreeItem"]] = None
     text: Optional[str] = None
     id: Optional[int] = None
+    parent_id: Optional[int] = None  # 父节点数据库ID，NULL表示根节点
     file_name: Optional[str] = None
     file_info: Optional[FileInfo] = None
     file_path: Optional[str] = None
-    update_file_path: Optional[str] = ""  # 更新后的文件路径
-    node_type: Optional[str] = ""  # 节点类型：main/branch
-    is_conversion_completion: Optional[int] = 0  # 是否转换完成
+    update_file_path: Optional[str] = ""
+    node_type: Optional[str] = ""
+    is_conversion_completion: Optional[int] = 0
 
     def __post_init__(self):
         # 强制兜底：无论传入什么，都确保children是列表
@@ -81,13 +82,14 @@ class DeleteResponse(BaseModel):
 
 
 # -------------------------- 核心接口调用函数 --------------------------
-def call_docx_split(file_stream: bytes, file_name: str, file_id: str, had_title:int) -> SplitResponse:
+def call_docx_split(file_stream: bytes, file_name: str, file_id: str, had_title:int, rm_outline_in_doc:int) -> SplitResponse:
     """
     调用文件拆分接口（同步）
     :param file_stream: 文件字节流
     :param file_name: 原始文件名
     :param file_id: 唯一标识id
     :param had_title: 是否含有标题
+    :param rm_outline_in_doc: 是否去掉html内部outline9
     :return: 拆分接口返回结果
     """
     url = f"{TARGET_BASE_URL}/api/tool_api/docx/split"
@@ -96,7 +98,7 @@ def call_docx_split(file_stream: bytes, file_name: str, file_id: str, had_title:
         files = {
             "file": (file_name, file_stream, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         }
-        data = {"id": file_id, "user_key": "DC4096F87722AD140F01AF8C3315B9A6", "had_title":had_title}
+        data = {"id": file_id, "user_key": "DC4096F87722AD140F01AF8C3315B9A6", "had_title":had_title, "rm_outline_in_doc":rm_outline_in_doc}
 
         response = requests.post(
             url,

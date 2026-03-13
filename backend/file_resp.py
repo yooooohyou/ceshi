@@ -141,7 +141,7 @@ def SplitUpload(
         sign_file_path = os.path.join(root_path, 'sign.json')  # 分块进度文件
         out_file = os.path.join(split_file_path, file_name)  # 最终合并文件
         sign_file_lock = os.path.join(root_path, 'sign_lock.json')  # 锁文件
-        print(out_file)
+        # print(out_file)
         if not os.path.exists(split_file_path):
             return 1, 0, '根目录不存在'
 
