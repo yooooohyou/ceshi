@@ -1800,6 +1800,7 @@ async def route_generate_tree(
                 rm_outline_in_doc=1
             )
 
+
             tree_nodes = [TreeItem(**item) for item in split_result.data.get("tree", [])]
 
             # 2. 构建 eid-文件路径 映射
