@@ -1574,7 +1574,7 @@ async def upload_and_generate_tree(
                 file_name=original_filename,
                 file_id=split_file_id,
                 had_title=0,
-                rm_outline_in_doc=1
+                rm_outline_in_doc=0
             )
 
             tree_nodes = [TreeItem(**item) for item in split_result.data.get("tree", [])]
@@ -2011,7 +2011,7 @@ async def route_docx2html_marge(
             file_name=original_filename,
             file_id=split_file_id,
             had_title=0,
-            rm_outline_in_doc=1
+            rm_outline_in_doc=0
         )
         # 2. 构建 eid-文件路径 映射
         files__ = split_result.data.get("files", [])
@@ -2686,7 +2686,7 @@ async def update_html_by_node_new(request: Request,
                 file_name=original_filename,
                 file_id=str(node_id),
                 had_title=1,
-                rm_outline_in_doc=1
+                rm_outline_in_doc=0
             )
             if split_result.status == 1:
                 return unified_response(code=500, message=split_result.msg, data={})
