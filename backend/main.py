@@ -1012,6 +1012,19 @@ def assign_file_path_to_tree(node: TreeItem, eid_path_map: Dict[str, str]):
             assign_file_path_to_tree(child, eid_path_map)
 
 
+def get_next_batch_count(record_id: int) -> int:
+    """查询 record_id 下已有的最大 batch_count，返回 +1 后的值（首次返回 1）"""
+    sql = """
+        SELECT COALESCE(MAX(batch_count), 0) + 1
+        FROM "yxdl_docx_title_trees"
+        WHERE record_id = %s;
+    """
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, (record_id,))
+            return cursor.fetchone()[0]
+
+
 def process_split_tree_nodes(
         nodes: List[TreeItem],
         record_id: int,
@@ -1019,6 +1032,7 @@ def process_split_tree_nodes(
         file_base_path: str,
         convert_html: bool = True,
         parent_id: Optional[int] = None,
+        batch_count: int = 1,
 ) -> List[Dict[str, Any]]:
     """
     递归处理拆分后的树节点，入库，返回带层级结构的节点信息
@@ -1032,6 +1046,7 @@ def process_split_tree_nodes(
                       False 时跳过转换，html_content 存空字符串，
                       is_conversion_completion=0，由 get_html_by_node 懒转换。
         parent_id: 父节点数据库ID，NULL表示根节点
+        batch_count: 本次导入批次号，同一次拆分共享同一值，用于排序（大值排前）
 
     Returns:
         嵌套结构的节点列表，格式：
@@ -1089,8 +1104,8 @@ def process_split_tree_nodes(
         insert_tree_sql = """
         INSERT INTO "yxdl_docx_title_trees"
         (record_id, title_text, html_content, create_time, update_time,
-         level, eid, idx, node_type, origin_file_path, is_conversion_completion, parent_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+         level, eid, idx, node_type, origin_file_path, is_conversion_completion, parent_id, batch_count)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id;
         """
         with get_db_connection() as conn:
@@ -1100,7 +1115,7 @@ def process_split_tree_nodes(
                     current_time, current_time,
                     node.level, node.eid, node.idx,
                     "branch", node_file_path, is_conversion_completion,
-                    parent_id
+                    parent_id, batch_count
                 ))
                 node_id = cursor.fetchone()[0]
                 conn.commit()
@@ -1115,13 +1130,14 @@ def process_split_tree_nodes(
             "children": []
         }
 
-        # 5. 递归处理子节点，透传 convert_html 开关，当前节点 id 作为子节点 parent_id
+        # 5. 递归处理子节点，透传 convert_html / parent_id / batch_count
         children = node.children or []
         if children:
             current_node["children"] = process_split_tree_nodes(
                 children, record_id, current_time, file_base_path,
                 convert_html=convert_html,
                 parent_id=node_id,
+                batch_count=batch_count,
             )
 
         result_nodes.append(current_node)
@@ -1218,8 +1234,8 @@ def recover_split_tree_nodes(record_id: int) -> List[Dict[str, Any]]:
     # 2. 数据库查询：获取该record_id下的所有节点（包含所有需要的字段）
     select_sql = """
     SELECT 
-        id, title_text, level, eid, idx, origin_file_path, update_file_path,
-        is_conversion_completion
+        id, title_text, level, eid, idx, parent_id, batch_count,
+        origin_file_path, update_file_path, is_conversion_completion
     FROM "yxdl_docx_title_trees" 
     WHERE record_id = %s
     ORDER BY level ASC, idx ASC;
@@ -1273,6 +1289,19 @@ def build_simplified_tree(rows):
             id_map[pid]['children'].append(item)
         else:
             tree.append(item)
+
+    # batch_count 降序（新批次排前）；同批次内按 idx 升序（文档顺序）
+    def _sort_key(x):
+        return (-(x.get('batch_count') or 0), x['idx'])
+
+    def sort_children(node):
+        node['children'].sort(key=_sort_key)
+        for child in node['children']:
+            sort_children(child)
+
+    fake_root = {'children': tree}
+    sort_children(fake_root)
+    tree.sort(key=_sort_key)
 
     return tree
 
@@ -1375,9 +1404,10 @@ def create_single_main_node(
         eid, 
         idx, 
         node_type,
-        parent_id
+        parent_id,
+        batch_count
     )
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     RETURNING id;
     """
 
@@ -1393,7 +1423,8 @@ def create_single_main_node(
                 DEFAULT_MAIN_NODE["eid"],
                 DEFAULT_MAIN_NODE["idx"],
                 "main",
-                None  # 根节点，parent_id=NULL
+                None,  # 根节点，parent_id=NULL
+                1,     # 首次导入 batch_count=1
             ))
             node_id = cursor.fetchone()[0]
             conn.commit()
@@ -1555,11 +1586,13 @@ async def upload_and_generate_tree(
             for node in tree_nodes:
                 assign_file_path_to_tree(node, eid_path_map)
             print(tree_nodes)
+            batch_count = get_next_batch_count(record_id)
             node_ids = process_split_tree_nodes(
                 nodes=tree_nodes,
                 record_id=record_id,
                 current_time=current_time,
-                file_base_path=abs_file_path
+                file_base_path=abs_file_path,
+                batch_count=batch_count,
             )
 
             # 返回结果（保持原有结构）
@@ -1776,11 +1809,13 @@ async def route_generate_tree(
             for node in tree_nodes:
                 assign_file_path_to_tree(node, eid_path_map)
             print(tree_nodes)
+            batch_count = get_next_batch_count(record_id)
             node_ids = process_split_tree_nodes(
                 nodes=tree_nodes,
                 record_id=record_id,
                 current_time=current_time,
-                file_base_path=abs_file_path
+                file_base_path=abs_file_path,
+                batch_count=batch_count,
             )
 
             # 返回结果（保持原有结构）
@@ -2501,7 +2536,7 @@ async def update_html_by_node_new(request: Request,
             """
             select_sql = """
                 SELECT
-                    id, title_text, level, eid, idx, parent_id,
+                    id, title_text, level, eid, idx, parent_id, batch_count,
                     origin_file_path, update_file_path, is_conversion_completion
                 FROM "yxdl_docx_title_trees"
                 WHERE record_id = %s
@@ -2665,6 +2700,8 @@ async def update_html_by_node_new(request: Request,
             if not tree_nodes:
                 return unified_response(code=500, message="拆分结果为空", data={})
 
+            batch_count = get_next_batch_count(record_id)
+
             # 首节点：更新原有节点，record_id 保持不变，取返回值拿到数据库 id
             first_node = tree_nodes.pop(0)
             first_result = process_single_tree_node(
@@ -2672,7 +2709,7 @@ async def update_html_by_node_new(request: Request,
                 convert_html=False,
             )
 
-            # 子节点统一用原 record_id 插入，parent_id 指向首节点，构建真实父子关系
+            # 子节点统一用原 record_id 插入，parent_id 指向首节点，batch_count 标记本次批次
             remaining_nodes = (first_node.children or []) + tree_nodes
             process_split_tree_nodes(
                 nodes=remaining_nodes,
@@ -2681,6 +2718,7 @@ async def update_html_by_node_new(request: Request,
                 file_base_path=temp_docx_path_,
                 convert_html=False,
                 parent_id=first_result.get("node_id"),
+                batch_count=batch_count,
             )
 
             # 用原 record_id 查询，组装最新嵌套树返回
@@ -3082,37 +3120,7 @@ async def merge_docx_office_server(request: Request,
             detail=f"文件合并失败：{str(e)}"
         )
 
-@app.post("/doc_editor/file_slicing_download", summary="文件分片下载", response_model=None)
-async def html_to_docx_api(request: Request,
-        file_path: str = Body(..., description="文件的完整URL路径（如http://xxx/temp.docx）"),
-        filename: str = Body(..., description="文件名"),
-) -> Union[JSONResponse, StreamingResponse]:
-    """接收文件路径分片给文件流"""
-    try:
 
-
-        # 校验文件名格式
-        new_file_path = file_path
-        response = requests.get(new_file_path, timeout=30)
-        # 校验响应状态码（200表示成功）
-        response.raise_for_status()
-        temp_docx_filename = generate_unique_filename("temp.docx")
-        abs_file_path = os.path.join(UPLOAD_DIR, temp_docx_filename)
-        # abs_file_path = os.path.abspath("temp.docx")
-
-        # 将文件内容写入本地
-        with open(abs_file_path, 'wb') as f:
-            f.write(response.content)
-        file_pathlib = pathlib.Path(str(abs_file_path))
-        response = file_resp.FileResp(request, file_pathlib).start()
-        return response
-
-    except Exception as e:
-        return unified_response(
-            code=500,
-            message=f"HTML转DOCX失败：{str(e)}",
-            data={}
-        )
 
 @app.post("/doc_editor/generate_patent_doc/default", summary="生成器示例接口")
 async def generate_default_patent_doc():
@@ -3484,6 +3492,39 @@ async def query_format_storage_by_type(request: Request, formant_type: Any = Bod
         raise HTTPException(status_code=500, detail=f"数据库查询失败：{str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"查询失败：{str(e)}")
+
+
+@app.post("/doc_editor/file_slicing_download", summary="文件分片下载", response_model=None)
+async def html_to_docx_api(request: Request,
+        file_path: str = Body(..., description="文件的完整URL路径（如http://xxx/temp.docx）"),
+        filename: str = Body(..., description="文件名"),
+) -> Union[JSONResponse, StreamingResponse]:
+    """接收文件路径分片给文件流"""
+    try:
+
+
+        # 校验文件名格式
+        new_file_path = file_path
+        response = requests.get(new_file_path, timeout=30)
+        # 校验响应状态码（200表示成功）
+        response.raise_for_status()
+        temp_docx_filename = generate_unique_filename("temp.docx")
+        abs_file_path = os.path.join(UPLOAD_DIR, temp_docx_filename)
+        # abs_file_path = os.path.abspath("temp.docx")
+
+        # 将文件内容写入本地
+        with open(abs_file_path, 'wb') as f:
+            f.write(response.content)
+        file_pathlib = pathlib.Path(str(abs_file_path))
+        response = file_resp.FileResp(request, file_pathlib).start()
+        return response
+
+    except Exception as e:
+        return unified_response(
+            code=500,
+            message=f"HTML转DOCX失败：{str(e)}",
+            data={}
+        )
 
 
 # ====================== 启动服务 ======================
