@@ -1218,20 +1218,9 @@ def _build_nested_dict(nodes: List[Dict[str, Any]], file_name: str) -> List[Dict
 
 
 def recover_split_tree_nodes(record_id: int) -> List[Dict[str, Any]]:
-    """
-    通过record_id获取节点数据，并返回指定格式的嵌套字典列表
-
-    Args:
-        record_id: 关联文件记录ID
-
-    Returns:
-        目标格式的节点列表，包含eid、text、level、id、idx、file_info、file_name、children等字段
-    """
-    # 1. 参数校验
     if not isinstance(record_id, int) or record_id <= 0:
         raise ValueError("record_id必须是正整数")
 
-    # 2. 数据库查询：获取该record_id下的所有节点（包含所有需要的字段）
     select_sql = """
     SELECT 
         id, title_text, level, eid, idx, parent_id, batch_count,
@@ -1240,39 +1229,51 @@ def recover_split_tree_nodes(record_id: int) -> List[Dict[str, Any]]:
     WHERE record_id = %s
     ORDER BY level ASC, idx ASC;
     """
-
-    node_records = []
     try:
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute(select_sql, (record_id,))
-                node_records = cursor.fetchall()  # 获取字典格式的记录
+                node_records = cursor.fetchall()
     except Exception as e:
         raise RuntimeError(f"查询数据库失败：{str(e)}") from e
 
     if not node_records:
-        return []  # 无数据返回空列表
+        return []
 
-    file_name = ""
-    first_record = node_records[0]
-    # 动态选择文件路径（同之前的逻辑）
-    if first_record.get("is_conversion_completion") == 1 and first_record.get("update_file_path"):
-        file_path = first_record["update_file_path"]
-    else:
-        file_path = first_record.get("origin_file_path", "")
+    # 先用 build_simplified_tree 组装嵌套结构（依赖 parent_id）
+    nested = build_simplified_tree(node_records)
 
-    if file_path:
-        # 提取文件名（去掉路径和后缀）
-        file_name = os.path.splitext(os.path.basename(file_path))[0]
-    # 如果提取失败，可手动指定（根据你的业务调整）
-    if not file_name:
-        file_name = f"项目_{record_id}"
+    # 递归将嵌套 dict 转为 TreeItem 兼容的格式（字段重命名）
+    def _remap(nodes: List[Dict]) -> List[Dict]:
+        result = []
+        for node in nodes:
+            # 每个节点独立选取自己的文件路径
+            if node.get("is_conversion_completion") == 1 and node.get("update_file_path"):
+                file_path = node["update_file_path"]
+            else:
+                file_path = node.get("origin_file_path") or ""
 
-    # 4. 构建嵌套字典结构
-    # result = _build_nested_dict(node_records, file_name)
-    result = build_simplified_tree(node_records)
+            file_name = os.path.splitext(os.path.basename(file_path))[0] if file_path else ""
 
-    return result
+            remapped = {
+                "eid":       node.get("eid") or "",
+                "text":      node.get("title_text") or "",   # ← 关键：title_text → text
+                "level":     node.get("level", 0),
+                "id":        node.get("id"),
+                "idx":       node.get("idx", 0),
+                "parent_id": node.get("parent_id"),
+                "file_name": file_name,                      # ← 关键：逐节点取，不共用
+                "file_path": file_path,
+                "file_info": {"is_had_title": 1},
+                "update_file_path": node.get("update_file_path") or "",
+                "node_type": node.get("node_type") or "",
+                "is_conversion_completion": node.get("is_conversion_completion", 0),
+                "children":  _remap(node.get("children", [])),
+            }
+            result.append(remapped)
+        return result
+
+    return _remap(nested)
 
 
 def build_simplified_tree(rows):
