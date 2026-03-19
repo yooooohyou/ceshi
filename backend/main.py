@@ -2808,7 +2808,8 @@ async def html_to_docx_api(
         )
 # ====================== 新增：合并接口 ======================
 @app.post("/doc_editor/merge_docx_office_server", summary="合并拆分的DOCX节点")
-async def merge_docx_office_server(request: Request,
+async def merge_docx_office_server(
+        request: Request,
         node_id: int = Body(..., description="要更新的节点ID"),
         html_content: str = Body(..., description="需要转换的HTML文本"),
         filename: Optional[str] = Body("output.docx", description="下载的DOCX文件名（默认output.docx）"),
@@ -2816,59 +2817,172 @@ async def merge_docx_office_server(request: Request,
 ):
     """调用合并接口生成合并后的DOCX文件流"""
     if node_id <= 0:
-        return unified_response(
-            code=400,
-            message="节点ID必须为正整数",
-            data={}
-        )
+        return unified_response(code=400, message="节点ID必须为正整数", data={})
     if not html_content.strip():
-        return unified_response(
-            code=400,
-            message="HTML内容不能为空",
-            data={}
-        )
-    # html_content, status_ = html_img_url_to_base64(html_content)
-    # success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
-    # temp_docx_path_ = local_upload_path_to_web_path(temp_docx_path_1, request)
-    # eid = os.path.splitext(os.path.basename(temp_docx_path_1))[0]
-    # update_fields = ["html_content = %s", "update_time = %s", "update_file_path = %s", "eid = %s"]
-    # update_values = [html_content, datetime.datetime.now(), temp_docx_path_, eid]
-    #
-    # if title_text is not None and title_text.strip():
-    #     update_fields.append("title_text = %s")
-    #     update_values.append(title_text.strip())
-    #
-    # update_sql = f"""
-    #         UPDATE "yxdl_docx_title_trees"
-    #         SET {', '.join(update_fields)}
-    #         WHERE id = %s
-    #         """
-    # update_values.append(node_id)
+        return unified_response(code=400, message="HTML内容不能为空", data={})
 
+    # ── 1. 查节点，拿 record_id ──────────────────────────────────────────
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT id, record_id FROM \"yxdl_docx_title_trees\" WHERE id = %s", (node_id,))
+            cursor.execute(
+                "SELECT id, record_id FROM \"yxdl_docx_title_trees\" WHERE id = %s",
+                (node_id,)
+            )
             row = cursor.fetchone()
-
-            # 判断是否查询到数据
             if not row:
                 return unified_response(
                     code=404,
                     message=f"未找到ID为{node_id}的标题树节点",
                     data={}
                 )
-            else:
-                # 从结果中提取 id 和 record_id（row 是元组，按查询字段顺序取值）
-                result_id = row[0]
-                result_record_id = row[1]
-                print(f"查询到的 id: {result_id}, record_id: {result_record_id}")
+            result_record_id = row[1]
+    logger.info(f"merge_docx_office_server: node_id={node_id} record_id={result_record_id}")
 
-            # cursor.execute(update_sql, tuple(update_values))
-            # conn.commit()
+    # ── 2. 与 _query_and_build_tree 完全相同的树构造逻辑 ─────────────────
+    current_time = datetime.datetime.now()
 
-    tree_ = recover_split_tree_nodes(result_record_id)
-    files_ = get_tree_node_file_paths(result_record_id)
-    # split_result = call_docx_merge(MergeRequest(tree=tree_, files=[], format_args={}))
+    select_sql = """
+        SELECT
+            id, title_text, level, eid, idx, parent_id, batch_count,
+            origin_file_path, update_file_path, is_conversion_completion
+        FROM "yxdl_docx_title_trees"
+        WHERE record_id = %s
+        ORDER BY level ASC, idx ASC;
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(select_sql, (result_record_id,))
+                node_records = cursor.fetchall()
+    except Exception as e:
+        return unified_response(code=500, message=f"查询数据库失败：{str(e)}", data={})
+
+    if not node_records:
+        return unified_response(code=404, message="该记录下无任何节点", data={})
+
+    # 字段映射：数据库行 → TreeItem（与 _query_and_build_tree 逻辑一致）
+    tree_nodes_org = [
+        TreeItem(**{
+            "id":                       item.get("id"),
+            "text":                     item.get("title_text"),
+            "level":                    item.get("level"),
+            "eid":                      item.get("eid"),
+            "idx":                      item.get("idx"),
+            "parent_id":                item.get("parent_id"),
+            "file_path":                item.get("origin_file_path"),
+            "update_file_path":         item.get("update_file_path", ""),
+            "is_conversion_completion": item.get("is_conversion_completion", 0),
+            "children":                 [],
+            "file_name":                None,
+            "file_info":                None,
+            "node_type":                ""
+        })
+        for item in node_records
+    ]
+
+    # build_simplified_tree 按 parent_id 组装嵌套结构
+    nested_dicts = build_simplified_tree(node_records)
+
+    # ── 2.5 根据最新树结构刷新 level / idx，并批量回写数据库 ────────────
+    def _refresh_level_idx(nodes: List[Dict], parent_level: int = 0, counter: List[int] = None) -> List[Dict]:
+        """
+        递归重算每个节点的 level / idx：
+          - level = parent_level + 1
+          - idx   = 全局 DFS 访问顺序，从 0 递增，整棵树唯一不重复
+        counter 用列表包装以实现跨递归层共享（模拟引用传递）
+        """
+        if counter is None:
+            counter = [0]
+        for node in nodes:
+            node['level'] = parent_level + 1
+            node['idx'] = counter[0]
+            counter[0] += 1
+            if node.get('children'):
+                _refresh_level_idx(node['children'], parent_level + 1, counter)
+        return nodes
+
+    nested_dicts = _refresh_level_idx(nested_dicts)
+
+    # 收集所有变更节点（DFS 平铺）
+    def _collect_updates(nodes: List[Dict]) -> List[Dict]:
+        result = []
+        for node in nodes:
+            result.append({'id': node['id'], 'level': node['level'], 'idx': node['idx']})
+            if node.get('children'):
+                result.extend(_collect_updates(node['children']))
+        return result
+
+    updates = _collect_updates(nested_dicts)
+
+    if updates:
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.executemany(
+                        """
+                        UPDATE "yxdl_docx_title_trees"
+                        SET level = %s, idx = %s, update_time = %s
+                        WHERE id = %s
+                        """,
+                        [(u['level'], u['idx'], current_time, u['id']) for u in updates]
+                    )
+                    conn.commit()
+            logger.info(
+                f"merge_docx_office_server: 刷新 level/idx 完成，共更新 {len(updates)} 个节点"
+            )
+        except Exception as e:
+            logger.error(f"merge_docx_office_server: 刷新 level/idx 失败 err={e}")
+            return unified_response(code=500, message=f"刷新节点层级失败：{str(e)}", data={})
+
+    # 后续 _dicts_to_tree_items / _collect_files 照常执行，此时 nested_dicts 中的
+    # level/idx 已经是刷新后的值，TreeItem 会拿到正确数据
+    def _dicts_to_tree_items(nodes_dict: List[Dict]) -> List[TreeItem]:
+        result = []
+        for d in nodes_dict:
+            item = TreeItem(
+                eid=d.get("eid", ""),
+                level=d.get("level", 1),
+                idx=d.get("idx", 0),
+                text=d.get("text", "") or d.get("title_text", ""),
+                children=_dicts_to_tree_items(d.get("children", []))
+            )
+            matched = next((n for n in tree_nodes_org if n.eid == item.eid), None)
+            if matched:
+                item.id                       = matched.id
+                item.parent_id                = matched.parent_id
+                item.file_path                = matched.file_path
+                item.update_file_path         = matched.update_file_path
+                item.is_conversion_completion = matched.is_conversion_completion
+            result.append(item)
+        return result
+
+    nested_tree_items = _dicts_to_tree_items(nested_dicts)
+
+    # 转为标准返回格式（复用 process_split_tree_nodes_with_select）
+    tree_ = nested_tree_items  # 直接用 TreeItem 列表，MergeRequest.tree 类型匹配
+    print(tree_)
+    def _collect_files(nodes: List[TreeItem]) -> List[str]:
+        """DFS 遍历 TreeItem 树，按节点顺序收集文件路径（去重保序）"""
+        paths: List[str] = []
+        seen: set = set()
+
+        def _dfs(node_list):
+            for node in node_list:
+                if node.is_conversion_completion == 1 and node.update_file_path:
+                    file_path = node.update_file_path
+                else:
+                    file_path = node.file_path or ""
+                if file_path and file_path not in seen:
+                    seen.add(file_path)
+                    paths.append(file_path)
+                _dfs(node.children or [])
+
+        _dfs(nodes)
+        return paths
+
+    files_ = _collect_files(tree_)
+
+    # ── 4. 构造合并请求并调用合并接口 ───────────────────────────────────
     format_config = {
         "Heading": {
             "Heading1": {
@@ -3104,23 +3218,18 @@ async def merge_docx_office_server(request: Request,
             "right": 3.18
         }
     }
-    format_args = {"config_dict": format_config, "token": "984f5b0a2793eeafeeddfd2cd095ad31", "key": "984f5b0a2793eeafeeddfd2cd095ad31-1772598822992"}
+    format_args = {
+        "config_dict": format_config,
+        "token": "984f5b0a2793eeafeeddfd2cd095ad31",
+        "key": "984f5b0a2793eeafeeddfd2cd095ad31-1772598822992"
+    }
 
     try:
-        # 构造合并请求
         merge_request = MergeRequest(tree=tree_, files=files_, format_args=format_args)
-
-        # 调用合并接口
         merged_file_message = call_docx_merge(merge_request)
-
         return merged_file_message
-
-
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"文件合并失败：{str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"文件合并失败：{str(e)}")
 
 
 

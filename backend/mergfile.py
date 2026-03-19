@@ -136,6 +136,7 @@ def call_docx_merge(merge_request: MergeRequest):
     url = f"{TARGET_BASE_URL}/api/tool_api/docx/megre"  # 文档中为megre（merge笔误）
     try:
         data_ = merge_request.dict(exclude_unset=True)
+        print(data_)
         data_["user_key"] = "DC4096F87722AD140F01AF8C3315B9A6"
         response = requests.post(
             url,
