@@ -1574,7 +1574,7 @@ async def upload_and_generate_tree(
                 file_stream=file_content,
                 file_name=original_filename,
                 file_id=split_file_id,
-                had_title=1,
+                had_title=0,
                 rm_outline_in_doc=1
             )
 
@@ -1797,7 +1797,7 @@ async def route_generate_tree(
                 file_stream=file_content,
                 file_name=original_filename,
                 file_id=split_file_id,
-                had_title=1,
+                had_title=0,
                 rm_outline_in_doc=1
             )
 
@@ -2012,7 +2012,7 @@ async def route_docx2html_marge(
             file_stream=file_content,
             file_name=original_filename,
             file_id=split_file_id,
-            had_title=1,
+            had_title=0,
             rm_outline_in_doc=1
         )
         # 2. 构建 eid-文件路径 映射
@@ -2687,7 +2687,7 @@ async def update_html_by_node_new(request: Request,
                 file_stream=file_bytes,
                 file_name=original_filename,
                 file_id=str(node_id),
-                had_title=1,
+                had_title=0,
                 rm_outline_in_doc=1
             )
             if split_result.status == 1:
@@ -2827,23 +2827,23 @@ async def merge_docx_office_server(request: Request,
             message="HTML内容不能为空",
             data={}
         )
-    html_content, status_ = html_img_url_to_base64(html_content)
-    success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
-    temp_docx_path_ = local_upload_path_to_web_path(temp_docx_path_1, request)
-    eid = os.path.splitext(os.path.basename(temp_docx_path_1))[0]
-    update_fields = ["html_content = %s", "update_time = %s", "update_file_path = %s", "eid = %s"]
-    update_values = [html_content, datetime.datetime.now(), temp_docx_path_, eid]
-
-    if title_text is not None and title_text.strip():
-        update_fields.append("title_text = %s")
-        update_values.append(title_text.strip())
-
-    update_sql = f"""
-            UPDATE "yxdl_docx_title_trees" 
-            SET {', '.join(update_fields)}
-            WHERE id = %s
-            """
-    update_values.append(node_id)
+    # html_content, status_ = html_img_url_to_base64(html_content)
+    # success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
+    # temp_docx_path_ = local_upload_path_to_web_path(temp_docx_path_1, request)
+    # eid = os.path.splitext(os.path.basename(temp_docx_path_1))[0]
+    # update_fields = ["html_content = %s", "update_time = %s", "update_file_path = %s", "eid = %s"]
+    # update_values = [html_content, datetime.datetime.now(), temp_docx_path_, eid]
+    #
+    # if title_text is not None and title_text.strip():
+    #     update_fields.append("title_text = %s")
+    #     update_values.append(title_text.strip())
+    #
+    # update_sql = f"""
+    #         UPDATE "yxdl_docx_title_trees"
+    #         SET {', '.join(update_fields)}
+    #         WHERE id = %s
+    #         """
+    # update_values.append(node_id)
 
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
@@ -2863,8 +2863,8 @@ async def merge_docx_office_server(request: Request,
                 result_record_id = row[1]
                 print(f"查询到的 id: {result_id}, record_id: {result_record_id}")
 
-            cursor.execute(update_sql, tuple(update_values))
-            conn.commit()
+            # cursor.execute(update_sql, tuple(update_values))
+            # conn.commit()
 
     tree_ = recover_split_tree_nodes(result_record_id)
     files_ = get_tree_node_file_paths(result_record_id)
@@ -3210,7 +3210,7 @@ async def generate_default_patent_doc_patent_generator(
             min_items=0
         ),
         fill_empty_space: bool = Body(
-            True,
+            False,
             description="是否自动补图填充页面空白区域（重复使用现有图片）",
             example=True
         ),
