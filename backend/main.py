@@ -10,7 +10,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-import os
 import datetime
 import random
 import string
@@ -18,6 +17,10 @@ import psycopg2
 import configparser
 from pathlib import Path
 
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse
+import subprocess
+import shutil
 from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 from typing import Optional, Tuple, Union, List, Dict, Any, Literal
@@ -3636,6 +3639,135 @@ async def html_to_docx_api(request: Request,
             message=f"HTML转DOCX失败：{str(e)}",
             data={}
         )
+
+
+LIBREOFFICE_PATH = "soffice"
+
+
+@app.post("/test-liboffice/emf-to-png", summary="测试LibreOffice EMF转PNG功能")
+async def test_libreoffice_emf2png(
+        background_tasks: BackgroundTasks,  # 注入后台任务对象
+        file: UploadFile = File(..., description="上传EMF格式文件")
+):
+    """
+    测试 LibreOffice 是否能正常将 EMF 文件转换为 PNG：
+    1. 接收上传的 EMF 文件
+    2. 调用 LibreOffice 命令行转换
+    3. 返回转换后的 PNG 文件
+    4. 立即清理本次请求产生的所有临时文件
+    """
+    # 为每个请求创建独立的临时目录（隔离不同请求的文件）
+    temp_dir = tempfile.mkdtemp(prefix="libreoffice_test_")
+    emf_file_path = None
+    png_file_path = None
+
+    try:
+        # 1. 校验文件格式
+        if not file.filename.lower().endswith(".emf"):
+            raise HTTPException(status_code=400, detail="仅支持上传 .emf 格式文件")
+
+        # 2. 保存上传的 EMF 文件到临时目录（原生同步写入，替代aiofiles）
+        emf_filename = os.path.basename(file.filename)
+        emf_file_path = os.path.join(temp_dir, emf_filename)
+        # 读取文件内容（异步读取，同步写入，兼容FastAPI）
+        file_content = await file.read()
+        with open(emf_file_path, "wb") as f:
+            f.write(file_content)
+
+        # 3. 构造转换命令（带透明+300DPI参数）
+        png_filename = os.path.splitext(emf_filename)[0] + ".png"
+        png_file_path = os.path.join(temp_dir, png_filename)
+
+        cmd = [
+            LIBREOFFICE_PATH,
+            "--headless",  # 无界面运行
+            "--norestore",  # 防止恢复提示
+            "--nolockcheck",  # 避免锁文件问题
+            "--convert-to",
+            'png:draw_png_Export:{"Translucent":true,"Resolution":300}',  # 透明+300DPI
+            emf_file_path,
+            "--outdir",
+            temp_dir
+        ]
+
+        # 4. 执行转换并捕获结果
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60  # 超时时间60秒
+        )
+
+        # 检查命令执行状态
+        if result.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"LibreOffice 转换失败：\n标准输出：{result.stdout}\n错误输出：{result.stderr}"
+            )
+
+        # 检查PNG文件是否生成
+        if not os.path.exists(png_file_path):
+            raise HTTPException(
+                status_code=500,
+                detail="转换命令执行成功，但未生成PNG文件"
+            )
+
+        # 5. 注册后台清理任务，返回PNG文件
+        background_tasks.add_task(cleanup_temp_files, temp_dir=temp_dir)
+        return FileResponse(
+            path=png_file_path,
+            filename=png_filename,
+            media_type="image/png"
+        )
+
+    except subprocess.TimeoutExpired:
+        # 异常时先清理临时文件，再抛错
+        cleanup_temp_files(temp_dir)
+        raise HTTPException(status_code=500, detail="LibreOffice 转换超时（60秒）")
+    except Exception as e:
+        # 所有异常场景都先清理临时文件
+        cleanup_temp_files(temp_dir)
+        raise HTTPException(status_code=500, detail=f"转换过程出错：{str(e)}")
+
+
+@app.get("/health", summary="接口健康检查")
+async def health_check():
+    """检查接口是否可用，同时验证LibreOffice是否能调用"""
+    try:
+        result = subprocess.run(
+            [LIBREOFFICE_PATH, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode != 0:
+            return {
+                "status": "unhealthy",
+                "message": "LibreOffice 调用失败",
+                "error": result.stderr
+            }
+        return {
+            "status": "healthy",
+            "message": "接口和LibreOffice均正常",
+            "libreoffice_version": result.stdout.strip()
+        }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "message": "接口异常",
+            "error": str(e)
+        }
+
+
+# 通用清理函数：删除临时目录及所有文件
+def cleanup_temp_files(temp_dir: str):
+    """删除指定的临时目录，忽略不存在的目录"""
+    if os.path.exists(temp_dir):
+        try:
+            shutil.rmtree(temp_dir)
+            print(f"临时目录 {temp_dir} 已清理")
+        except Exception as e:
+            print(f"清理临时目录失败：{str(e)}")
 
 
 # ====================== 启动服务 ======================
