@@ -3641,7 +3641,7 @@ async def html_to_docx_api(request: Request,
         )
 
 
-LIBREOFFICE_PATH = "soffice"
+LIBREOFFICE_PATH = "libreoffice"
 
 
 @app.post("/test-liboffice/emf-to-png", summary="测试LibreOffice EMF转PNG功能")
