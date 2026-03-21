@@ -2015,7 +2015,7 @@ async def route_docx2html_marge(
             file_stream=file_content,
             file_name=original_filename,
             file_id=split_file_id,
-            had_title=0,
+            had_title=1,
             rm_outline_in_doc=1
         )
         # 2. 构建 eid-文件路径 映射
