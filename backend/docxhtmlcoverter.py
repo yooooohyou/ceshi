@@ -564,83 +564,252 @@ class DocxHtmlConverter:
 
         return re.sub(r'<img\b[^>]*>', _replace_img_tag, html_content, flags=re.IGNORECASE)
 
-    def _fix_html_img_sizes_for_import(self, html_text: str) -> str:
+    def _fix_html_img_sizes_for_import(self, html_text: str,
+                                        page_width_px: int = 794,
+                                        content_width_px: int = 620) -> str:
         """
-        HTML→DOCX 方向的尺寸修正。
+        HTML→DOCX 方向的图片尺寸修正。
 
-        Spire 读取 HTML 中的 <img> 时，如果图片没有显式的 width/height，
-        会用图片物理像素 ÷ 假定 96 DPI 来计算 EMU，遇到 192 DPI 图片时结果偏大 2 倍。
+        ── 问题根因 ──────────────────────────────────────────────────────────
+        Spire 将 HTML 转 DOCX 时，图片最终 EMU 的计算链路为：
+          1. 如果 <img> 有明确的 width/height 属性（纯数字 px）→ 直接用
+          2. 如果只有 style="width:Xpx" → 能读到，但部分版本会忽略
+          3. 如果没有任何尺寸信息（如本案：只有 max-width:100%; height:auto）
+             → Spire 读取图片文件物理像素，假设 96 DPI 换算 EMU
+             → 192 DPI 截图 → EMU 是正常的 2 倍 → 图片偏大 2 倍且超出 A4
 
-        本方法遍历 HTML 中所有已有 style="width:...;height:..." 或
-        width/height 属性的 <img>，将尺寸单位统一换算为像素，
-        同时写入 HTML 属性和 style，确保 Spire 读取时得到明确的像素尺寸。
+        ── 处理策略（三路来源，优先级从高到低）──────────────────────────────
+        A. img 标签已有明确 width/height（px/pt/in/cm/mm）
+           → 直接换算为 px，做 A4 版心约束后写回
+        B. img 标签没有明确尺寸，但 src 是 data:URI（base64 已解包为文件路径）
+           → 用 PIL/struct 读取文件物理像素，做约束后写入
+        C. img 标签没有明确尺寸，src 是 http/https URL
+           → 下载图片（带超时、带缓存）→ 读物理像素 → 做约束后写入
+           → 下载失败则跳过，不干预（Spire 自行处理，保持原有行为）
 
-        对于没有任何尺寸信息的 <img>，不做处理（无法判断意图）。
+        ── A4 版心约束 ───────────────────────────────────────────────────────
+        page_width_px:    A4 页面宽度，96 DPI 下约 794px（210mm）
+        content_width_px: 版心宽度（扣除页边距），默认 620px（约 165mm，对应常见 2.5cm 页边距）
+        约束规则：
+          - 宽度超过 content_width_px 时，等比缩放使宽度 = content_width_px
+          - 宽度未超出时，保持原始物理像素（不放大）
+
+        ── style 中 max-width 的处理 ─────────────────────────────────────────
+        HTML 里经常出现 style="max-width:100%; height:auto"，
+        这对浏览器渲染有意义，但 Spire 解析 HTML 时往往忽略 max-width。
+        修正后将 max-width/height:auto 替换为确定的 width:Xpx; height:Ypx，
+        同时写入 HTML width/height 属性，双保险。
         """
+        import struct
+        import urllib.request
+        import urllib.error
+
+        MM_PER_INCH  = 25.4
+        PX_PER_INCH  = 96.0   # HTML/CSS 标准基准 DPI
+
+        # ── 单位换算 ──────────────────────────────────────────────────────
         def _css_val_to_px(val_str):
-            """CSS 尺寸字符串 → 96 DPI px 浮点数，无法解析返回 None"""
             if not val_str:
                 return None
             s = val_str.strip().lower()
             try:
                 if s.endswith('px'):  return float(s[:-2])
-                if s.endswith('pt'):  return float(s[:-2]) * 96 / 72
-                if s.endswith('in'):  return float(s[:-2]) * 96
-                if s.endswith('cm'):  return float(s[:-2]) / 2.54 * 96
-                if s.endswith('mm'):  return float(s[:-2]) / 25.4 * 96
-                if s.endswith('%'):   return None   # 百分比跳过
-                return float(s)       # 纯数字默认 px
+                if s.endswith('pt'):  return float(s[:-2]) * PX_PER_INCH / 72
+                if s.endswith('in'):  return float(s[:-2]) * PX_PER_INCH
+                if s.endswith('cm'):  return float(s[:-2]) / 2.54 * PX_PER_INCH
+                if s.endswith('mm'):  return float(s[:-2]) / MM_PER_INCH * PX_PER_INCH
+                if s.endswith('%'):   return None
+                return float(s)
             except ValueError:
                 return None
 
-        def _replace_img(m):
-            tag = m.group(0)
+        # ── 从文件/bytes 读取物理像素（不依赖 PIL，纯 struct 解析主流格式）──
+        def _read_image_size_from_bytes(data: bytes):
+            """
+            返回 (width, height) 整数像素，失败返回 (None, None)。
+            支持 PNG / JPEG / GIF / BMP / WEBP。
+            """
+            try:
+                # PNG: 8字节签名 + IHDR chunk(4长度+4类型+4w+4h)
+                if data[:8] == b'\x89PNG\r\n\x1a\n':
+                    w, h = struct.unpack('>II', data[16:24])
+                    return w, h
+                # JPEG: 扫描 SOFx marker
+                if data[:2] == b'\xff\xd8':
+                    i = 2
+                    while i < len(data) - 8:
+                        if data[i] != 0xff:
+                            break
+                        marker = data[i+1]
+                        length = struct.unpack('>H', data[i+2:i+4])[0]
+                        if marker in (0xc0, 0xc1, 0xc2, 0xc3,
+                                      0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb):
+                            h, w = struct.unpack('>HH', data[i+5:i+9])
+                            return w, h
+                        i += 2 + length
+                # GIF
+                if data[:6] in (b'GIF87a', b'GIF89a'):
+                    w, h = struct.unpack('<HH', data[6:10])
+                    return w, h
+                # BMP
+                if data[:2] == b'BM':
+                    w, h = struct.unpack('<II', data[18:26])
+                    return w, abs(h)
+                # WEBP: RIFF....WEBP VP8 /VP8L/VP8X
+                if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+                    chunk = data[12:16]
+                    if chunk == b'VP8 ':
+                        w = struct.unpack('<H', data[26:28])[0] & 0x3fff
+                        h = struct.unpack('<H', data[28:30])[0] & 0x3fff
+                        return w, h
+                    if chunk == b'VP8L':
+                        bits = struct.unpack('<I', data[21:25])[0]
+                        w = (bits & 0x3fff) + 1
+                        h = ((bits >> 14) & 0x3fff) + 1
+                        return w, h
+                    if chunk == b'VP8X':
+                        w = (struct.unpack('<I', data[24:27] + b'\x00')[0] & 0xffffff) + 1
+                        h = (struct.unpack('<I', data[27:30] + b'\x00')[0] & 0xffffff) + 1
+                        return w, h
+            except Exception:
+                pass
+            return None, None
 
-            # 从 style 提取 width/height
-            style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE)
-            style_w = style_h = None
-            if style_m:
-                style_dict = {}
-                for part in style_m.group(1).split(';'):
-                    if ':' in part:
-                        k, _, v = part.partition(':')
-                        style_dict[k.strip().lower()] = v.strip()
-                style_w = _css_val_to_px(style_dict.get('width'))
-                style_h = _css_val_to_px(style_dict.get('height'))
+        def _read_image_size_from_file(path: str):
+            try:
+                with open(path, 'rb') as f:
+                    data = f.read(512)   # 只需文件头
+                return _read_image_size_from_bytes(data)
+            except Exception:
+                return None, None
 
-            # 从 HTML 属性提取 width/height
-            attr_w_m = re.search(r'\bwidth="([^"]*)"',  tag, re.IGNORECASE)
-            attr_h_m = re.search(r'\bheight="([^"]*)"', tag, re.IGNORECASE)
-            attr_w = _css_val_to_px(attr_w_m.group(1)) if attr_w_m else None
-            attr_h = _css_val_to_px(attr_h_m.group(1)) if attr_h_m else None
+        # ── HTTP 图片下载缓存（同一次调用内复用）────────────────────────
+        _url_cache: dict[str, tuple] = {}   # url → (w, h) or (None, None)
 
-            # 最终尺寸：style 优先，其次 attr，都没有则跳过
-            final_w = style_w or attr_w
-            final_h = style_h or attr_h
+        def _fetch_image_size_from_url(url: str):
+            if url in _url_cache:
+                return _url_cache[url]
+            try:
+                req = urllib.request.Request(
+                    url,
+                    headers={'User-Agent': 'Mozilla/5.0', 'Range': 'bytes=0-4095'}
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    data = resp.read(4096)
+                result = _read_image_size_from_bytes(data)
+                if result == (None, None):
+                    # 部分服务器忽略 Range，重新完整下载头部
+                    req2 = urllib.request.Request(
+                        url, headers={'User-Agent': 'Mozilla/5.0'}
+                    )
+                    with urllib.request.urlopen(req2, timeout=8) as resp2:
+                        full = resp2.read()
+                    result = _read_image_size_from_bytes(full)
+            except Exception as e:
+                print(f"   ⚠️ 下载图片失败（{url[:60]}…）：{e}")
+                result = (None, None)
+            _url_cache[url] = result
+            return result
 
-            if not final_w or not final_h:
-                return tag   # 没有尺寸信息，不干预
+        # ── A4 版心等比约束 ──────────────────────────────────────────────
+        def _constrain(w_raw: float, h_raw: float):
+            """等比缩放使宽度不超过版心，返回 (w_px, h_px) 整数"""
+            if w_raw > content_width_px:
+                scale = content_width_px / w_raw
+                return round(content_width_px), round(h_raw * scale)
+            return round(w_raw), round(h_raw)
 
-            w_px = round(final_w)
-            h_px = round(final_h)
-
-            # 写入 HTML 属性（移除旧的，添加新的）
+        # ── 写入 <img> 标签的 width/height ──────────────────────────────
+        def _apply_sizes(tag: str, w_px: int, h_px: int) -> str:
+            # 移除旧属性
             tag = re.sub(r'\s+width="[^"]*"',  '', tag, flags=re.IGNORECASE)
             tag = re.sub(r'\s+height="[^"]*"', '', tag, flags=re.IGNORECASE)
+            # 插入新属性
             tag = re.sub(r'(<img\b)', rf'\1 width="{w_px}" height="{h_px}"', tag)
 
-            # 写入 style（覆盖旧的 width/height）
+            # 更新 style：移除 max-width/height:auto/旧尺寸，写入确定值
+            style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE)
             if style_m:
                 s = style_m.group(1)
+                s = re.sub(r'\bmax-width\s*:[^;]+;?', '', s, flags=re.IGNORECASE)
+                s = re.sub(r'\bmax-height\s*:[^;]+;?', '', s, flags=re.IGNORECASE)
                 s = re.sub(r'\bwidth\s*:[^;]+;?',  '', s, flags=re.IGNORECASE)
                 s = re.sub(r'\bheight\s*:[^;]+;?', '', s, flags=re.IGNORECASE)
                 s = s.rstrip('; ')
                 new_style = f"{s}; width:{w_px}px; height:{h_px}px".lstrip('; ')
                 tag = tag[:style_m.start()] + f'style="{new_style}"' + tag[style_m.end():]
             else:
-                tag = re.sub(r'(<img\b)', rf'\1 style="width:{w_px}px; height:{h_px}px"', tag)
-
+                tag = re.sub(r'(<img\b)',
+                             rf'\1 style="width:{w_px}px; height:{h_px}px"', tag)
             return tag
+
+        # ── 主替换逻辑 ───────────────────────────────────────────────────
+        def _replace_img(m):
+            tag = m.group(0)
+
+            src_m = re.search(r'src="([^"]+)"', tag, re.IGNORECASE)
+            src   = src_m.group(1) if src_m else ''
+
+            # 解析 style 字典
+            style_dict = {}
+            style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE)
+            if style_m:
+                for part in style_m.group(1).split(';'):
+                    if ':' in part:
+                        k, _, v = part.partition(':')
+                        style_dict[k.strip().lower()] = v.strip()
+
+            # ── 路径 A：已有明确 width/height ──────────────────────────
+            # 优先取 style，其次取 HTML 属性（排除 max-width/auto/百分比）
+            raw_w = _css_val_to_px(style_dict.get('width'))
+            raw_h = _css_val_to_px(style_dict.get('height'))
+
+            attr_w_m = re.search(r'\bwidth="([^"]*)"',  tag, re.IGNORECASE)
+            attr_h_m = re.search(r'\bheight="([^"]*)"', tag, re.IGNORECASE)
+            if raw_w is None and attr_w_m:
+                raw_w = _css_val_to_px(attr_w_m.group(1))
+            if raw_h is None and attr_h_m:
+                raw_h = _css_val_to_px(attr_h_m.group(1))
+
+            if raw_w and raw_h and raw_w > 0 and raw_h > 0:
+                w_px, h_px = _constrain(raw_w, raw_h)
+                print(f"   📐 [A] 明确尺寸 → {w_px}×{h_px}px（原 {round(raw_w)}×{round(raw_h)}）")
+                return _apply_sizes(tag, w_px, h_px)
+
+            # ── 路径 B/C：无明确尺寸，从图片文件读物理像素 ─────────────
+            phys_w = phys_h = None
+
+            if src.startswith('data:'):
+                # base64 data URI 直接解码头部
+                try:
+                    b64_part = src.split(',', 1)[1] if ',' in src else ''
+                    import base64 as _b64
+                    raw_bytes = _b64.b64decode(b64_part[:4096] + '==')
+                    phys_w, phys_h = _read_image_size_from_bytes(raw_bytes)
+                except Exception:
+                    pass
+
+            elif os.path.exists(src):
+                # 本地文件路径（_extract_base64_images 解包后）
+                phys_w, phys_h = _read_image_size_from_file(src)
+                if phys_w:
+                    print(f"   📐 [B] 本地文件物理像素 {phys_w}×{phys_h}：{os.path.basename(src)}")
+
+            elif src.startswith('http://') or src.startswith('https://'):
+                phys_w, phys_h = _fetch_image_size_from_url(src)
+                if phys_w:
+                    print(f"   📐 [C] 远程图片物理像素 {phys_w}×{phys_h}：{src[:60]}")
+
+            if not phys_w or not phys_h:
+                # 无法获取尺寸，至少清除 max-width/height:auto 避免 Spire 误读
+                if 'max-width' in style_dict or 'max-height' in style_dict:
+                    tag = _apply_sizes(tag, content_width_px, content_width_px)
+                    print(f"   ⚠️ 无法获取物理像素，回退到版心宽度：{src[:60]}")
+                return tag
+
+            w_px, h_px = _constrain(float(phys_w), float(phys_h))
+            print(f"   📐 物理 {phys_w}×{phys_h} → 约束后 {w_px}×{h_px}px")
+            return _apply_sizes(tag, w_px, h_px)
 
         return re.sub(r'<img\b[^>]*>', _replace_img, html_text, flags=re.IGNORECASE)
 
