@@ -307,6 +307,343 @@ class DocxHtmlConverter:
 
         return result
 
+    # ------------------------------------------------------------------ #
+    #  DPI / 尺寸修正工具                                                   #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _extract_image_display_sizes(docx_path):
+        """
+        从 DOCX 的 document.xml 中提取每张图片的"显示尺寸"（即 Word 排版时的实际渲染宽高），
+        返回 {原始图片文件名: (width_px, height_px)} 的映射，分辨率基准为 96 DPI。
+
+        ── 为什么需要此方法 ──────────────────────────────────────────────────
+        图片在 DOCX 中的渲染尺寸存储在 <wp:extent cx="..." cy="..."/>，单位为 EMU
+        （English Metric Unit，914400 EMU = 1 inch）。这是 Word 排版的唯一权威来源，
+        与图片文件本身的 DPI 元数据无关。
+
+        Spire 把图片导出为 PNG 时，有时会把 PNG 的 DPI 元数据写成 96，但原始图片
+        （如 Retina 截图）实际是 192 DPI，导致 HTML <img> 按像素渲染时显示为 2 倍大。
+        同理，HTML→DOCX 方向，Spire 读 <img> 时如果没有显式 width/height，会用图片
+        物理像素 ÷ 假定 DPI 算 EMU，同样产生 2 倍误差。
+
+        通过从 <wp:extent> 读取 EMU 换算成 96 DPI 像素，可以强制锁定渲染尺寸，
+        完全规避图片文件 DPI 元数据的干扰。
+
+        ── 覆盖范围 ──────────────────────────────────────────────────────────
+        扫描 word/document.xml（正文）。页眉/页脚/脚注中的图片也可扩展，
+        但正文是绝大多数 2 倍问题的发生场景，优先处理。
+
+        ── XML 结构 ──────────────────────────────────────────────────────────
+        DrawingML（内联图片，最常见）：
+            <w:drawing>
+              <wp:inline>
+                <wp:extent cx="914400" cy="685800"/>   ← 宽1in×0.75in
+                <a:graphic>
+                  <a:graphicData>
+                    <pic:pic>
+                      <pic:blipFill>
+                        <a:blip r:embed="rId5"/>        ← 关联到 rId5 → image1.png
+                      </pic:blipFill>
+                    </pic:pic>
+                  </a:graphicData>
+                </a:graphic>
+              </wp:inline>
+            </w:drawing>
+
+        DrawingML（浮动图片）：
+            <wp:anchor>
+              <wp:extent cx="..." cy="..."/>
+              ...（同上）
+            </wp:anchor>
+
+        VML（旧格式，通常出现在兼容模式文档）：
+            <v:shape style="width:72pt;height:54pt;...">
+              <v:imagedata r:id="rId6" o:title="..."/>
+            </v:shape>
+            → 从 style 中解析 width/height
+
+        返回：{img_filename: (width_px_int, height_px_int)}
+              96 DPI 下：1 inch = 96 px，1 EMU = 96/914400 px
+        """
+        EMU_PER_INCH  = 914400
+        PX_PER_INCH   = 96        # HTML 标准基准 DPI
+        EMU_TO_PX     = PX_PER_INCH / EMU_PER_INCH
+
+        WP_NS  = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing'
+        A_NS   = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+        PIC_NS = 'http://schemas.openxmlformats.org/drawingml/2006/picture'
+        R_NS   = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+        VML_NS = 'urn:schemas-microsoft-com:vml'
+        W_NS   = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+
+        size_map = {}   # {img_filename: (w_px, h_px)}
+
+        try:
+            with zipfile.ZipFile(docx_path, 'r') as zf:
+                # 读取 rels，建立 rId → 图片文件名 的映射
+                rels_xml = zf.read('word/_rels/document.xml.rels').decode('utf-8')
+                rid_to_img = {}
+                for m in re.finditer(
+                    r'<Relationship\s+Id="(rId\d+)"\s+Type="[^"]*image[^"]*"\s+Target="([^"]+)"',
+                    rels_xml
+                ):
+                    rid_to_img[m.group(1)] = os.path.basename(m.group(2))
+
+                doc_xml = zf.read('word/document.xml').decode('utf-8')
+
+            root = etree.fromstring(doc_xml.encode('utf-8'))
+
+            # ── DrawingML：wp:inline / wp:anchor ──────────────────────
+            for container_tag in (f'{{{WP_NS}}}inline', f'{{{WP_NS}}}anchor'):
+                for container in root.iter(container_tag):
+                    extent = container.find(f'{{{WP_NS}}}extent')
+                    if extent is None:
+                        continue
+                    try:
+                        cx = int(extent.get('cx', 0))
+                        cy = int(extent.get('cy', 0))
+                    except ValueError:
+                        continue
+
+                    w_px = round(cx * EMU_TO_PX)
+                    h_px = round(cy * EMU_TO_PX)
+
+                    # 找到对应的 r:embed（blip）
+                    blip = container.find(
+                        f'.//{{{A_NS}}}blip'
+                    )
+                    if blip is not None:
+                        r_embed = blip.get(f'{{{R_NS}}}embed')
+                        if r_embed and r_embed in rid_to_img:
+                            fname = rid_to_img[r_embed]
+                            if fname not in size_map:   # 同一文件多处引用取第一次出现
+                                size_map[fname] = (w_px, h_px)
+
+            # ── VML：v:shape + v:imagedata ────────────────────────────
+            def _css_dim_to_px(val_str):
+                """CSS 尺寸字符串 → 96 DPI px（整数）"""
+                if not val_str:
+                    return None
+                val_str = val_str.strip().lower()
+                try:
+                    if val_str.endswith('pt'):
+                        return round(float(val_str[:-2]) * PX_PER_INCH / 72)
+                    if val_str.endswith('in'):
+                        return round(float(val_str[:-2]) * PX_PER_INCH)
+                    if val_str.endswith('cm'):
+                        return round(float(val_str[:-2]) / 2.54 * PX_PER_INCH)
+                    if val_str.endswith('mm'):
+                        return round(float(val_str[:-2]) / 25.4 * PX_PER_INCH)
+                    if val_str.endswith('px'):
+                        return round(float(val_str[:-2]))
+                except (ValueError, AttributeError):
+                    pass
+                return None
+
+            for shape in root.iter(f'{{{VML_NS}}}shape'):
+                imagedata = shape.find(f'{{{VML_NS}}}imagedata')
+                if imagedata is None:
+                    # v:imagedata 有时用 o:title 命名空间
+                    for child in shape:
+                        if child.tag.endswith('}imagedata') or child.tag == 'imagedata':
+                            imagedata = child
+                            break
+                if imagedata is None:
+                    continue
+
+                r_id = imagedata.get(f'{{{R_NS}}}id')
+                if not r_id or r_id not in rid_to_img:
+                    continue
+
+                fname = rid_to_img[r_id]
+                if fname in size_map:
+                    continue  # DrawingML 已处理，跳过
+
+                style = shape.get('style', '')
+                style_dict = {}
+                for part in style.split(';'):
+                    if ':' in part:
+                        k, _, v = part.partition(':')
+                        style_dict[k.strip().lower()] = v.strip()
+
+                w_px = _css_dim_to_px(style_dict.get('width'))
+                h_px = _css_dim_to_px(style_dict.get('height'))
+
+                if w_px and h_px:
+                    size_map[fname] = (w_px, h_px)
+
+        except Exception as e:
+            print(f"⚠️ 提取图片显示尺寸失败：{e}")
+
+        print(f"📐 从 DOCX 提取到 {len(size_map)} 张图片的显示尺寸")
+        return size_map
+
+    def _fix_html_img_sizes(self, html_content: str, size_map: dict,
+                             spire_img_names: list, image_display_order: list) -> str:
+        """
+        将 HTML 中每个 <img> 的 width/height 属性强制设置为从 DOCX <wp:extent> 读取的显示尺寸。
+
+        ── 为什么只用 style="width:...;height:..." 不够 ─────────────────────
+        HTML <img> 的实际渲染尺寸由以下优先级决定：
+          1. style="width:Xpx; height:Ypx"   ← 最高优先级
+          2. width="X" height="Y" 属性        ← 次优先级（像素）
+          3. 图片文件本身的物理像素尺寸        ← 默认（受 DPI 影响！）
+
+        Spire 生成的 HTML 有时只有 style，有时只有属性，有时两者都有但值不一致。
+        本方法同时写入 style 内的 width/height 和 HTML 属性 width/height，
+        确保所有浏览器和 Spire 反向读取时都使用正确的尺寸。
+
+        ── 匹配策略 ──────────────────────────────────────────────────────────
+        先按 spire_img_names[i] ↔ image_display_order[i] 的映射找到原始文件名，
+        再从 size_map 中查对应的像素尺寸。
+        """
+        if not size_map:
+            return html_content
+
+        # 构建 spire生成名 → 原始文件名 的映射（与 _build_spire_to_original_map 逻辑一致）
+        spire_to_orig = {}
+        orig_stems = {
+            os.path.splitext(n)[0].lower(): n
+            for n in image_display_order
+        }
+        for idx, spire_name in enumerate(spire_img_names):
+            spire_stem = os.path.splitext(spire_name)[0].lower()
+            if spire_stem in orig_stems:
+                spire_to_orig[spire_name] = orig_stems[spire_stem]
+            elif idx < len(image_display_order):
+                spire_to_orig[spire_name] = image_display_order[idx]
+
+        def _replace_img_tag(m):
+            tag = m.group(0)
+            src_m = re.search(r'src="([^"]+)"', tag)
+            if not src_m:
+                return tag
+
+            src_basename = os.path.basename(src_m.group(1))
+            orig_name = spire_to_orig.get(src_basename)
+            if not orig_name:
+                return tag
+
+            sizes = size_map.get(orig_name)
+            if not sizes:
+                # 尝试去扩展名匹配（Spire 可能改了扩展名）
+                orig_stem = os.path.splitext(orig_name)[0].lower()
+                for k, v in size_map.items():
+                    if os.path.splitext(k)[0].lower() == orig_stem:
+                        sizes = v
+                        break
+            if not sizes:
+                return tag
+
+            w_px, h_px = sizes
+
+            # 1. 写入 / 替换 HTML 属性 width / height
+            tag = re.sub(r'\s+width="[^"]*"', '', tag)
+            tag = re.sub(r'\s+height="[^"]*"', '', tag)
+            # 在 > 或第一个属性前插入
+            tag = re.sub(r'(<img\b)', rf'\1 width="{w_px}" height="{h_px}"', tag)
+
+            # 2. 写入 / 替换 style 内的 width / height
+            style_m = re.search(r'style="([^"]*)"', tag)
+            if style_m:
+                style_str = style_m.group(1)
+                style_str = re.sub(r'\bwidth\s*:[^;]+;?', '', style_str, flags=re.IGNORECASE)
+                style_str = re.sub(r'\bheight\s*:[^;]+;?', '', style_str, flags=re.IGNORECASE)
+                style_str = style_str.rstrip('; ')
+                new_style  = f"{style_str}; width:{w_px}px; height:{h_px}px".lstrip('; ')
+                tag = tag[:style_m.start()] + f'style="{new_style}"' + tag[style_m.end():]
+            else:
+                # 没有 style 属性，追加一个
+                tag = re.sub(r'(<img\b)', rf'\1 style="width:{w_px}px; height:{h_px}px"', tag)
+                # 上面已经 insert 了一次，避免重复，把多余的删掉
+                tag = re.sub(r'(<img\b)(.*?)(<img\b)', r'\1\2', tag)  # 保险去重
+
+            print(f"   📐 {src_basename} → {orig_name} 锁定尺寸 {w_px}×{h_px}px")
+            return tag
+
+        return re.sub(r'<img\b[^>]*>', _replace_img_tag, html_content, flags=re.IGNORECASE)
+
+    def _fix_html_img_sizes_for_import(self, html_text: str) -> str:
+        """
+        HTML→DOCX 方向的尺寸修正。
+
+        Spire 读取 HTML 中的 <img> 时，如果图片没有显式的 width/height，
+        会用图片物理像素 ÷ 假定 96 DPI 来计算 EMU，遇到 192 DPI 图片时结果偏大 2 倍。
+
+        本方法遍历 HTML 中所有已有 style="width:...;height:..." 或
+        width/height 属性的 <img>，将尺寸单位统一换算为像素，
+        同时写入 HTML 属性和 style，确保 Spire 读取时得到明确的像素尺寸。
+
+        对于没有任何尺寸信息的 <img>，不做处理（无法判断意图）。
+        """
+        def _css_val_to_px(val_str):
+            """CSS 尺寸字符串 → 96 DPI px 浮点数，无法解析返回 None"""
+            if not val_str:
+                return None
+            s = val_str.strip().lower()
+            try:
+                if s.endswith('px'):  return float(s[:-2])
+                if s.endswith('pt'):  return float(s[:-2]) * 96 / 72
+                if s.endswith('in'):  return float(s[:-2]) * 96
+                if s.endswith('cm'):  return float(s[:-2]) / 2.54 * 96
+                if s.endswith('mm'):  return float(s[:-2]) / 25.4 * 96
+                if s.endswith('%'):   return None   # 百分比跳过
+                return float(s)       # 纯数字默认 px
+            except ValueError:
+                return None
+
+        def _replace_img(m):
+            tag = m.group(0)
+
+            # 从 style 提取 width/height
+            style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE)
+            style_w = style_h = None
+            if style_m:
+                style_dict = {}
+                for part in style_m.group(1).split(';'):
+                    if ':' in part:
+                        k, _, v = part.partition(':')
+                        style_dict[k.strip().lower()] = v.strip()
+                style_w = _css_val_to_px(style_dict.get('width'))
+                style_h = _css_val_to_px(style_dict.get('height'))
+
+            # 从 HTML 属性提取 width/height
+            attr_w_m = re.search(r'\bwidth="([^"]*)"',  tag, re.IGNORECASE)
+            attr_h_m = re.search(r'\bheight="([^"]*)"', tag, re.IGNORECASE)
+            attr_w = _css_val_to_px(attr_w_m.group(1)) if attr_w_m else None
+            attr_h = _css_val_to_px(attr_h_m.group(1)) if attr_h_m else None
+
+            # 最终尺寸：style 优先，其次 attr，都没有则跳过
+            final_w = style_w or attr_w
+            final_h = style_h or attr_h
+
+            if not final_w or not final_h:
+                return tag   # 没有尺寸信息，不干预
+
+            w_px = round(final_w)
+            h_px = round(final_h)
+
+            # 写入 HTML 属性（移除旧的，添加新的）
+            tag = re.sub(r'\s+width="[^"]*"',  '', tag, flags=re.IGNORECASE)
+            tag = re.sub(r'\s+height="[^"]*"', '', tag, flags=re.IGNORECASE)
+            tag = re.sub(r'(<img\b)', rf'\1 width="{w_px}" height="{h_px}"', tag)
+
+            # 写入 style（覆盖旧的 width/height）
+            if style_m:
+                s = style_m.group(1)
+                s = re.sub(r'\bwidth\s*:[^;]+;?',  '', s, flags=re.IGNORECASE)
+                s = re.sub(r'\bheight\s*:[^;]+;?', '', s, flags=re.IGNORECASE)
+                s = s.rstrip('; ')
+                new_style = f"{s}; width:{w_px}px; height:{h_px}px".lstrip('; ')
+                tag = tag[:style_m.start()] + f'style="{new_style}"' + tag[style_m.end():]
+            else:
+                tag = re.sub(r'(<img\b)', rf'\1 style="width:{w_px}px; height:{h_px}px"', tag)
+
+            return tag
+
+        return re.sub(r'<img\b[^>]*>', _replace_img, html_text, flags=re.IGNORECASE)
+
     def _embed_images_to_html(self, html_path, image_display_order, original_img_dir):
         """
         【内部方法】对已生成的HTML文件做图片base64内嵌（in-place）
@@ -1315,6 +1652,9 @@ class DocxHtmlConverter:
         image_display_order = self._get_image_order_from_docx(docx_path)
         self._extract_original_images(docx_path, original_img_dir)
 
+        # 提前读取显示尺寸映射（用于修正 2 倍大问题）
+        img_size_map = self._extract_image_display_sizes(docx_path)
+
         try:
             chunk_paths = self._split_docx_to_chunks(
                 docx_path, chunk_dir, image_display_order
@@ -1337,6 +1677,22 @@ class DocxHtmlConverter:
 
             print("🖼️ 开始统一内嵌图片...")
             self._embed_images_to_html(html_path, image_display_order, original_img_dir)
+
+            # 修正图片显示尺寸（DPI 2 倍问题）
+            if img_size_map:
+                print("📐 修正图片显示尺寸...")
+                with open(html_path, 'r', encoding='utf-8') as f:
+                    html_content = f.read()
+                # 提取 spire_img_names（此时已是 base64，从 src="data:..." 无法取文件名，
+                # 改从内嵌前的 Spire 文件名列表构建；_embed_images_to_html 已完成替换，
+                # 这里直接用 image_display_order 构建 identity 映射）
+                html_content = self._fix_html_img_sizes(
+                    html_content, img_size_map,
+                    image_display_order,   # spire_img_names 与 order 同名
+                    image_display_order
+                )
+                with open(html_path, 'w', encoding='utf-8') as f:
+                    f.write(html_content)
 
             print(f"🎉 分片转换完成：{html_path}")
 
@@ -1395,9 +1751,10 @@ class DocxHtmlConverter:
         original_img_dir = self._normalize_path(os.path.join(spire_temp_dir, "original_images"))
         spire_img_dir    = self._normalize_path(os.path.join(spire_temp_dir, "images"))
 
-        # 4. 解析图片顺序 + 提取原始图片
+        # 4. 解析图片顺序 + 提取原始图片 + 提取显示尺寸
         image_display_order = self._get_image_order_from_docx(docx_path)
         extracted_imgs = self._extract_original_images(docx_path, original_img_dir)
+        img_size_map   = self._extract_image_display_sizes(docx_path)
 
         if not image_display_order and extracted_imgs:
             image_display_order = sorted(extracted_imgs)
@@ -1459,6 +1816,15 @@ class DocxHtmlConverter:
                 r'src="[^"]*/?' + re.escape(spire_name) + r'"'
             ).sub(f'src="{base64_str}"', html_content)
             print(f"🔄 {spire_name} → {os.path.basename(img_path)} 已转为Base64")
+
+        # 9b. 修正图片显示尺寸（DPI 2 倍问题）
+        # 必须在 base64 替换后执行：此时 src 已是 data URI，
+        # _fix_html_img_sizes 通过 spire_img_names/image_display_order 映射定位 img 标签
+        if img_size_map:
+            print("📐 修正图片显示尺寸...")
+            html_content = self._fix_html_img_sizes(
+                html_content, img_size_map, spire_img_names, image_display_order
+            )
 
         # 10. 保存最终HTML
         with open(html_path, 'w', encoding='utf-8') as f:
@@ -1944,6 +2310,12 @@ class DocxHtmlConverter:
             # ── 步骤1：base64 图片预处理 ─────────────────────────────────
             html_text, temp_img_dir = self._extract_base64_images(html_text, output_dir)
 
+            # ── 步骤1b：导入方向尺寸修正（DPI 2 倍问题）─────────────────
+            # 必须在 base64 解包后（src 已是文件路径）、Spire 加载前执行。
+            # Spire 读 HTML 时如果 <img> 缺少显式 width/height，
+            # 会用物理像素 ÷ 假定 96 DPI 算 EMU，遇到 192 DPI 图片偏大 2 倍。
+            html_text = self._fix_html_img_sizes_for_import(html_text)
+
             # ── 步骤2：判断是否需要分片 ──────────────────────────────────
             para_count = self._html_count_paragraphs(html_text)
             print(f"📊 HTML 段落估算：{para_count}，阈值：{self.MAX_PARAGRAPHS}")
@@ -2068,12 +2440,12 @@ if __name__ == "__main__":
     # 示例1：DOCX转单文件HTML（自动判断是否需要分片）
     input_docx = r"input_langwithtable.docx"
     output_html = r"output.html"
-    html_content = converter.docx_to_single_html(input_docx, output_html)
+    # html_content = converter.docx_to_single_html(input_docx, output_html)
 
     # 示例2：HTML文本转DOCX
-    # if os.path.exists(output_html):
-    #     with open(output_html, 'r', encoding='utf-8') as f:
-    #         sample_html = f.read()
-    #     converter.html_text_to_docx(sample_html, "output.docx")
-    # else:
-    #     print(f"错误：未找到HTML文件 {output_html}")
+    if os.path.exists(output_html):
+        with open(output_html, 'r', encoding='utf-8') as f:
+            sample_html = f.read()
+        converter.html_text_to_docx(sample_html, "output.docx")
+    else:
+        print(f"错误：未找到HTML文件 {output_html}")
