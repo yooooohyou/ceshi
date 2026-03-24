@@ -2588,15 +2588,49 @@ class DocxHtmlConverter:
         """
         将单个 HTML chunk（已完成 base64 解包）转为 DOCX。
         temp_img_dir 是 base64 解包目录，图片文件已在调用前写好，此处只做转换。
+
+        修复：临时 HTML 写到与 temp_img_dir 相同的目录（或 output_path 同级目录），
+        而不是系统 tempfile 默认目录。
+        原因：Spire 解析 HTML 中的 src 路径时，对于绝对路径会直接引用，
+        但路径含中文、空格或 Windows 反斜杠时容易解析失败导致图片丢失。
+        将临时 HTML 与图片放在同一目录，可以用短的相对路径兜底，
+        同时避免系统 temp 目录权限问题。
         """
-        document    = None
+        document       = None
         temp_html_path = None
         try:
-            with tempfile.NamedTemporaryFile(
-                mode='w', suffix='.html', delete=False, encoding='utf-8'
-            ) as f:
-                temp_html_path = self._normalize_path(f.name)
-                f.write(html_chunk)
+            # 临时 HTML 放到图片目录（若无图片则放到 output 同级）
+            html_dir = temp_img_dir if temp_img_dir and os.path.isdir(temp_img_dir)                        else os.path.dirname(output_path)
+            os.makedirs(html_dir, exist_ok=True)
+
+            temp_html_path = self._normalize_path(
+                os.path.join(html_dir, f"_chunk_{uuid.uuid4().hex[:8]}.html")
+            )
+
+            # 将 src 中的绝对路径转为相对于 html_dir 的相对路径，
+            # 降低 Spire 路径解析失败的概率（中文目录名、空格等场景）
+            html_to_write = html_chunk
+            if temp_img_dir and os.path.isdir(temp_img_dir):
+                def _to_rel_src(m):
+                    tag = m.group(0)
+                    src_m = re.search(r'src="([^"]+)"', tag)
+                    if not src_m:
+                        return tag
+                    src = src_m.group(1)
+                    # 只处理本地绝对路径，跳过 http/data URI
+                    if src.startswith('http') or src.startswith('data:'):
+                        return tag
+                    try:
+                        rel = os.path.relpath(src, html_dir).replace('\\', '/')
+                        return tag[:src_m.start()] + f'src="{rel}"' + tag[src_m.end():]
+                    except ValueError:
+                        return tag  # 跨盘符时 relpath 失败，保留原路径
+                html_to_write = re.sub(
+                    r'<img\b[^>]*>', _to_rel_src, html_chunk, flags=re.IGNORECASE
+                )
+
+            with open(temp_html_path, 'w', encoding='utf-8') as f:
+                f.write(html_to_write)
 
             document = Document()
             document.LoadFromFile(temp_html_path, FileFormat.Html, self.html_validation_type)
@@ -2899,16 +2933,29 @@ class DocxHtmlConverter:
 
     def _extract_base64_images(self, html_text: str, base_dir: str):
         """
-        【修复问题7】将 HTML 中 <img src="data:...;base64,..."> 的 data URI
-        提取为临时文件，替换为文件路径引用，返回 (modified_html, temp_img_dir)。
+        将 HTML 中所有 <img src="data:image/...;base64,..."> 的 data URI
+        提取为临时图片文件，并将 HTML 中的 src 替换为该文件的绝对路径，
+        返回 (modified_html, temp_img_dir)。
 
-        这样 Spire 在加载 HTML 时只需读取普通图片文件，
-        不会因 data URI 字符串过长而导致解析超时或静默丢图。
+        Spire 加载含 base64 的 HTML 时有两类问题：
+          1. data URI 字符串极长，Spire 内部字符串处理超限，静默丢图或崩溃
+          2. base64 字符串中夹有换行符（部分编码器每 76 字符换行），
+             Spire 解码不完整导致图片损坏
 
-        如果 html_text 中不含任何 base64 图片，temp_img_dir 返回 None。
+        本方法的修复要点：
+          a. 正则允许 base64 串中含空白/换行（re.DOTALL + [A-Za-z0-9+/=\\s]+）
+          b. 解码前先 strip() 去除所有空白，再 ignore 模式解码，容错残缺 padding
+          c. 替换时用正则按 match 的绝对位置直接切割重组，
+             不用 str.replace（避免 full_src 含换行导致精确匹配失败）
+          d. 临时 HTML 写到与 temp_img_dir 相同目录，
+             确保 Spire 用相对路径也能找到图片（兼容路径含空格/中文的场景）
+          e. 图片文件名不含中文和空格，避免 Spire 在 Windows 下路径解析失败
+
+        如果 HTML 中不含任何 base64 图片，temp_img_dir 返回 None。
         """
+        # 允许 base64 串中夹有任意空白(\\s 覆盖换行/回车/空格/制表)
         data_uri_pattern = re.compile(
-            r'src="(data:(image/[a-zA-Z+]+);base64,([A-Za-z0-9+/=]+))"',
+            r'src="(data:(image/[a-zA-Z0-9+\-]+);base64,([A-Za-z0-9+/=\s]+))"',
             re.DOTALL
         )
 
@@ -2922,33 +2969,64 @@ class DocxHtmlConverter:
         os.makedirs(temp_img_dir, exist_ok=True)
 
         ext_map = {
-            'image/png':  '.png',
-            'image/jpeg': '.jpg',
-            'image/gif':  '.gif',
-            'image/bmp':  '.bmp',
-            'image/webp': '.webp',
+            'image/png':     '.png',
+            'image/jpeg':    '.jpg',
+            'image/jpg':     '.jpg',
+            'image/gif':     '.gif',
+            'image/bmp':     '.bmp',
+            'image/webp':    '.webp',
             'image/svg+xml': '.svg',
+            'image/tiff':    '.tif',
         }
 
-        replacements = []
+        # 记录每个 match 对应的替换结果：(match.start, match.end, new_src_attr)
+        # match 覆盖的是整个 src="..." 属性（含引号）
+        patch_list = []  # [(abs_start, abs_end, replacement_str)]
+
         for idx, m in enumerate(matches):
-            full_src   = m.group(1)
-            mime_type  = m.group(2)
-            b64_data   = m.group(3)
-            ext        = ext_map.get(mime_type, '.png')
-            img_name   = f"img_{idx:04d}{ext}"
-            img_path   = self._normalize_path(os.path.join(temp_img_dir, img_name))
+            # m.group(0) = 整个 src="data:..."
+            # m.group(1) = data URI 全文（不含外层引号）
+            # m.group(2) = mime type
+            # m.group(3) = base64 数据（可能含换行）
+            mime_type = m.group(2).lower()
+            b64_raw   = m.group(3)
+
+            ext      = ext_map.get(mime_type, '.png')
+            img_name = f"img_{idx:04d}{ext}"
+            img_path = self._normalize_path(os.path.join(temp_img_dir, img_name))
 
             try:
-                with open(img_path, 'wb') as f:
-                    f.write(base64.b64decode(b64_data))
-                replacements.append((full_src, img_path))
-                print(f"   📤 base64图片解包：{img_name}")
-            except Exception as e:
-                print(f"   ⚠️ base64图片解包失败（idx={idx}）：{e}")
+                # 去除 base64 串中所有空白后解码，ignore 模式容忍残缺 padding
+                b64_clean = re.sub(r'\s', '', b64_raw)
+                # 补齐 padding（base64 串长度必须是 4 的倍数）
+                padding = (4 - len(b64_clean) % 4) % 4
+                b64_clean += '=' * padding
+                img_bytes = base64.b64decode(b64_clean, validate=False)
 
-        for original_src, file_path in replacements:
-            html_text = html_text.replace(f'src="{original_src}"', f'src="{file_path}"')
+                with open(img_path, 'wb') as f:
+                    f.write(img_bytes)
+
+                # 用正斜杠路径（Spire 在 Windows 下也能识别）
+                img_path_fwd = img_path.replace('\\\\', '/').replace('\\', '/')
+                # 替换目标：src="<原始data URI>" → src="<文件路径>"
+                patch_list.append((m.start(0), m.end(0), f'src="{img_path_fwd}"'))
+                print(f"   📤 base64解包成功：{img_name}（{len(img_bytes)} bytes）")
+
+            except Exception as e:
+                print(f"   ⚠️ base64图片解包失败（idx={idx}，mime={mime_type}）：{e}")
+                # 失败时保留原 src 不替换
+                patch_list.append((m.start(0), m.end(0), m.group(0)))
+
+        # 按位置从后往前替换，避免偏移量因前面替换而漂移
+        parts = list(html_text)
+        result_segs = []
+        prev_end = len(html_text)
+        for start, end, replacement in reversed(patch_list):
+            result_segs.append(html_text[end:prev_end])
+            result_segs.append(replacement)
+            prev_end = start
+        result_segs.append(html_text[:prev_end])
+        html_text = ''.join(reversed(result_segs))
 
         return html_text, temp_img_dir
 
