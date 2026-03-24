@@ -789,7 +789,8 @@ def init_db_tables():
       "level" int4 COMMENT '节点层级',
       "eid" varchar(128) COLLATE "pg_catalog"."default" COMMENT '拆分接口返回的eid',
       "idx" int4 COMMENT '拆分接口返回的idx',
-      "node_type" varchar(16) COLLATE "pg_catalog"."default" DEFAULT 'main' COMMENT '节点类型：main/branch'
+      "node_type" varchar(16) COLLATE "pg_catalog"."default" DEFAULT 'main' COMMENT '节点类型：main/branch',
+      "split_id" int4 COMMENT '拆分接口返回的树节点id，用于合并时还原树结构'
     );
     COMMENT ON COLUMN "yxdl_docx_title_trees"."id" IS '节点ID';
     COMMENT ON COLUMN "yxdl_docx_title_trees"."record_id" IS '关联文件记录ID';
@@ -801,6 +802,7 @@ def init_db_tables():
     COMMENT ON COLUMN "yxdl_docx_title_trees"."eid" IS '拆分接口返回的eid';
     COMMENT ON COLUMN "yxdl_docx_title_trees"."idx" IS '拆分接口返回的idx';
     COMMENT ON COLUMN "yxdl_docx_title_trees"."node_type" IS '节点类型：main/branch';
+    COMMENT ON COLUMN "yxdl_docx_title_trees"."split_id" IS '拆分接口返回的树节点id，用于合并时还原树结构';
     COMMENT ON TABLE "yxdl_docx_title_trees" IS '标题树节点表';
     """
 
@@ -1107,8 +1109,8 @@ def process_split_tree_nodes(
         insert_tree_sql = """
         INSERT INTO "yxdl_docx_title_trees"
         (record_id, title_text, html_content, create_time, update_time,
-         level, eid, idx, node_type, origin_file_path, is_conversion_completion, parent_id, batch_count)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+         level, eid, idx, node_type, origin_file_path, is_conversion_completion, parent_id, batch_count, split_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id;
         """
         with get_db_connection() as conn:
@@ -1118,7 +1120,7 @@ def process_split_tree_nodes(
                     current_time, current_time,
                     node.level, node.eid, node.idx,
                     "branch", node_file_path, is_conversion_completion,
-                    parent_id, batch_count
+                    parent_id, batch_count, node.id
                 ))
                 node_id = cursor.fetchone()[0]
                 conn.commit()
@@ -1225,10 +1227,10 @@ def recover_split_tree_nodes(record_id: int) -> List[Dict[str, Any]]:
         raise ValueError("record_id必须是正整数")
 
     select_sql = """
-    SELECT 
+    SELECT
         id, title_text, level, eid, idx, parent_id, batch_count,
-        origin_file_path, update_file_path, is_conversion_completion
-    FROM "yxdl_docx_title_trees" 
+        origin_file_path, update_file_path, is_conversion_completion, split_id
+    FROM "yxdl_docx_title_trees"
     WHERE record_id = %s
     ORDER BY level ASC, idx ASC;
     """
@@ -1262,7 +1264,7 @@ def recover_split_tree_nodes(record_id: int) -> List[Dict[str, Any]]:
                 "eid":       node.get("eid") or "",
                 "text":      node.get("title_text") or "",   # ← 关键：title_text → text
                 "level":     node.get("level", 0),
-                "id":        node.get("id"),
+                "id":        node.get("split_id"),           # ← 使用拆分接口返回的原始id，用于合并时还原树
                 "idx":       node.get("idx", 0),
                 "parent_id": node.get("parent_id"),
                 "file_name": file_name,                      # ← 关键：逐节点取，不共用
