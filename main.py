@@ -2855,7 +2855,7 @@ async def merge_docx_office_server(
     select_sql = """
         SELECT
             id, title_text, level, eid, idx, parent_id, batch_count,
-            origin_file_path, update_file_path, is_conversion_completion
+            origin_file_path, update_file_path, is_conversion_completion, split_id
         FROM "yxdl_docx_title_trees"
         WHERE record_id = %s
         ORDER BY level ASC, idx ASC;
@@ -2874,7 +2874,7 @@ async def merge_docx_office_server(
     # 字段映射：数据库行 → TreeItem（与 _query_and_build_tree 逻辑一致）
     tree_nodes_org = [
         TreeItem(**{
-            "id":                       item.get("id"),
+            "id":                       item.get("split_id"),           # ← 使用拆分接口返回的原始id，用于合并时还原树
             "text":                     item.get("title_text"),
             "level":                    item.get("level"),
             "eid":                      item.get("eid"),
