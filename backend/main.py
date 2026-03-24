@@ -2530,6 +2530,12 @@ async def update_html_by_node_new(request: Request,
 
         # ── 2. 公共预处理 ────────────────────────────────────────────────
         html_content, status_ = html_img_url_to_base64(html_content)
+
+        # with open("index.html", "w", encoding="utf-8") as f:
+        #     f.write(html_content)
+        #
+        # print("HTML 文件已成功保存！")
+
         existing_levels, max_level = get_html_heading_levels(html_content)
         max_now_level = MAX_LEVEL_NODE - int(now_level)
 

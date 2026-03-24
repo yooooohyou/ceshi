@@ -883,25 +883,28 @@ class DocxHtmlConverter:
         def _fetch_image_size_from_url(url: str):
             if url in _url_cache:
                 return _url_cache[url]
-            try:
-                req = urllib.request.Request(
-                    url,
-                    headers={'User-Agent': 'Mozilla/5.0', 'Range': 'bytes=0-4095'}
-                )
-                with urllib.request.urlopen(req, timeout=8) as resp:
-                    data = resp.read(4096)
-                result = _read_image_size_from_bytes(data)
-                if result == (None, None):
-                    # 部分服务器忽略 Range，重新完整下载头部
-                    req2 = urllib.request.Request(
-                        url, headers={'User-Agent': 'Mozilla/5.0'}
+            result = (None, None)
+            for attempt, timeout in enumerate((30, 60), start=1):
+                try:
+                    req = urllib.request.Request(
+                        url,
+                        headers={'User-Agent': 'Mozilla/5.0', 'Range': 'bytes=0-4095'}
                     )
-                    with urllib.request.urlopen(req2, timeout=8) as resp2:
-                        full = resp2.read()
-                    result = _read_image_size_from_bytes(full)
-            except Exception as e:
-                print(f"   ⚠️ 下载图片失败（{url[:60]}…）：{e}")
-                result = (None, None)
+                    with urllib.request.urlopen(req, timeout=timeout) as resp:
+                        data = resp.read(4096)
+                    result = _read_image_size_from_bytes(data)
+                    if result == (None, None):
+                        # 服务器忽略 Range，完整下载
+                        req2 = urllib.request.Request(
+                            url, headers={'User-Agent': 'Mozilla/5.0'}
+                        )
+                        with urllib.request.urlopen(req2, timeout=timeout) as resp2:
+                            full = resp2.read()
+                        result = _read_image_size_from_bytes(full)
+                    if result != (None, None):
+                        break
+                except Exception as e:
+                    print(f"   ⚠️ 获取图片尺寸失败（第{attempt}次，timeout={timeout}s）{url[:60]}：{e}")
             _url_cache[url] = result
             return result
 
@@ -964,11 +967,12 @@ class DocxHtmlConverter:
             src_m = re.search(r'src="([^"]+)"', tag, re.IGNORECASE)
             src   = src_m.group(1) if src_m else ''
 
-            # 解析 style 字典
+            # 解析 style 字典（style 值内部可能有换行缩进，先压缩）
             style_dict = {}
-            style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE)
+            style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE | re.DOTALL)
             if style_m:
-                for part in style_m.group(1).split(';'):
+                style_val = re.sub(r'[\r\n]+\s*', ' ', style_m.group(1))
+                for part in style_val.split(';'):
                     if ':' in part:
                         k, _, v = part.partition(':')
                         style_dict[k.strip().lower()] = v.strip()
@@ -2586,45 +2590,38 @@ class DocxHtmlConverter:
     def _html_chunk_to_docx(self, html_chunk: str, output_path: str,
                              temp_img_dir: str | None) -> bool:
         """
-        将单个 HTML chunk（已完成 base64 解包）转为 DOCX。
-        temp_img_dir 是 base64 解包目录，图片文件已在调用前写好，此处只做转换。
-
-        修复：临时 HTML 写到与 temp_img_dir 相同的目录（或 output_path 同级目录），
-        而不是系统 tempfile 默认目录。
-        原因：Spire 解析 HTML 中的 src 路径时，对于绝对路径会直接引用，
-        但路径含中文、空格或 Windows 反斜杠时容易解析失败导致图片丢失。
-        将临时 HTML 与图片放在同一目录，可以用短的相对路径兜底，
-        同时避免系统 temp 目录权限问题。
+        将单个 HTML chunk 转为 DOCX（通过 Spire）。
+        temp_img_dir 是图片解包目录，临时 HTML 写到同一目录，
+        使 Spire 通过相对路径加载图片，避免中文/空格路径解析失败。
         """
         document       = None
         temp_html_path = None
         try:
-            # 临时 HTML 放到图片目录（若无图片则放到 output 同级）
-            html_dir = temp_img_dir if temp_img_dir and os.path.isdir(temp_img_dir)                        else os.path.dirname(output_path)
+            # 临时 HTML 与图片放在同一目录，让 Spire 用相对路径找图片
+            html_dir = (temp_img_dir if temp_img_dir and os.path.isdir(temp_img_dir)
+                        else os.path.dirname(output_path))
             os.makedirs(html_dir, exist_ok=True)
 
             temp_html_path = self._normalize_path(
                 os.path.join(html_dir, f"_chunk_{uuid.uuid4().hex[:8]}.html")
             )
 
-            # 将 src 中的绝对路径转为相对于 html_dir 的相对路径，
-            # 降低 Spire 路径解析失败的概率（中文目录名、空格等场景）
+            # 将 src 绝对路径转为相对路径，降低 Spire 路径解析失败的概率
             html_to_write = html_chunk
             if temp_img_dir and os.path.isdir(temp_img_dir):
                 def _to_rel_src(m):
-                    tag = m.group(0)
+                    tag   = m.group(0)
                     src_m = re.search(r'src="([^"]+)"', tag)
                     if not src_m:
                         return tag
                     src = src_m.group(1)
-                    # 只处理本地绝对路径，跳过 http/data URI
                     if src.startswith('http') or src.startswith('data:'):
                         return tag
                     try:
                         rel = os.path.relpath(src, html_dir).replace('\\', '/')
                         return tag[:src_m.start()] + f'src="{rel}"' + tag[src_m.end():]
                     except ValueError:
-                        return tag  # 跨盘符时 relpath 失败，保留原路径
+                        return tag
                 html_to_write = re.sub(
                     r'<img\b[^>]*>', _to_rel_src, html_chunk, flags=re.IGNORECASE
                 )
@@ -2839,7 +2836,12 @@ class DocxHtmlConverter:
         支持超大 HTML（段落 > MAX_PARAGRAPHS）自动切片转换，绕过 Spire 免费版限制。
 
         流程：
-        1. base64 图片预处理（解包为临时文件，避免 Spire 解析超时）
+        1. 图片预处理：
+           a. 修正 MIME 类型声明与实际格式不匹配问题（如声明 jpeg 实际是 webp）
+           b. 修正 height:auto → 根据物理宽高比等比计算实际高度（px）
+           c. base64 data URI 解包为临时图片文件（避免 Spire 因 data URI 过长崩溃）
+           d. 外链 URL 图片下载后解包（带超时缓存）
+           e. A4 版心尺寸约束
         2. 估算段落数，小文档直接转，大文档走分片流程
         3. 分片流程：HTML 切分 → 各片独立转 DOCX → python-docx 合并
         4. 清理所有临时文件
@@ -2861,13 +2863,11 @@ class DocxHtmlConverter:
         chunk_dir     = None
 
         try:
-            # ── 步骤1：base64 图片预处理 ─────────────────────────────────
+            # ── 步骤1a：修正 MIME 错误 + height:auto + base64/URL 图片解包 ──
+            # 必须在 Spire 加载 HTML 前完成，三件事一次遍历全部 <img> 标签处理
             html_text, temp_img_dir = self._extract_base64_images(html_text, output_dir)
 
-            # ── 步骤1b：导入方向尺寸修正（DPI 2 倍问题）─────────────────
-            # 必须在 base64 解包后（src 已是文件路径）、Spire 加载前执行。
-            # Spire 读 HTML 时如果 <img> 缺少显式 width/height，
-            # 会用物理像素 ÷ 假定 96 DPI 算 EMU，遇到 192 DPI 图片偏大 2 倍。
+            # ── 步骤1b：A4 版心尺寸约束（已有明确 px 尺寸时做等比缩放）──────
             html_text = self._fix_html_img_sizes_for_import(html_text)
 
             # ── 步骤2：判断是否需要分片 ──────────────────────────────────
@@ -2875,7 +2875,6 @@ class DocxHtmlConverter:
             print(f"📊 HTML 段落估算：{para_count}，阈值：{self.MAX_PARAGRAPHS}")
 
             if para_count <= self.MAX_PARAGRAPHS:
-                # 小文档：直接转换
                 print("✅ 无需分片，直接转换")
                 return self._html_chunk_to_docx(html_text, output_docx_path, temp_img_dir)
 
@@ -2916,14 +2915,12 @@ class DocxHtmlConverter:
             return False
 
         finally:
-            # 清理 base64 解包目录
             if temp_img_dir and os.path.exists(temp_img_dir):
                 try:
                     shutil.rmtree(temp_img_dir, ignore_errors=True)
-                    print(f"🗑️ 清理base64临时目录：{temp_img_dir}")
+                    print(f"🗑️ 清理图片临时目录：{temp_img_dir}")
                 except Exception as e:
-                    print(f"⚠️ 清理base64临时目录失败：{e}")
-            # 清理 chunk 目录
+                    print(f"⚠️ 清理图片临时目录失败：{e}")
             if chunk_dir and os.path.exists(chunk_dir):
                 try:
                     shutil.rmtree(chunk_dir, ignore_errors=True)
@@ -2931,35 +2928,129 @@ class DocxHtmlConverter:
                 except Exception as e:
                     print(f"⚠️ 清理chunk目录失败：{e}")
 
+
+    # ------------------------------------------------------------------ #
+    #  图片预处理工具（HTML→DOCX 方向）                                     #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _decode_b64_safe(b64_raw: str) -> bytes | None:
+        """容忍换行/空白/残缺 padding 的 base64 解码，失败返回 None。"""
+        try:
+            clean   = re.sub(r'\s', '', b64_raw)
+            padding = (4 - len(clean) % 4) % 4
+            return base64.b64decode(clean + '=' * padding, validate=False)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _read_image_wh(data: bytes):
+        """
+        从图片二进制头解析物理像素（w, h），支持 PNG/JPEG/GIF/BMP/WEBP。
+        失败返回 (None, None)。
+        """
+        import struct
+        try:
+            if data[:8] == b'\x89PNG\r\n\x1a\n':
+                return struct.unpack('>II', data[16:24])
+            if data[:2] == b'\xff\xd8':
+                i = 2
+                while i < len(data) - 8:
+                    if data[i] != 0xff: break
+                    marker = data[i + 1]
+                    if i + 3 >= len(data): break
+                    length = struct.unpack('>H', data[i + 2:i + 4])[0]
+                    if marker in (0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb):
+                        h, w = struct.unpack('>HH', data[i + 5:i + 9])
+                        return w, h
+                    i += 2 + length
+            if data[:6] in (b'GIF87a', b'GIF89a'):
+                return struct.unpack('<HH', data[6:10])
+            if data[:2] == b'BM':
+                w, h = struct.unpack('<II', data[18:26])
+                return w, abs(h)
+            # WEBP：支持 VP8 / VP8L / VP8X 三种子格式
+            if data[:4] == b'RIFF' and len(data) >= 30 and data[8:12] == b'WEBP':
+                chunk = data[12:16]
+                if chunk == b'VP8 ':
+                    w = struct.unpack('<H', data[26:28])[0] & 0x3fff
+                    h = struct.unpack('<H', data[28:30])[0] & 0x3fff
+                    return w, h
+                if chunk == b'VP8L' and len(data) >= 25:
+                    bits = struct.unpack('<I', data[21:25])[0]
+                    return (bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1
+                if chunk == b'VP8X' and len(data) >= 30:
+                    w = (int.from_bytes(data[24:27], 'little') & 0xffffff) + 1
+                    h = (int.from_bytes(data[27:30], 'little') & 0xffffff) + 1
+                    return w, h
+        except Exception:
+            pass
+        return None, None
+
+    @staticmethod
+    def _guess_mime(data: bytes) -> str:
+        """从文件头推断真实 MIME 类型，默认返回 image/png。"""
+        if data[:8]  == b'\x89PNG\r\n\x1a\n': return 'image/png'
+        if data[:2]  == b'\xff\xd8':            return 'image/jpeg'
+        if data[:6]  in (b'GIF87a', b'GIF89a'):  return 'image/gif'
+        if data[:2]  == b'BM':                    return 'image/bmp'
+        if data[:4]  == b'RIFF' and data[8:12] == b'WEBP': return 'image/webp'
+        return 'image/png'
+
     def _extract_base64_images(self, html_text: str, base_dir: str):
         """
-        将 HTML 中所有 <img src="data:image/...;base64,..."> 的 data URI
-        提取为临时图片文件，并将 HTML 中的 src 替换为该文件的绝对路径，
-        返回 (modified_html, temp_img_dir)。
+        HTML→DOCX 方向的图片预处理，返回 (modified_html, temp_img_dir)。
 
-        Spire 加载含 base64 的 HTML 时有两类问题：
-          1. data URI 字符串极长，Spire 内部字符串处理超限，静默丢图或崩溃
-          2. base64 字符串中夹有换行符（部分编码器每 76 字符换行），
-             Spire 解码不完整导致图片损坏
+        一次遍历全部 <img> 标签，完成三件事：
 
-        本方法的修复要点：
-          a. 正则允许 base64 串中含空白/换行（re.DOTALL + [A-Za-z0-9+/=\\s]+）
-          b. 解码前先 strip() 去除所有空白，再 ignore 模式解码，容错残缺 padding
-          c. 替换时用正则按 match 的绝对位置直接切割重组，
-             不用 str.replace（避免 full_src 含换行导致精确匹配失败）
-          d. 临时 HTML 写到与 temp_img_dir 相同目录，
-             确保 Spire 用相对路径也能找到图片（兼容路径含空格/中文的场景）
-          e. 图片文件名不含中文和空格，避免 Spire 在 Windows 下路径解析失败
+        1. MIME 类型校正
+           data URI 中声明的 MIME（如 image/jpeg）与实际二进制格式（如 WEBP）
+           可能不一致，Spire 会按声明的 MIME 解析，遇到不符时静默丢弃图片。
+           修复：解码后用文件头重新判断真实格式，写临时文件时用正确扩展名，
+           同时把 HTML 里的 src data URI 替换为正确的本地文件路径。
 
-        如果 HTML 中不含任何 base64 图片，temp_img_dir 返回 None。
+        2. height:auto 等比推算
+           CSS height:auto 语义是"按宽度等比缩放"，Spire 不理解此语义，
+           会直接用 0 或物理像素高度，导致图片变形。
+           修复：解码图片读出物理像素宽高，用 style width 推算正确高度（px），
+           同时写入 HTML 属性 width/height 供 Spire 读取。
+
+        3. base64 data URI 解包为本地文件
+           Spire 对超长 data URI 字符串可能解析超时或静默丢图。
+           修复：统一解包为临时文件，HTML src 替换为本地路径。
+
+        外链 http/https URL 图片同样支持：下载后写临时文件，同步做 MIME 校正。
+        没有任何图片时 temp_img_dir 返回 None。
         """
-        # 允许 base64 串中夹有任意空白(\\s 覆盖换行/回车/空格/制表)
-        data_uri_pattern = re.compile(
-            r'src="(data:(image/[a-zA-Z0-9+\-]+);base64,([A-Za-z0-9+/=\s]+))"',
+        import urllib.request
+
+        MIME_TO_EXT = {
+            'image/png':     '.png',
+            'image/jpeg':    '.jpg',
+            'image/gif':     '.gif',
+            'image/bmp':     '.bmp',
+            'image/webp':    '.webp',
+            'image/svg+xml': '.svg',
+            'image/tiff':    '.tif',
+        }
+
+        b64_re  = re.compile(
+            r'data:(image/[a-zA-Z0-9+\-]+);base64,([A-Za-z0-9+/=\s]+)',
             re.DOTALL
         )
+        img_tag_re = re.compile(r'<img\b[^>]*>', re.IGNORECASE | re.DOTALL)
+        src_re     = re.compile(r'src="([^"]*)"', re.IGNORECASE)
 
-        matches = list(data_uri_pattern.finditer(html_text))
+        # ── 预处理：还原 JSON 序列化导致的 \" 转义引号 ────────────────────
+        # HTML 被作为 JSON 字符串值传输时，属性引号变为 \"，
+        # 导致 src="..." 正则完全匹配不到 src=\"...\" 形式的 src。
+        # 统一先还原，后续正则统一用普通双引号处理。
+        if '\\"' in html_text:
+            html_text = html_text.replace('\\"', '"')
+            print("   🔧 检测到 JSON 转义引号，已还原 \\\" → \"")
+
+        # ── 收集所有需要处理的 img 标签 ──────────────────────────────────
+        matches = list(img_tag_re.finditer(html_text))
         if not matches:
             return html_text, None
 
@@ -2968,67 +3059,168 @@ class DocxHtmlConverter:
         )
         os.makedirs(temp_img_dir, exist_ok=True)
 
-        ext_map = {
-            'image/png':     '.png',
-            'image/jpeg':    '.jpg',
-            'image/jpg':     '.jpg',
-            'image/gif':     '.gif',
-            'image/bmp':     '.bmp',
-            'image/webp':    '.webp',
-            'image/svg+xml': '.svg',
-            'image/tiff':    '.tif',
-        }
+        url_cache  = {}   # url → bytes，同一 URL 只下载一次
+        patch_list = []   # [(start, end, new_tag_str)]
+        has_any    = False
 
-        # 记录每个 match 对应的替换结果：(match.start, match.end, new_src_attr)
-        # match 覆盖的是整个 src="..." 属性（含引号）
-        patch_list = []  # [(abs_start, abs_end, replacement_str)]
+        for m in matches:
+            tag    = m.group(0)
+            src_m  = src_re.search(tag)
+            src    = src_m.group(1).strip() if src_m else ''
 
-        for idx, m in enumerate(matches):
-            # m.group(0) = 整个 src="data:..."
-            # m.group(1) = data URI 全文（不含外层引号）
-            # m.group(2) = mime type
-            # m.group(3) = base64 数据（可能含换行）
-            mime_type = m.group(2).lower()
-            b64_raw   = m.group(3)
+            img_bytes = None
 
-            ext      = ext_map.get(mime_type, '.png')
-            img_name = f"img_{idx:04d}{ext}"
-            img_path = self._normalize_path(os.path.join(temp_img_dir, img_name))
+            # ── base64 data URI ──────────────────────────────────────────
+            b64_m = b64_re.match(src) if src else None
+            if b64_m:
+                img_bytes = self._decode_b64_safe(b64_m.group(2))
 
-            try:
-                # 去除 base64 串中所有空白后解码，ignore 模式容忍残缺 padding
-                b64_clean = re.sub(r'\s', '', b64_raw)
-                # 补齐 padding（base64 串长度必须是 4 的倍数）
-                padding = (4 - len(b64_clean) % 4) % 4
-                b64_clean += '=' * padding
-                img_bytes = base64.b64decode(b64_clean, validate=False)
+            # ── 外链 URL ─────────────────────────────────────────────────
+            elif src.startswith('http://') or src.startswith('https://'):
+                if src in url_cache:
+                    img_bytes = url_cache[src]
+                else:
+                    # 重试三次，每次超时递增（30s / 60s / 90s），
+                    # 适应内网大文件或服务器响应较慢的场景
+                    for attempt, timeout in enumerate((30, 60, 90), start=1):
+                        try:
+                            req = urllib.request.Request(
+                                src, headers={'User-Agent': 'Mozilla/5.0'}
+                            )
+                            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                                img_bytes = resp.read()
+                            url_cache[src] = img_bytes
+                            print(f"   🌐 下载图片（第{attempt}次）：{src[:60]}  {len(img_bytes):,}B")
+                            break
+                        except Exception as e:
+                            print(f"   ⚠️ 下载失败（第{attempt}次，timeout={timeout}s）{src[:60]}：{e}")
+                            if attempt == 3:
+                                url_cache[src] = None  # 标记为已尝试过，避免重复下载
+                    if not img_bytes:
+                        img_bytes = url_cache.get(src)
 
-                with open(img_path, 'wb') as f:
-                    f.write(img_bytes)
+            # ── 本地文件（已由上游解包）──────────────────────────────────
+            elif src and os.path.exists(src):
+                try:
+                    with open(src, 'rb') as f:
+                        img_bytes = f.read()
+                except Exception as e:
+                    print(f"   ⚠️ 读取本地图片失败：{e}")
 
-                # 用正斜杠路径（Spire 在 Windows 下也能识别）
-                img_path_fwd = img_path.replace('\\\\', '/').replace('\\', '/')
-                # 替换目标：src="<原始data URI>" → src="<文件路径>"
-                patch_list.append((m.start(0), m.end(0), f'src="{img_path_fwd}"'))
-                print(f"   📤 base64解包成功：{img_name}（{len(img_bytes)} bytes）")
+            if not img_bytes:
+                # 无法获取图片内容，保留原标签不改动
+                continue
 
-            except Exception as e:
-                print(f"   ⚠️ base64图片解包失败（idx={idx}，mime={mime_type}）：{e}")
-                # 失败时保留原 src 不替换
-                patch_list.append((m.start(0), m.end(0), m.group(0)))
+            has_any = True
 
-        # 按位置从后往前替换，避免偏移量因前面替换而漂移
-        parts = list(html_text)
-        result_segs = []
-        prev_end = len(html_text)
-        for start, end, replacement in reversed(patch_list):
-            result_segs.append(html_text[end:prev_end])
-            result_segs.append(replacement)
-            prev_end = start
-        result_segs.append(html_text[:prev_end])
-        html_text = ''.join(reversed(result_segs))
+            # 1. 校正真实 MIME
+            real_mime = self._guess_mime(img_bytes[:16])
 
+            # Spire HTML 导入不支持 WEBP / SVG / TIFF / GIF（部分版本）等格式，
+            # 遇到不支持的格式会静默退化为占位符图片（小方块/破图）。
+            # 统一转换为 JPEG（有损但体积小），PNG 作为兜底（无损）。
+            # 转换优先用 Pillow；Pillow 不可用时保留原始格式（Spire 自行处理）。
+            SPIRE_UNSUPPORTED = {'image/webp', 'image/svg+xml', 'image/tiff',
+                                 'image/bmp', 'image/gif'}
+            if real_mime in SPIRE_UNSUPPORTED:
+                converted = False
+                try:
+                    from PIL import Image as _PILImage
+                    import io as _io
+                    pil_img = _PILImage.open(_io.BytesIO(img_bytes)).convert('RGB')
+                    buf = _io.BytesIO()
+                    pil_img.save(buf, format='JPEG', quality=92)
+                    img_bytes = buf.getvalue()
+                    real_mime = 'image/jpeg'
+                    converted = True
+                    print(f"   🔄 {real_mime} 不受 Spire 支持，已用 Pillow 转换为 JPEG")
+                except Exception as e:
+                    print(f"   ⚠️ Pillow 转换失败（{real_mime}→JPEG）：{e}，保留原格式")
+
+            ext   = MIME_TO_EXT.get(real_mime, '.png')
+            fname = f"img_{len(patch_list):04d}{ext}"
+            fpath = self._normalize_path(os.path.join(temp_img_dir, fname))
+            with open(fpath, 'wb') as f:
+                f.write(img_bytes)
+
+            declared_mime = b64_m.group(1).lower() if b64_m else ''
+            if declared_mime and declared_mime != real_mime:
+                print(f"   🔧 MIME 校正：{declared_mime} → {real_mime}（{fname}）")
+
+            # 2. 读物理像素，推算 height:auto
+            phys_w, phys_h = self._read_image_wh(img_bytes)
+
+            # 从 style 读 width 值（含单位换算）
+            # style 属性值内部可能有换行缩进，先把换行/多余空白压缩为单空格
+            style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE | re.DOTALL)
+            style_w_px = None
+            if style_m:
+                style_val = re.sub(r'[\r\n]+\s*', ' ', style_m.group(1))
+                w_m = re.search(
+                    r'\bwidth\s*:\s*([\d.]+)\s*(px|pt|in|cm|mm)?',
+                    style_val, re.IGNORECASE
+                )
+                if w_m:
+                    val  = float(w_m.group(1))
+                    unit = (w_m.group(2) or 'px').lower()
+                    if unit == 'px':  style_w_px = round(val)
+                    elif unit == 'pt': style_w_px = round(val * 96 / 72)
+                    elif unit == 'in': style_w_px = round(val * 96)
+                    elif unit == 'cm': style_w_px = round(val / 2.54 * 96)
+                    elif unit == 'mm': style_w_px = round(val / 25.4 * 96)
+
+            # 确定最终 w/h（px）
+            w_px = style_w_px or phys_w
+            if w_px and phys_w and phys_h and phys_w > 0:
+                h_px = round(w_px * phys_h / phys_w)
+            else:
+                h_px = phys_h
+
+            # 3. 重写 img 标签：src 替换为本地路径，写入 width/height 属性
+            new_tag = tag
+            # 更新 src
+            if src_m:
+                new_tag = (new_tag[:src_m.start()]
+                           + f'src="{fpath}"'
+                           + new_tag[src_m.end():])
+
+            # 写入 width/height 属性（移除旧的，插入新的）
+            if w_px and h_px:
+                new_tag = re.sub(r'\s+width="[^"]*"', '', new_tag, flags=re.IGNORECASE)
+                new_tag = re.sub(r'\s+height="[^"]*"', '', new_tag, flags=re.IGNORECASE)
+                new_tag = re.sub(r'(<img\b)', rf'\1 width="{w_px}" height="{h_px}"', new_tag)
+
+                # 同步更新 style 中的 width/height（移除 max-width/height:auto）
+                style_m2 = re.search(r'style="([^"]*)"', new_tag, re.IGNORECASE)
+                if style_m2:
+                    s = style_m2.group(1)
+                    s = re.sub(r'\bmax-width\s*:[^;]+;?', '', s, flags=re.IGNORECASE)
+                    s = re.sub(r'\bmax-height\s*:[^;]+;?', '', s, flags=re.IGNORECASE)
+                    s = re.sub(r'\bwidth\s*:[^;]+;?',  '', s, flags=re.IGNORECASE)
+                    s = re.sub(r'\bheight\s*:[^;]+;?', '', s, flags=re.IGNORECASE)
+                    s = s.rstrip('; ')
+                    new_style = f"{s}; width:{w_px}px; height:{h_px}px".lstrip('; ')
+                    new_tag = (new_tag[:style_m2.start()]
+                               + f'style="{new_style}"'
+                               + new_tag[style_m2.end():])
+
+            patch_list.append((m.start(), m.end(), new_tag))
+            print(f"   📤 {fname}（{real_mime}，{w_px}×{h_px}px）")
+
+        if not has_any:
+            # 没有成功处理任何图片，清理空目录
+            shutil.rmtree(temp_img_dir, ignore_errors=True)
+            return html_text, None
+
+        # ── 从后往前替换，避免位移 ───────────────────────────────────────
+        result = list(html_text)
+        for start, end, new_tag in reversed(patch_list):
+            result[start:end] = list(new_tag)
+        html_text = ''.join(result)
+
+        print(f"   📦 共处理 {len(patch_list)} 张图片 → {temp_img_dir}")
         return html_text, temp_img_dir
+
 
 
 # ------------------------------ 调用示例 ------------------------------
@@ -3037,7 +3229,7 @@ if __name__ == "__main__":
 
     # 示例1：DOCX转单文件HTML（自动判断是否需要分片）
     input_docx = r"input_langwithtable.docx"
-    output_html = r"output.html"
+    output_html = r"C:\Users\you62\Desktop\index.html"
     # html_content = converter.docx_to_single_html(input_docx, output_html)
 
     # 示例2：HTML文本转DOCX
