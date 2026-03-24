@@ -564,6 +564,200 @@ class DocxHtmlConverter:
 
         return re.sub(r'<img\b[^>]*>', _replace_img_tag, html_content, flags=re.IGNORECASE)
 
+    # ------------------------------------------------------------------ #
+    #  表格宽度修正（DOCX→HTML 方向）                                      #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _fix_html_table_widths(html_content: str,
+                                content_width_pt: float = 467.0) -> str:
+        """
+        将 Spire 导出 HTML 中超出版心宽度的表格等比缩放至版心宽度以内。
+
+        ── 问题原因 ─────────────────────────────────────────────────────────
+        Spire 把 DOCX 表格宽度原样转为 HTML pt 值（如 width:659.65pt），
+        A4 页面版心约 467pt（165mm，左右各 2.5cm 页边距），超出部分被截断。
+
+        ── 处理范围 ─────────────────────────────────────────────────────────
+        • <table> 标签的 style="width:Xpt" 或 width="X"
+        • 同一表格内所有 <col width="Xpt">
+        • 所有 <td>/<th> 的 style="width:Xpt" 或 width="X"
+          （只按 table 级别的缩放比例等比缩减，不单独判断 td 是否超出）
+
+        ── 单位支持 ─────────────────────────────────────────────────────────
+        pt / px / in / cm / mm / 纯数字（默认 pt，与 Spire 输出一致）
+
+        ── 缩放规则 ─────────────────────────────────────────────────────────
+        • 表格宽度 ≤ content_width_pt → 不缩放
+        • 表格宽度 > content_width_pt → ratio = content_width_pt / table_width
+          所有尺寸 × ratio，结果保留 2 位小数，单位保持 pt
+
+        ── content_width_pt 默认值说明 ──────────────────────────────────────
+        A4 宽 595.28pt，左右页边距各 2.5cm（70.87pt），版心 = 595.28 - 141.74 ≈ 453pt。
+        实践中 Spire 生成的 HTML 表格往往用文档设置宽度而非 A4 标准，
+        默认取 467pt（约 165mm）作为安全上限，调用方可按实际文档覆盖。
+        """
+
+        # ── 单位换算：任意 CSS 宽度字符串 → pt ───────────────────────────
+        def _to_pt(val_str: str) -> float | None:
+            if not val_str:
+                return None
+            s = val_str.strip().lower()
+            try:
+                if s.endswith('pt'):  return float(s[:-2])
+                if s.endswith('px'):  return float(s[:-2]) * 72 / 96
+                if s.endswith('in'):  return float(s[:-2]) * 72
+                if s.endswith('cm'):  return float(s[:-2]) / 2.54 * 72
+                if s.endswith('mm'):  return float(s[:-2]) / 25.4 * 72
+                return float(s)       # 纯数字默认 pt
+            except ValueError:
+                return None
+
+        def _fmt(val_pt: float) -> str:
+            """pt 值格式化为 2 位小数字符串"""
+            return f"{val_pt:.2f}pt"
+
+        # ── 从 style 字符串中提取 width 值（pt）──────────────────────────
+        def _style_width_pt(style_str: str) -> float | None:
+            m = re.search(r'\bwidth\s*:\s*([^;]+)', style_str, re.IGNORECASE)
+            if m:
+                return _to_pt(m.group(1).strip())
+            return None
+
+        # ── 替换 style 中的 width ─────────────────────────────────────────
+        def _replace_style_width(style_str: str, new_pt: float) -> str:
+            return re.sub(
+                r'\bwidth\s*:\s*[^;]+',
+                f'width:{_fmt(new_pt)}',
+                style_str,
+                flags=re.IGNORECASE
+            )
+
+        # ── 处理单个元素标签里的 width（style 优先，其次 HTML 属性）───────
+        def _scale_tag_width(tag: str, ratio: float) -> str:
+            """按 ratio 缩放 tag 里的 width，返回修改后的 tag 字符串。"""
+            # 优先处理 style="...width:Xpt..."
+            style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE)
+            if style_m:
+                style_str = style_m.group(1)
+                w_pt = _style_width_pt(style_str)
+                if w_pt is not None:
+                    new_style = _replace_style_width(style_str, w_pt * ratio)
+                    tag = tag[:style_m.start()] + f'style="{new_style}"' + tag[style_m.end():]
+                    return tag
+
+            # 无 style width，处理 HTML width 属性
+            attr_m = re.search(r'\bwidth="([^"]*)"', tag, re.IGNORECASE)
+            if attr_m:
+                w_pt = _to_pt(attr_m.group(1))
+                if w_pt is not None:
+                    new_val = _fmt(w_pt * ratio)
+                    tag = tag[:attr_m.start()] + f'width="{new_val}"' + tag[attr_m.end():]
+
+            return tag
+
+        # ── 逐表格扫描并缩放 ─────────────────────────────────────────────
+        # 策略：找到每个 <table...> 开标签，判断其宽度，超出则计算 ratio，
+        # 然后在该 </table> 范围内缩放所有 <col>/<td>/<th> 的宽度。
+        # 不使用 HTML 解析器（依赖已剥离），改用正则逐段处理。
+
+        result_parts = []
+        cursor = 0
+        table_open_re  = re.compile(r'<table\b[^>]*>', re.IGNORECASE | re.DOTALL)
+        table_close_re = re.compile(r'</table\s*>', re.IGNORECASE)
+        cell_tag_re    = re.compile(r'<(?:col|td|th)\b[^>]*>', re.IGNORECASE | re.DOTALL)
+
+        for tbl_open_m in table_open_re.finditer(html_content):
+            # 写入 table 之前的内容
+            result_parts.append(html_content[cursor:tbl_open_m.start()])
+
+            tbl_open_tag = tbl_open_m.group(0)
+            search_from  = tbl_open_m.end()
+
+            # 找到对应的 </table>（用嵌套深度计数应对嵌套表格）
+            depth      = 1
+            pos        = search_from
+            close_end  = len(html_content)
+
+            while pos < len(html_content) and depth > 0:
+                next_open  = table_open_re.search(html_content, pos)
+                next_close = table_close_re.search(html_content, pos)
+
+                if next_close is None:
+                    break
+                if next_open and next_open.start() < next_close.start():
+                    depth += 1
+                    pos    = next_open.end()
+                else:
+                    depth -= 1
+                    if depth == 0:
+                        close_end = next_close.end()
+                    pos = next_close.end()
+
+            table_inner = html_content[search_from:close_end - len('</table>') if close_end < len(html_content) else close_end]
+            # 更精确地取 </table> 前的内容
+            close_m = table_close_re.search(html_content, search_from)
+            # 重新找到最外层 </table>
+            depth2 = 1
+            pos2   = search_from
+            outer_close_m = None
+            for m in re.finditer(r'<(/?)table\b[^>]*>', html_content[search_from:], re.IGNORECASE):
+                if m.group(1) == '':   # 开标签
+                    depth2 += 1
+                else:                  # 闭标签
+                    depth2 -= 1
+                    if depth2 == 0:
+                        abs_start = search_from + m.start()
+                        abs_end   = search_from + m.end()
+                        outer_close_m = (abs_start, abs_end)
+                        break
+
+            if outer_close_m:
+                table_inner   = html_content[search_from : outer_close_m[0]]
+                cursor_next   = outer_close_m[1]
+            else:
+                table_inner   = html_content[search_from:]
+                cursor_next   = len(html_content)
+
+            # 确定表格宽度
+            tbl_width_pt = None
+            style_m = re.search(r'style="([^"]*)"', tbl_open_tag, re.IGNORECASE)
+            if style_m:
+                tbl_width_pt = _style_width_pt(style_m.group(1))
+            if tbl_width_pt is None:
+                attr_m = re.search(r'\bwidth="([^"]*)"', tbl_open_tag, re.IGNORECASE)
+                if attr_m:
+                    tbl_width_pt = _to_pt(attr_m.group(1))
+
+            if tbl_width_pt is None or tbl_width_pt <= content_width_pt:
+                # 不需要缩放，原样输出
+                result_parts.append(tbl_open_tag)
+                result_parts.append(table_inner)
+                result_parts.append('</table>')
+                cursor = cursor_next
+                continue
+
+            # 需要缩放
+            ratio = content_width_pt / tbl_width_pt
+            print(f"   📏 表格宽度 {tbl_width_pt:.1f}pt → {content_width_pt:.1f}pt（ratio={ratio:.4f}）")
+
+            # 缩放 table 开标签的宽度
+            tbl_open_tag = _scale_tag_width(tbl_open_tag, ratio)
+
+            # 缩放 table_inner 中所有 <col>/<td>/<th> 的宽度
+            def _scale_cell(cm):
+                return _scale_tag_width(cm.group(0), ratio)
+
+            table_inner_scaled = cell_tag_re.sub(_scale_cell, table_inner)
+
+            result_parts.append(tbl_open_tag)
+            result_parts.append(table_inner_scaled)
+            result_parts.append('</table>')
+            cursor = cursor_next
+
+        result_parts.append(html_content[cursor:])
+        return ''.join(result_parts)
+
     def _fix_html_img_sizes_for_import(self, html_text: str,
                                         page_width_px: int = 794,
                                         content_width_px: int = 620) -> str:
@@ -743,10 +937,30 @@ class DocxHtmlConverter:
                              rf'\1 style="width:{w_px}px; height:{h_px}px"', tag)
             return tag
 
-        # ── 主替换逻辑 ───────────────────────────────────────────────────
-        def _replace_img(m):
-            tag = m.group(0)
+        # ── 辅助：从图片 src 获取物理像素 ─────────────────────────────
+        def _get_phys_size(src: str, tag: str):
+            """返回 (phys_w, phys_h) 或 (None, None)。"""
+            if src.startswith('data:'):
+                try:
+                    b64_part = src.split(',', 1)[1] if ',' in src else ''
+                    import base64 as _b64
+                    raw_bytes = _b64.b64decode(b64_part[:4096] + '==')
+                    return _read_image_size_from_bytes(raw_bytes)
+                except Exception:
+                    return None, None
+            elif os.path.exists(src):
+                return _read_image_size_from_file(src)
+            elif src.startswith('http://') or src.startswith('https://'):
+                return _fetch_image_size_from_url(src)
+            return None, None
 
+        # ── 主替换逻辑（支持 td 上下文宽度约束）──────────────────────
+        def _process_img(tag: str, max_w_px: float) -> str:
+            """
+            处理单个 <img> 标签，max_w_px 为当前上下文的最大允许宽度（px）。
+            - 表格内图片：max_w_px = td 可用宽度（td.width - padding*2）
+            - 普通图片：max_w_px = content_width_px（全局版心）
+            """
             src_m = re.search(r'src="([^"]+)"', tag, re.IGNORECASE)
             src   = src_m.group(1) if src_m else ''
 
@@ -759,8 +973,7 @@ class DocxHtmlConverter:
                         k, _, v = part.partition(':')
                         style_dict[k.strip().lower()] = v.strip()
 
-            # ── 路径 A：已有明确 width/height ──────────────────────────
-            # 优先取 style，其次取 HTML 属性（排除 max-width/auto/百分比）
+            # 读取标签里的 width / height
             raw_w = _css_val_to_px(style_dict.get('width'))
             raw_h = _css_val_to_px(style_dict.get('height'))
 
@@ -771,47 +984,173 @@ class DocxHtmlConverter:
             if raw_h is None and attr_h_m:
                 raw_h = _css_val_to_px(attr_h_m.group(1))
 
+            # height 是否为 "auto" / 缺失（需要从物理像素推算）
+            h_val_str = style_dict.get('height', '').strip().lower()
+            height_is_auto = (h_val_str in ('auto', '') or raw_h is None)
+
+            # ── 路径 A：width 和 height 都明确 ─────────────────────────
             if raw_w and raw_h and raw_w > 0 and raw_h > 0:
-                w_px, h_px = _constrain(raw_w, raw_h)
-                print(f"   📐 [A] 明确尺寸 → {w_px}×{h_px}px（原 {round(raw_w)}×{round(raw_h)}）")
+                # 用 max_w_px（上下文宽度）约束，而不是全局 content_width_px
+                if raw_w > max_w_px:
+                    scale = max_w_px / raw_w
+                    w_px, h_px = round(max_w_px), round(raw_h * scale)
+                else:
+                    w_px, h_px = round(raw_w), round(raw_h)
+                print(f"   📐 [A] {round(raw_w)}×{round(raw_h)}px → {w_px}×{h_px}px（上限{round(max_w_px)}）")
                 return _apply_sizes(tag, w_px, h_px)
 
-            # ── 路径 B/C：无明确尺寸，从图片文件读物理像素 ─────────────
-            phys_w = phys_h = None
+            # ── 路径 A½：有明确 width 但 height=auto/缺失 ───────────────
+            # 这是本次问题的核心场景：style="width:180pt; height:auto"
+            # Spire 遇到 height:auto 会忽略 width 直接用物理像素，导致图片炸大
+            # 修复：从图片物理像素推算正确的 height，然后写入明确的 height 值
+            if raw_w and raw_w > 0 and height_is_auto:
+                phys_w, phys_h = _get_phys_size(src, tag)
+                if phys_w and phys_h and phys_w > 0:
+                    # 按 raw_w 等比算出 height
+                    computed_h = raw_w * phys_h / phys_w
+                    # 再做上下文宽度约束
+                    if raw_w > max_w_px:
+                        scale = max_w_px / raw_w
+                        w_px, h_px = round(max_w_px), round(computed_h * scale)
+                    else:
+                        w_px, h_px = round(raw_w), round(computed_h)
+                    print(f"   📐 [A½] width={round(raw_w)}px + height:auto → 物理{phys_w}×{phys_h} → {w_px}×{h_px}px")
+                    return _apply_sizes(tag, w_px, h_px)
+                else:
+                    # 无法获取物理像素：按 max_w_px 上限写入 width，清除 height:auto
+                    # 用 4:3 兜底比例保证图片有合理高度（Spire 会从文件里读实际值）
+                    final_w = round(min(raw_w, max_w_px))
+                    # 不设置 height，让 Spire 自行决定——但必须移除 height:auto
+                    tag2 = re.sub(r'\s+height="[^"]*"', '', tag, flags=re.IGNORECASE)
+                    style_m2 = re.search(r'style="([^"]*)"', tag2, re.IGNORECASE)
+                    if style_m2:
+                        s = style_m2.group(1)
+                        s = re.sub(r'\bheight\s*:[^;]+;?', '', s, flags=re.IGNORECASE)
+                        s = re.sub(r'\bmax-width\s*:[^;]+;?', '', s, flags=re.IGNORECASE)
+                        s = re.sub(r'\bwidth\s*:[^;]+;?', '', s, flags=re.IGNORECASE)
+                        s = s.rstrip('; ')
+                        s = f"{s}; width:{final_w}px".lstrip('; ')
+                        tag2 = tag2[:style_m2.start()] + f'style="{s}"' + tag2[style_m2.end():]
+                    tag2 = re.sub(r'\s+width="[^"]*"', '', tag2, flags=re.IGNORECASE)
+                    tag2 = re.sub(r'(<img\b)', rf'\1 width="{final_w}"', tag2)
+                    print(f"   ⚠️ [A½-fallback] 无法获取物理像素，width={final_w}px，height交由Spire决定")
+                    return tag2
 
-            if src.startswith('data:'):
-                # base64 data URI 直接解码头部
-                try:
-                    b64_part = src.split(',', 1)[1] if ',' in src else ''
-                    import base64 as _b64
-                    raw_bytes = _b64.b64decode(b64_part[:4096] + '==')
-                    phys_w, phys_h = _read_image_size_from_bytes(raw_bytes)
-                except Exception:
-                    pass
-
-            elif os.path.exists(src):
-                # 本地文件路径（_extract_base64_images 解包后）
-                phys_w, phys_h = _read_image_size_from_file(src)
-                if phys_w:
-                    print(f"   📐 [B] 本地文件物理像素 {phys_w}×{phys_h}：{os.path.basename(src)}")
-
-            elif src.startswith('http://') or src.startswith('https://'):
-                phys_w, phys_h = _fetch_image_size_from_url(src)
-                if phys_w:
-                    print(f"   📐 [C] 远程图片物理像素 {phys_w}×{phys_h}：{src[:60]}")
+            # ── 路径 B/C：完全无尺寸信息，从物理像素推算 ───────────────
+            phys_w, phys_h = _get_phys_size(src, tag)
 
             if not phys_w or not phys_h:
-                # 无法获取尺寸，至少清除 max-width/height:auto 避免 Spire 误读
                 if 'max-width' in style_dict or 'max-height' in style_dict:
-                    tag = _apply_sizes(tag, content_width_px, content_width_px)
-                    print(f"   ⚠️ 无法获取物理像素，回退到版心宽度：{src[:60]}")
+                    tag = _apply_sizes(tag, round(max_w_px), round(max_w_px))
+                    print(f"   ⚠️ 无法获取物理像素，回退到上下文宽度：{src[:60]}")
                 return tag
 
-            w_px, h_px = _constrain(float(phys_w), float(phys_h))
-            print(f"   📐 物理 {phys_w}×{phys_h} → 约束后 {w_px}×{h_px}px")
+            if phys_w:
+                print(f"   📐 [B/C] 物理 {phys_w}×{phys_h}：{src[:60]}")
+
+            # 用上下文宽度约束（而非全局 content_width_px）
+            if float(phys_w) > max_w_px:
+                scale = max_w_px / phys_w
+                w_px, h_px = round(max_w_px), round(phys_h * scale)
+            else:
+                w_px, h_px = round(phys_w), round(phys_h)
             return _apply_sizes(tag, w_px, h_px)
 
-        return re.sub(r'<img\b[^>]*>', _replace_img, html_text, flags=re.IGNORECASE)
+        # ── 上下文感知替换：区分表格内/表格外图片 ───────────────────────
+        # 表格内图片的最大宽度受 td 宽度（减去 padding）限制，
+        # 而不是全局版心宽度，否则图片会溢出单元格挤在一起。
+        PT_TO_PX = PX_PER_INCH / 72
+
+        def _td_max_w_px(td_tag: str) -> float:
+            """从 <td> 标签提取可用宽度（px），失败返回 content_width_px。"""
+            style_dict_td = {}
+            sm = re.search(r'style="([^"]*)"', td_tag, re.IGNORECASE)
+            if sm:
+                for part in sm.group(1).split(';'):
+                    if ':' in part:
+                        k, _, v = part.partition(':')
+                        style_dict_td[k.strip().lower()] = v.strip()
+
+            td_w_px = _css_val_to_px(style_dict_td.get('width'))
+            if td_w_px is None:
+                attr_m = re.search(r'\bwidth="([^"]*)"', td_tag, re.IGNORECASE)
+                if attr_m:
+                    td_w_px = _css_val_to_px(attr_m.group(1))
+
+            if not td_w_px:
+                return float(content_width_px)
+
+            # 减去 padding（CSS padding 属性，支持单值/四值）
+            padding_str = style_dict_td.get('padding', '').strip()
+            padding_px  = 0.0
+            if padding_str:
+                parts = padding_str.split()
+                # 取左右 padding（padding: top right bottom left 或 padding: all）
+                if len(parts) == 1:
+                    p = _css_val_to_px(parts[0]) or 0
+                    padding_px = p * 2   # 左 + 右
+                elif len(parts) == 2:
+                    p = _css_val_to_px(parts[1]) or 0
+                    padding_px = p * 2
+                elif len(parts) >= 4:
+                    pl = _css_val_to_px(parts[3]) or 0
+                    pr = _css_val_to_px(parts[1]) or 0
+                    padding_px = pl + pr
+                elif len(parts) == 3:
+                    p = _css_val_to_px(parts[1]) or 0
+                    padding_px = p * 2
+
+            avail = td_w_px - padding_px
+            return max(avail, 40.0)   # 至少 40px，防止除零
+
+        def _replace_img_global(m):
+            """全局替换回调，对表格外图片使用全局版心宽度。"""
+            return _process_img(m.group(0), float(content_width_px))
+
+        # 先处理表格外图片，再逐表格处理表格内图片
+        # 策略：把 HTML 按 <table>...</table> 块拆分，
+        #        表格外段落用全局宽度，表格内按 td 逐列处理。
+        IMG_RE    = re.compile(r'<img\b[^>]*>', re.IGNORECASE | re.DOTALL)
+        TABLE_RE  = re.compile(r'<table\b[^>]*>.*?</table\s*>', re.IGNORECASE | re.DOTALL)
+        TD_RE     = re.compile(r'(<t[dh]\b[^>]*>)(.*?)(?=<t[dh]\b|</tr|</table)', re.IGNORECASE | re.DOTALL)
+
+        result_parts = []
+        cursor = 0
+
+        for tbl_m in TABLE_RE.finditer(html_text):
+            # 表格外段落：用全局版心宽度
+            before = html_text[cursor:tbl_m.start()]
+            result_parts.append(IMG_RE.sub(_replace_img_global, before))
+
+            # 表格内：逐 td 处理，每个 td 用自己的宽度约束
+            tbl_html   = tbl_m.group(0)
+            tbl_result = []
+            td_cursor  = 0
+
+            for td_m in TD_RE.finditer(tbl_html):
+                # td 开标签前的内容（表格结构标签等）
+                tbl_result.append(tbl_html[td_cursor:td_m.start()])
+                td_open    = td_m.group(1)
+                td_content = td_m.group(2)
+                max_w      = _td_max_w_px(td_open)
+
+                def _make_td_replacer(mw):
+                    def _r(im):
+                        return _process_img(im.group(0), mw)
+                    return _r
+
+                td_content_fixed = IMG_RE.sub(_make_td_replacer(max_w), td_content)
+                tbl_result.append(td_open)
+                tbl_result.append(td_content_fixed)
+                td_cursor = td_m.end()
+
+            tbl_result.append(tbl_html[td_cursor:])
+            result_parts.append(''.join(tbl_result))
+            cursor = tbl_m.end()
+
+        # 最后一段表格外内容
+        result_parts.append(IMG_RE.sub(_replace_img_global, html_text[cursor:]))
+        return ''.join(result_parts)
 
     def _embed_images_to_html(self, html_path, image_display_order, original_img_dir):
         """
@@ -1863,6 +2202,14 @@ class DocxHtmlConverter:
                 with open(html_path, 'w', encoding='utf-8') as f:
                     f.write(html_content)
 
+            # 修正表格宽度（超出 A4 版心时等比缩放）
+            print("📏 修正表格宽度...")
+            with open(html_path, 'r', encoding='utf-8') as f:
+                html_content = f.read()
+            html_content = self._fix_html_table_widths(html_content)
+            with open(html_path, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+
             print(f"🎉 分片转换完成：{html_path}")
 
         except Exception as e:
@@ -1994,6 +2341,10 @@ class DocxHtmlConverter:
             html_content = self._fix_html_img_sizes(
                 html_content, img_size_map, spire_img_names, image_display_order
             )
+
+        # 9c. 修正表格宽度（超出 A4 版心时等比缩放）
+        print("📏 修正表格宽度...")
+        html_content = self._fix_html_table_widths(html_content)
 
         # 10. 保存最终HTML
         with open(html_path, 'w', encoding='utf-8') as f:
