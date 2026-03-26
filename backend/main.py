@@ -49,23 +49,32 @@ def setup_logging():
     log_level = logging.INFO
     log_file = "app.log"
 
-    # 配置根日志器
-    logging.basicConfig(
-        level=log_level,
-        format=log_format,
-        handlers=[
-            logging.StreamHandler(sys.stdout),  # 输出到终端
-            RotatingFileHandler(  # 输出到文件（按大小分割）
-                log_file,
-                maxBytes=10*1024*1024,  # 10MB/文件
-                backupCount=5,  # 保留5个备份
-                encoding="utf-8"
-            )
-        ]
-    )
+    # 先清空根日志器默认处理器（避免重复输出）
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+    root_logger.setLevel(log_level)
 
-    # 调整第三方库日志级别
+    # 定义格式器
+    formatter = logging.Formatter(log_format)
+
+    # 1. 终端输出
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+
+    # 2. 文件输出（按大小切割，UTF-8 正常文本）
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=10 * 1024 * 1024,  # 10MB
+        backupCount=5,
+        encoding="utf-8"  # 关键：保证文本写入
+    )
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
+
+    # 降低第三方库日志噪音
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
     return log_file
 
 # 初始化日志和日志文件路径
