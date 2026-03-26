@@ -221,14 +221,15 @@ else:
 # 确保目录存在（增加权限检查）
 
 
-# PostgreSQL数据库配置（请替换为你的实际配置）
+# PostgreSQL数据库配置（从 conf/sc_web.conf 读取）
+_pg = read_sc_web_config()["postgres"]
 POSTGRES_CONFIG = {
-    "host": "10.13.6.59",
-    "port": 15400,
-    "user": "dev_scxx",
-    "password": "scxx7233Cc",
-    "database": "yxdl_zhtb_dev",
-    "options": "-c client_encoding=utf8"
+    "host":     _pg.get("host"),
+    "port":     int(_pg.get("port")),
+    "user":     _pg.get("user"),
+    "password": _pg.get("password"),
+    "database": _pg.get("database"),
+    "options":  _pg.get("options"),
 }
 
 # 默认主节点配置
