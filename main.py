@@ -221,14 +221,15 @@ else:
 # 确保目录存在（增加权限检查）
 
 
-# PostgreSQL数据库配置（请替换为你的实际配置）
+# PostgreSQL数据库配置（从 conf/sc_web.conf 读取）
+_pg = read_sc_web_config()["postgres"]
 POSTGRES_CONFIG = {
-    "host": "10.13.6.59",
-    "port": 15400,
-    "user": "dev_scxx",
-    "password": "scxx7233Cc",
-    "database": "yxdl_zhtb_dev",
-    "options": "-c client_encoding=utf8"
+    "host":     _pg.get("host"),
+    "port":     int(_pg.get("port")),
+    "user":     _pg.get("user"),
+    "password": _pg.get("password"),
+    "database": _pg.get("database"),
+    "options":  _pg.get("options"),
 }
 
 # 默认主节点配置
@@ -833,6 +834,23 @@ def download_image_to_base64(image_url, base_url=None, timeout=10):
         image_url = image_url.strip().split()[0]
         if image_url.startswith(('"', "'")) and image_url.endswith(('"', "'")):
             image_url = image_url[1:-1]
+
+        # 处理 data: URI（已是base64编码，无需下载）
+        if image_url.startswith('data:'):
+            try:
+                header, data_part = image_url.split(',', 1)
+                meta = header[5:]  # 去掉 "data:"
+                parts = meta.split(';')
+                content_type = parts[0] if parts[0] else 'image/jpeg'
+                if 'base64' in parts:
+                    return data_part, content_type
+                else:
+                    import urllib.parse
+                    decoded = urllib.parse.unquote_to_bytes(data_part)
+                    return base64.b64encode(decoded).decode('utf-8'), content_type
+            except Exception as e:
+                print(f"解析 data: URI 失败: {str(e)}")
+                return None, None
 
         # 处理相对路径
         if base_url and not image_url.startswith(('http://', 'https://')):
@@ -2664,6 +2682,7 @@ async def update_html_by_node_new(request: Request,
         # ── 4b. 有标题分支（max_level > 0），需拆分 ───────────────────────
         else:
             success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
+            print(temp_docx_path_1)
             if not success:
                 return unified_response(code=500, message=f"HTML转DOCX失败：{result}", data={})
 
