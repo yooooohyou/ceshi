@@ -4,7 +4,10 @@
 # @File     : file_response
 # @Software : PyCharm
 
+import logging
 import pathlib
+
+logger = logging.getLogger(__name__)
 import re
 from urllib import parse
 import json
@@ -222,5 +225,5 @@ def SplitUpload(
             except:
                 pass
         # 打印异常详情，方便调试
-        print(f"分块上传异常：{str(e)}")
+        logger.info(f"分块上传异常：{str(e)}")
         return 1, 0, f'上传失败：{str(e)}'
