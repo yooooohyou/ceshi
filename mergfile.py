@@ -1,10 +1,14 @@
+import configparser
+from pathlib import Path
 import requests
 from fastapi import FastAPI, HTTPException, File, UploadFile, Body
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
-# 配置目标服务地址（根据实际情况修改）
-TARGET_BASE_URL = "http://10.13.6.180:21001"
+# 从 conf/sc_web.conf 读取服务地址
+_conf = configparser.ConfigParser()
+_conf.read(Path(__file__).parent / "conf" / "sc_web.conf", encoding="utf-8")
+TARGET_BASE_URL = _conf.get("docx_service", "base_url")
 # 超时配置（秒）
 TIMEOUT_CONFIG = {
     "split": 600,
