@@ -2383,7 +2383,7 @@ class DocxHtmlConverter:
         表格内的 <td>/<th> 也计入，与 Spire 的段落计数逻辑保持一致。
         """
         return len(re.findall(
-            r'<(?:p|li|h[1-6]|td|th|caption|dt|dd)[\s>]',
+            r'<(?:p|li|h[1-9]|td|th|caption|dt|dd)[\s>]',
             html_text,
             re.IGNORECASE
         ))
