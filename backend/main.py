@@ -1600,7 +1600,7 @@ async def upload_and_generate_tree(
             # 3. 为每个树节点分配文件路径
             for node in tree_nodes:
                 assign_file_path_to_tree(node, eid_path_map)
-            print(tree_nodes)
+            # print(tree_nodes)
             batch_count = get_next_batch_count(record_id)
             node_ids = process_split_tree_nodes(
                 nodes=tree_nodes,
@@ -1824,7 +1824,7 @@ async def route_generate_tree(
             # 3. 为每个树节点分配文件路径
             for node in tree_nodes:
                 assign_file_path_to_tree(node, eid_path_map)
-            print(tree_nodes)
+            # print(tree_nodes)
             batch_count = get_next_batch_count(record_id)
             node_ids = process_split_tree_nodes(
                 nodes=tree_nodes,
