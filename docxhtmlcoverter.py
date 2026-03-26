@@ -7,6 +7,7 @@ import re
 import base64
 import tempfile
 import uuid
+import hashlib
 from docx import Document as PythonDocx          # python-docx：用于切分
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
@@ -74,26 +75,12 @@ class DocxHtmlConverter:
             with zipfile.ZipFile(docx_path, 'r') as zip_file:
                 all_files = zip_file.namelist()
 
-                # 排序：document.xml 必须排在首位，与 Spire 输出 HTML 时正文优先的顺序一致。
-                # zip 文件的 namelist 顺序不确定，若 header*.xml 排在 document.xml 之前，
-                # 位置索引降级映射时页眉图片会与正文图片错位。
-                def _xml_sort_key(f):
-                    name = os.path.basename(f)
-                    if name == 'document.xml':
-                        return (0, f)
-                    if name in ('footnotes.xml', 'endnotes.xml'):
-                        return (1, f)
-                    return (2, f)  # header*.xml / footer*.xml
-
-                target_xml_files = sorted(
-                    [
-                        f for f in all_files
-                        if re.match(
-                            r'word/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$', f
-                        )
-                    ],
-                    key=_xml_sort_key,
-                )
+                target_xml_files = [
+                    f for f in all_files
+                    if re.match(
+                        r'word/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$', f
+                    )
+                ]
 
                 all_rels = {}
                 for xml_file in target_xml_files:
@@ -267,54 +254,84 @@ class DocxHtmlConverter:
             print(f"⚠️ 图片 {img_path} 转Base64失败：{e}")
             return ""
 
+    @staticmethod
+    def _hash_file(path):
+        """读取文件内容并返回 SHA-256 十六进制摘要，失败返回空字符串。"""
+        try:
+            with open(path, 'rb') as f:
+                return hashlib.sha256(f.read()).hexdigest()
+        except Exception:
+            return ''
+
     def _build_spire_to_original_map(self, spire_img_names, image_display_order,
                                      original_img_dir, fallback_img_dir):
         """
-        【修复问题1】构建 Spire生成图片名 → 原始图片绝对路径 的映射。
+        构建 Spire生成图片名 → 原始图片绝对路径 的映射。
 
-        原逻辑用位置索引（spire_img_names[i] → image_display_order[i]）映射，
-        当 Spire 跳过、合并或重命名图片时，索引对不上导致 base64 错位。
+        Spire 输出 HTML 时会按自身遇到图片的顺序对图片重新编号
+        （image1.png, image2.png …），而页眉/页脚图片若先被遇到就会
+        占据 image1.png 这个名称，导致原始 word/media/image1.png（正文图）
+        与 Spire 输出的 image1.png（页眉图）名称相同但内容不同，
+        纯文件名/茎名匹配会产生错误映射。
 
-        修复策略：
-        1. 优先用文件名精确匹配（去扩展名后不区分大小写比较）。
-           Spire 生成的文件名通常与原始文件名一致或只改了扩展名。
-        2. 精确匹配失败时，按位置顺序降级（保留原兜底行为）。
-        3. 位置索引也超出范围时，尝试在 fallback_img_dir 中按 spire 名查找。
+        匹配策略（按优先级）：
+        1. 内容哈希匹配：对 fallback_img_dir（Spire输出目录）中的每个文件
+           计算 SHA-256，与 original_img_dir 中所有原始图片的哈希比对。
+           Spire 通常直接复制 PNG/BMP 等无损格式而不重新编码，因此哈希
+           完全一致；即使 Spire 改了文件名，内容哈希也能正确对应。
+        2. 茎名匹配（去扩展名不区分大小写）：兜底处理 Spire 对 JPEG 等有损
+           格式做格式转换导致哈希不同、但文件名主体仍保持一致的情况。
+        3. 位置索引降级：最后手段，仅在以上两者均失败时使用。
+        4. 使用 Spire 生成目录中的原文件（无法找到原始对应时的最终兜底）。
 
         返回：{spire_name: abs_img_path}
         """
         result = {}
 
-        # 建立原始文件名（去扩展名小写）→ 绝对路径 的查找表
-        orig_stem_map = {}
+        # ── 预计算：原始图片 hash → 绝对路径 ──────────────────────────────
+        orig_hash_map = {}   # sha256 → abs_path
+        orig_stem_map = {}   # stem(小写) → abs_path
         for orig_name in image_display_order:
-            stem = os.path.splitext(orig_name)[0].lower()
             abs_path = self._normalize_path(os.path.join(original_img_dir, orig_name))
-            if os.path.exists(abs_path):
-                orig_stem_map[stem] = abs_path
+            if not os.path.exists(abs_path):
+                continue
+            stem = os.path.splitext(orig_name)[0].lower()
+            orig_stem_map[stem] = abs_path
+            h = self._hash_file(abs_path)
+            if h:
+                orig_hash_map[h] = abs_path
 
         for idx, spire_name in enumerate(spire_img_names):
-            spire_stem = os.path.splitext(spire_name)[0].lower()
+            spire_file = self._normalize_path(os.path.join(fallback_img_dir, spire_name))
 
-            # 1. 精确匹配（去扩展名不区分大小写）
+            # 1. 内容哈希匹配（最可靠：与文件名无关）
+            if os.path.exists(spire_file):
+                h = self._hash_file(spire_file)
+                if h and h in orig_hash_map:
+                    result[spire_name] = orig_hash_map[h]
+                    print(f"   ✅ {spire_name} 哈希匹配 → {os.path.basename(orig_hash_map[h])}")
+                    continue
+
+            # 2. 茎名匹配（去扩展名不区分大小写）
+            spire_stem = os.path.splitext(spire_name)[0].lower()
             if spire_stem in orig_stem_map:
                 result[spire_name] = orig_stem_map[spire_stem]
+                print(f"   ✅ {spire_name} 茎名匹配 → {os.path.basename(orig_stem_map[spire_stem])}")
                 continue
 
-            # 2. 位置索引降级
+            # 3. 位置索引降级
             if idx < len(image_display_order):
                 candidate = self._normalize_path(
                     os.path.join(original_img_dir, image_display_order[idx])
                 )
                 if os.path.exists(candidate):
                     result[spire_name] = candidate
-                    print(f"   ⚠️ {spire_name} 精确匹配失败，位置索引降级 → {image_display_order[idx]}")
+                    print(f"   ⚠️ {spire_name} 位置索引降级 → {image_display_order[idx]}")
                     continue
 
-            # 3. fallback：在 spire 生成目录中按原名查找
-            fallback = self._normalize_path(os.path.join(fallback_img_dir, spire_name))
-            if os.path.exists(fallback):
-                result[spire_name] = fallback
+            # 4. 使用 Spire 生成目录中的原文件
+            if os.path.exists(spire_file):
+                result[spire_name] = spire_file
                 print(f"   ⚠️ {spire_name} 降级到 Spire 生成目录")
             else:
                 print(f"   ⚠️ {spire_name} 找不到对应原始图片，跳过")
