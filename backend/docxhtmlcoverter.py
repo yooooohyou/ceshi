@@ -2495,6 +2495,27 @@ class DocxHtmlConverter:
 
         blocks = _find_top_level_blocks(body_content)
 
+        # ── 2.5 预处理：剥除单一超限容器 div，避免全部内容落入一个 chunk ──
+        # 场景：body 只有一个大 div 包裹了所有段落，导致后续循环无法切分。
+        # 迭代剥除外层容器（最多 5 层），直到顶层块数 > 1 或已无法继续剥除。
+        LEAF_TAGS = {'table', 'p', 'ul', 'ol', 'dl',
+                     'h1', 'h2', 'h3', 'h4', 'h5', 'h6', None}
+        for _ in range(5):
+            if len(blocks) != 1:
+                break
+            s, e, t = blocks[0]
+            if t in LEAF_TAGS:
+                break
+            frag = body_content[s:e]
+            if self._html_count_paragraphs(frag) <= self.MAX_PARAGRAPHS:
+                break
+            open_end   = frag.find('>') + 1
+            close_start = frag.rfind('</')
+            if not (0 < open_end < close_start):
+                break
+            body_content = frag[open_end:close_start]
+            blocks = _find_top_level_blocks(body_content)
+
         # ── 3. 按段落数切分 blocks → chunks ─────────────────────────────
         chunks_html = []
         current_parts = []
@@ -3229,7 +3250,7 @@ if __name__ == "__main__":
 
     # 示例1：DOCX转单文件HTML（自动判断是否需要分片）
     input_docx = r"input_langwithtable.docx"
-    output_html = r"C:\Users\you62\Desktop\新建 文本文档 (3).html"
+    output_html = r"C:\Users\you62\Desktop\index.html"
     # html_content = converter.docx_to_single_html(input_docx, output_html)
 
     # 示例2：HTML文本转DOCX
