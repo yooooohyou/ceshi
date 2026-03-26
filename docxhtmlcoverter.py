@@ -3157,12 +3157,12 @@ class DocxHtmlConverter:
             if style_m:
                 style_val = re.sub(r'[\r\n]+\s*', ' ', style_m.group(1))
                 w_m = re.search(
-                    r'\bwidth\s*:\s*([\d.]+)\s*(px|pt|in|cm|mm)?',
+                    r'(?<![a-zA-Z\-])width\s*:\s*([\d.]+)\s*(px|pt|in|cm|mm)',
                     style_val, re.IGNORECASE
                 )
                 if w_m:
                     val  = float(w_m.group(1))
-                    unit = (w_m.group(2) or 'px').lower()
+                    unit = w_m.group(2).lower()
                     if unit == 'px':  style_w_px = round(val)
                     elif unit == 'pt': style_w_px = round(val * 96 / 72)
                     elif unit == 'in': style_w_px = round(val * 96)
