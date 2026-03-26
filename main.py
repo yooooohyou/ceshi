@@ -835,6 +835,23 @@ def download_image_to_base64(image_url, base_url=None, timeout=10):
         if image_url.startswith(('"', "'")) and image_url.endswith(('"', "'")):
             image_url = image_url[1:-1]
 
+        # 处理 data: URI（已是base64编码，无需下载）
+        if image_url.startswith('data:'):
+            try:
+                header, data_part = image_url.split(',', 1)
+                meta = header[5:]  # 去掉 "data:"
+                parts = meta.split(';')
+                content_type = parts[0] if parts[0] else 'image/jpeg'
+                if 'base64' in parts:
+                    return data_part, content_type
+                else:
+                    import urllib.parse
+                    decoded = urllib.parse.unquote_to_bytes(data_part)
+                    return base64.b64encode(decoded).decode('utf-8'), content_type
+            except Exception as e:
+                print(f"解析 data: URI 失败: {str(e)}")
+                return None, None
+
         # 处理相对路径
         if base_url and not image_url.startswith(('http://', 'https://')):
             image_url = f"{base_url.rstrip('/')}/{image_url.lstrip('/')}"
