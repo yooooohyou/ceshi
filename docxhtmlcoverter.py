@@ -2741,9 +2741,25 @@ class DocxHtmlConverter:
             chunk_rels_xml = chunk_files.get(RELS_PATH, b'').decode('utf-8')
 
             # 解析 chunk rels：建立 rId → (type, target) 映射
+            # 使用 etree 解析，避免正则因属性顺序不固定而漏匹配
             chunk_rels_map = {}
-            for m in re.finditer(r'<Relationship\s+Id="(rId\d+)"\s+Type="([^"]+)"\s+Target="([^"]+)"[^/]*/>', chunk_rels_xml):
-                chunk_rels_map[m.group(1)] = (m.group(2), m.group(3))
+            try:
+                rels_root = etree.fromstring(chunk_rels_xml.encode('utf-8'))
+                for rel in rels_root:
+                    rid = rel.get('Id') or rel.get('id')
+                    rel_type = rel.get('Type') or rel.get('type') or ''
+                    target = rel.get('Target') or rel.get('target') or ''
+                    if rid:
+                        chunk_rels_map[rid] = (rel_type, target)
+            except Exception:
+                # 降级：正则兜底（允许属性任意顺序）
+                for m in re.finditer(r'<Relationship\b([^>]+)/>', chunk_rels_xml, re.IGNORECASE):
+                    attrs = m.group(1)
+                    rid_m   = re.search(r'\bId="(rId\d+)"', attrs, re.IGNORECASE)
+                    type_m  = re.search(r'\bType="([^"]+)"', attrs, re.IGNORECASE)
+                    tgt_m   = re.search(r'\bTarget="([^"]+)"', attrs, re.IGNORECASE)
+                    if rid_m and type_m and tgt_m:
+                        chunk_rels_map[rid_m.group(1)] = (type_m.group(1), tgt_m.group(1))
 
             # 为 chunk 中的每个 image/hyperlink rId 分配新 rId，并注册到 base rels
             rid_remap = {}  # 旧 rId → 新 rId
