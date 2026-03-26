@@ -619,7 +619,7 @@ class DocxHtmlConverter:
 
         # ── 从 style 字符串中提取 width 值（pt）──────────────────────────
         def _style_width_pt(style_str: str) -> float | None:
-            m = re.search(r'\bwidth\s*:\s*([^;]+)', style_str, re.IGNORECASE)
+            m = re.search(r'(?<![a-zA-Z-])width\s*:\s*([^;]+)', style_str, re.IGNORECASE)
             if m:
                 return _to_pt(m.group(1).strip())
             return None
@@ -627,7 +627,7 @@ class DocxHtmlConverter:
         # ── 替换 style 中的 width ─────────────────────────────────────────
         def _replace_style_width(style_str: str, new_pt: float) -> str:
             return re.sub(
-                r'\bwidth\s*:\s*[^;]+',
+                r'(?<![a-zA-Z-])width\s*:\s*[^;]+',
                 f'width:{_fmt(new_pt)}',
                 style_str,
                 flags=re.IGNORECASE
