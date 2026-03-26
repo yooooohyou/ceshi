@@ -74,12 +74,26 @@ class DocxHtmlConverter:
             with zipfile.ZipFile(docx_path, 'r') as zip_file:
                 all_files = zip_file.namelist()
 
-                target_xml_files = [
-                    f for f in all_files
-                    if re.match(
-                        r'word/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$', f
-                    )
-                ]
+                # 排序：document.xml 必须排在首位，与 Spire 输出 HTML 时正文优先的顺序一致。
+                # zip 文件的 namelist 顺序不确定，若 header*.xml 排在 document.xml 之前，
+                # 位置索引降级映射时页眉图片会与正文图片错位。
+                def _xml_sort_key(f):
+                    name = os.path.basename(f)
+                    if name == 'document.xml':
+                        return (0, f)
+                    if name in ('footnotes.xml', 'endnotes.xml'):
+                        return (1, f)
+                    return (2, f)  # header*.xml / footer*.xml
+
+                target_xml_files = sorted(
+                    [
+                        f for f in all_files
+                        if re.match(
+                            r'word/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$', f
+                        )
+                    ],
+                    key=_xml_sort_key,
+                )
 
                 all_rels = {}
                 for xml_file in target_xml_files:
