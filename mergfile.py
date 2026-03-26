@@ -1,7 +1,4 @@
-import logging
 import requests
-
-logger = logging.getLogger(__name__)
 from fastapi import FastAPI, HTTPException, File, UploadFile, Body
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
@@ -64,14 +61,14 @@ class SplitResponse(BaseModel):
 
     def __init__(self, *args, **kwargs):
         # 先打印传入的参数
-        logger.info("===== 传入的参数信息 =====")
-        logger.info(f"位置参数 args: {args}")
-        logger.info(f"关键字参数 kwargs: {kwargs}")
+        print("===== 传入的参数信息 =====")
+        print(f"位置参数 args: {args}")
+        print(f"关键字参数 kwargs: {kwargs}")
         # 打印kwargs中每个变量的详细信息（可选，更清晰）
         if kwargs:
-            logger.info("kwargs 中的具体变量：")
+            print("kwargs 中的具体变量：")
             for key, value in kwargs.items():
-                logger.info(f"  {key} = {value} (类型: {type(value)})")
+                print(f"  {key} = {value} (类型: {type(value)})")
 
         # 必须将参数传给父类的__init__，否则BaseModel无法正常初始化
         super().__init__(*args, **kwargs)
@@ -111,7 +108,7 @@ def call_docx_split(file_stream: bytes, file_name: str, file_id: str, had_title:
         )
         response.raise_for_status()  # 抛出HTTP状态码异常
         result = response.json()
-        logger.info(result)
+        print(result)
         return SplitResponse(**result)
     except requests.exceptions.HTTPError as e:
         raise HTTPException(
@@ -139,7 +136,7 @@ def call_docx_merge(merge_request: MergeRequest):
     url = f"{TARGET_BASE_URL}/api/tool_api/docx/megre"  # 文档中为megre（merge笔误）
     try:
         data_ = merge_request.dict(exclude_unset=True)
-        logger.info(data_)
+        print(data_)
         data_["user_key"] = "DC4096F87722AD140F01AF8C3315B9A6"
         response = requests.post(
             url,

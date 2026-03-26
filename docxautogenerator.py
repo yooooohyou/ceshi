@@ -1,7 +1,4 @@
-import logging
 from docx import Document
-
-logger = logging.getLogger(__name__)
 from docx.shared import Inches, Pt, RGBColor, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
@@ -189,7 +186,7 @@ def generate_fully_centered_patent_doc(
 
     cert_img_paths = cert_img_paths or []
     valid_img_paths = [p for p in cert_img_paths if os.path.exists(p)]
-    logger.info(f"📸 有效图片数量：{len(valid_img_paths)}")
+    print(f"📸 有效图片数量：{len(valid_img_paths)}")  # 新增：打印有效图片数，方便排查
 
     doc = Document()
     sec = doc.sections[0]
@@ -264,16 +261,16 @@ def generate_fully_centered_patent_doc(
 
         # 仅当原始图片数量 < 最少需要数时，才补充图片（不再截断原始图片）
         if len(final_imgs) < needed_imgs_min:
-            logger.info(f"🔍 原始图片{len(final_imgs)}张不足，需补充到{needed_imgs_min}张")
+            print(f"🔍 原始图片{len(final_imgs)}张不足，需补充到{needed_imgs_min}张")
             # 补充图片（重复原始图片）
             while len(final_imgs) < needed_imgs_min:
                 final_imgs.extend(valid_img_paths)
             # 最多补充到需要的数量（不超）
             final_imgs = final_imgs[:needed_imgs_min]
         else:
-            logger.info(f"✅ 原始图片{len(final_imgs)}张足够，无需补充/截断")
+            print(f"✅ 原始图片{len(final_imgs)}张足够，无需补充/截断")
 
-    logger.info(f"📸 最终插入图片数量：{len(final_imgs)}")
+    print(f"📸 最终插入图片数量：{len(final_imgs)}")  # 新增：打印最终插入数
 
     # 图片表格（索引逻辑已修复）
     if final_imgs:
@@ -322,13 +319,13 @@ def generate_fully_centered_patent_doc(
             para.add_run().add_picture(img_path, width=Inches(2.8))
             inserted_count += 1
 
-        logger.info(f"📸 实际插入图片数量：{inserted_count}")
+        print(f"📸 实际插入图片数量：{inserted_count}")  # 新增：验证插入数
 
         # 图片表格禁止跨页
         set_table_no_page_break(img_table)
 
     doc.save(save_path)
-    logger.info(f"✅ 文档生成成功：{os.path.abspath(save_path)}")
+    print(f"✅ 文档生成成功：{os.path.abspath(save_path)}")
     return save_path
 
 
@@ -475,7 +472,7 @@ def generate_car_info_doc(car_data, save_path='公司车辆信息.docx', table_t
 
     # 保存文档
     doc.save(save_path)
-    logger.info(f"✅ 文档生成成功！路径：{os.path.abspath(save_path)}")
+    print(f"✅ 文档生成成功！路径：{os.path.abspath(save_path)}")
     return save_path
 
 if __name__ == "__main__":
