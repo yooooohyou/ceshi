@@ -49,32 +49,23 @@ def setup_logging():
     log_level = logging.INFO
     log_file = "app.log"
 
-    # 先清空根日志器默认处理器（避免重复输出）
-    root_logger = logging.getLogger()
-    root_logger.handlers.clear()
-    root_logger.setLevel(log_level)
-
-    # 定义格式器
-    formatter = logging.Formatter(log_format)
-
-    # 1. 终端输出
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(formatter)
-    root_logger.addHandler(console_handler)
-
-    # 2. 文件输出（按大小切割，UTF-8 正常文本）
-    file_handler = RotatingFileHandler(
-        log_file,
-        maxBytes=10 * 1024 * 1024,  # 10MB
-        backupCount=5,
-        encoding="utf-8"  # 关键：保证文本写入
+    # 配置根日志器
+    logging.basicConfig(
+        level=log_level,
+        format=log_format,
+        handlers=[
+            logging.StreamHandler(sys.stdout),  # 输出到终端
+            RotatingFileHandler(  # 输出到文件（按大小分割）
+                log_file,
+                maxBytes=10*1024*1024,  # 10MB/文件
+                backupCount=5,  # 保留5个备份
+                encoding="utf-8"
+            )
+        ]
     )
-    file_handler.setFormatter(formatter)
-    root_logger.addHandler(file_handler)
 
-    # 降低第三方库日志噪音
+    # 调整第三方库日志级别
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-
     return log_file
 
 # 初始化日志和日志文件路径
@@ -230,14 +221,15 @@ else:
 # 确保目录存在（增加权限检查）
 
 
-# PostgreSQL数据库配置（请替换为你的实际配置）
+# PostgreSQL数据库配置（从 conf/sc_web.conf 读取）
+_pg = read_sc_web_config()["postgres"]
 POSTGRES_CONFIG = {
-    "host": "10.13.6.59",
-    "port": 15400,
-    "user": "dev_scxx",
-    "password": "scxx7233Cc",
-    "database": "yxdl_zhtb_dev",
-    "options": "-c client_encoding=utf8"
+    "host":     _pg.get("host"),
+    "port":     int(_pg.get("port")),
+    "user":     _pg.get("user"),
+    "password": _pg.get("password"),
+    "database": _pg.get("database"),
+    "options":  _pg.get("options"),
 }
 
 # 默认主节点配置
@@ -1600,7 +1592,7 @@ async def upload_and_generate_tree(
             # 3. 为每个树节点分配文件路径
             for node in tree_nodes:
                 assign_file_path_to_tree(node, eid_path_map)
-            # print(tree_nodes)
+            print(tree_nodes)
             batch_count = get_next_batch_count(record_id)
             node_ids = process_split_tree_nodes(
                 nodes=tree_nodes,
@@ -1824,7 +1816,7 @@ async def route_generate_tree(
             # 3. 为每个树节点分配文件路径
             for node in tree_nodes:
                 assign_file_path_to_tree(node, eid_path_map)
-            # print(tree_nodes)
+            print(tree_nodes)
             batch_count = get_next_batch_count(record_id)
             node_ids = process_split_tree_nodes(
                 nodes=tree_nodes,
