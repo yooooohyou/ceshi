@@ -758,6 +758,73 @@ class DocxHtmlConverter:
         result_parts.append(html_content[cursor:])
         return ''.join(result_parts)
 
+    @staticmethod
+    def _fix_html_border_width(html_text: str,
+                                max_border_pt: float = 4.0,
+                                default_border_pt: float = 0.75) -> str:
+        """
+        修正 Spire DOCX→HTML 时生成的异常 border-width 值。
+
+        Spire 在导出 HTML 时存在一个 bug：会把 td/th 的 border-width 设置成
+        与 width 相同的值（如 border-width:81.78pt），而正常边框宽度顶多 2~3pt。
+        这导致边框极粗，把单元格内容完全挤变形。
+
+        修复规则：扫描所有 style 属性，把 border-width（及 border-top/right/
+        bottom/left-width）中超过 max_border_pt（默认 4pt）的值替换为
+        default_border_pt（默认 0.75pt）。
+
+        单位支持：pt / px / in / cm / mm / 纯数字（视为 pt）。
+        border-style / border-color 等不受影响。
+        """
+        def _to_pt(val_str: str) -> float | None:
+            s = val_str.strip().lower()
+            try:
+                if s.endswith('pt'):  return float(s[:-2])
+                if s.endswith('px'):  return float(s[:-2]) * 72 / 96
+                if s.endswith('in'):  return float(s[:-2]) * 72
+                if s.endswith('cm'):  return float(s[:-2]) / 2.54 * 72
+                if s.endswith('mm'):  return float(s[:-2]) / 25.4 * 72
+                return float(s)
+            except (ValueError, AttributeError):
+                return None
+
+        # 匹配所有 border(-xxx)-width: <value> 形式
+        # 覆盖：border-width / border-top-width / border-right-width 等
+        bw_re = re.compile(
+            r'\b(border(?:-(?:top|right|bottom|left))?-width)\s*:\s*([^;}"\']+)',
+            re.IGNORECASE
+        )
+
+        def _fix_style(style_str: str) -> str:
+            def _replace_bw(m):
+                prop = m.group(1)
+                val  = m.group(2).strip()
+                pt   = _to_pt(val)
+                if pt is not None and pt > max_border_pt:
+                    return f'{prop}:{default_border_pt}pt'
+                return m.group(0)
+            return bw_re.sub(_replace_bw, style_str)
+
+        # 只替换 style="..." 内部的内容，不影响其他属性
+        style_attr_re = re.compile(r'style="([^"]*)"', re.IGNORECASE | re.DOTALL)
+
+        def _fix_style_attr(m):
+            fixed = _fix_style(m.group(1))
+            if fixed != m.group(1):
+                return f'style="{fixed}"'
+            return m.group(0)
+
+        result = style_attr_re.sub(_fix_style_attr, html_text)
+        fixed_count = html_text.count('border-width') - result.count('border-width')
+        if fixed_count or result != html_text:
+            # 统计实际修改了多少处
+            orig_vals = bw_re.findall(html_text)
+            fixed_vals = [(p, v) for p, v in orig_vals
+                          if (_to_pt(v) or 0) > max_border_pt]
+            if fixed_vals:
+                print(f"   🔧 修正异常 border-width {len(fixed_vals)} 处（>{max_border_pt}pt → {default_border_pt}pt）")
+        return result
+
     def _fix_html_img_sizes_for_import(self, html_text: str,
                                         page_width_px: int = 794,
                                         content_width_px: int = 620) -> str:
@@ -988,9 +1055,11 @@ class DocxHtmlConverter:
             if raw_h is None and attr_h_m:
                 raw_h = _css_val_to_px(attr_h_m.group(1))
 
-            # height 是否为 "auto" / 缺失（需要从物理像素推算）
+            # height 是否为 "auto"（需要从物理像素推算）
+            # 修复：只有 style 里明确写了 height:auto 或完全没有 height 信息时才为 True
+            # 空字符串（无 style）不等于 auto —— 如果 attr_h_m 已提供了 raw_h，则不是 auto
             h_val_str = style_dict.get('height', '').strip().lower()
-            height_is_auto = (h_val_str in ('auto', '') or raw_h is None)
+            height_is_auto = (h_val_str == 'auto' or raw_h is None)
 
             # ── 路径 A：width 和 height 都明确 ─────────────────────────
             if raw_w and raw_h and raw_w > 0 and raw_h > 0:
@@ -2383,7 +2452,7 @@ class DocxHtmlConverter:
         表格内的 <td>/<th> 也计入，与 Spire 的段落计数逻辑保持一致。
         """
         return len(re.findall(
-            r'<(?:p|li|h[1-9]|td|th|caption|dt|dd)[\s>]',
+            r'<(?:p|li|h[1-6]|td|th|caption|dt|dd)[\s>]',
             html_text,
             re.IGNORECASE
         ))
@@ -2870,6 +2939,12 @@ class DocxHtmlConverter:
             # ── 步骤1b：A4 版心尺寸约束（已有明确 px 尺寸时做等比缩放）──────
             html_text = self._fix_html_img_sizes_for_import(html_text)
 
+            # ── 步骤1c：修正 Spire 导出 HTML 时 border-width 被写成单元格宽度的 bug ──
+            # Spire DOCX→HTML 时会把 td 的 border-width 错误地设置为单元格宽度值
+            # 例如：border-width:81.78pt（应为 0.75pt），导致表格边框极粗把单元格撑变形
+            # 修复：把超过合理阈值（4pt）的 border-width 截断为 0.75pt
+            html_text = self._fix_html_border_width(html_text)
+
             # ── 步骤2：判断是否需要分片 ──────────────────────────────────
             para_count = self._html_count_paragraphs(html_text)
             print(f"📊 HTML 段落估算：{para_count}，阈值：{self.MAX_PARAGRAPHS}")
@@ -2996,6 +3071,97 @@ class DocxHtmlConverter:
         if data[:2]  == b'BM':                    return 'image/bmp'
         if data[:4]  == b'RIFF' and data[8:12] == b'WEBP': return 'image/webp'
         return 'image/png'
+
+    def _fix_html_border_width(self, html_text: str,
+                                max_border_pt: float = 4.0,
+                                default_border_pt: float = 0.75) -> str:
+        """
+        修正 Spire DOCX→HTML 导出时，td/th 的 border-width 被错误写成
+        单元格宽度值的 bug（如 border-width:81.78pt 实为 0.75pt）。
+
+        Spire 的 bug 特征：border-width 值与同一标签里的 width 值完全相同，
+        且远超正常边框范围（通常 ≤ 4pt）。
+
+        修复策略：
+        - 扫描所有 <td> / <th> 标签的 style
+        - 将 border-width（含 border-top/right/bottom/left-width）中
+          超过 max_border_pt 的值截断为 default_border_pt（默认 0.75pt）
+        - 只处理 td/th，不处理 table/div 等其他元素，避免误改
+
+        单位支持：pt / px / in / cm / mm（纯数字默认 pt）
+        """
+
+        def _to_pt(val_str: str) -> float | None:
+            s = val_str.strip().lower()
+            try:
+                if s.endswith('pt'):  return float(s[:-2])
+                if s.endswith('px'):  return float(s[:-2]) * 72 / 96
+                if s.endswith('in'):  return float(s[:-2]) * 72
+                if s.endswith('cm'):  return float(s[:-2]) / 2.54 * 72
+                if s.endswith('mm'):  return float(s[:-2]) / 25.4 * 72
+                return float(s)       # 纯数字默认 pt
+            except ValueError:
+                return None
+
+        # 匹配所有 border-width 相关属性（含方向前缀）
+        BW_PATTERN = re.compile(
+            r'\b(border(?:-(?:top|right|bottom|left))?-width\s*:\s*)'
+            r'([\d.]+\s*(?:pt|px|in|cm|mm)?)',
+            re.IGNORECASE
+        )
+
+        def _fix_style(style_str: str) -> tuple[str, int]:
+            """修正 style 字符串中超限的 border-width，返回 (new_style, fix_count)"""
+            fixes = 0
+
+            def _replace_bw(m):
+                nonlocal fixes
+                prop    = m.group(1)   # "border-width: "
+                val_str = m.group(2)   # "81.78pt"
+                val_pt  = _to_pt(val_str)
+                if val_pt is not None and val_pt > max_border_pt:
+                    fixes += 1
+                    return f"{prop}{default_border_pt}pt"
+                return m.group(0)
+
+            new_style = BW_PATTERN.sub(_replace_bw, style_str)
+            return new_style, fixes
+
+        # 只扫描 <td> 和 <th> 开标签（不含内容）
+        cell_tag_re = re.compile(r'<t[dh]\b[^>]*>', re.IGNORECASE | re.DOTALL)
+        style_attr_re = re.compile(r'(style="[^"]*")', re.IGNORECASE)
+
+        total_fixes = 0
+        result_parts = []
+        cursor = 0
+
+        for m in cell_tag_re.finditer(html_text):
+            tag = m.group(0)
+            style_m = style_attr_re.search(tag)
+            if not style_m:
+                result_parts.append(html_text[cursor:m.end()])
+                cursor = m.end()
+                continue
+
+            style_attr = style_m.group(1)           # 完整 style="..."
+            style_val  = style_attr[7:-1]            # 去掉 style=" 和 "
+            new_val, fixes = _fix_style(style_val)
+
+            result_parts.append(html_text[cursor:m.start()])
+            if fixes:
+                new_tag = tag[:style_m.start()] + f'style="{new_val}"' + tag[style_m.end():]
+                result_parts.append(new_tag)
+                total_fixes += fixes
+            else:
+                result_parts.append(tag)
+            cursor = m.end()
+
+        result_parts.append(html_text[cursor:])
+
+        if total_fixes:
+            print(f"   🔧 修正异常 border-width：共 {total_fixes} 处（>{max_border_pt}pt → {default_border_pt}pt）")
+
+        return ''.join(result_parts)
 
     def _extract_base64_images(self, html_text: str, base_dir: str):
         """
@@ -3153,25 +3319,53 @@ class DocxHtmlConverter:
             # 从 style 读 width 值（含单位换算）
             # style 属性值内部可能有换行缩进，先把换行/多余空白压缩为单空格
             style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE | re.DOTALL)
-            style_w_px = None
+            style_w_px = style_h_px = None
             if style_m:
                 style_val = re.sub(r'[\r\n]+\s*', ' ', style_m.group(1))
-                w_m = re.search(
-                    r'\bwidth\s*:\s*([\d.]+)\s*(px|pt|in|cm|mm)?',
-                    style_val, re.IGNORECASE
-                )
+
+                def _css_unit_to_px(val_str, unit_str):
+                    try:
+                        val  = float(val_str)
+                        unit = (unit_str or 'px').lower()
+                        if unit == 'px':  return round(val)
+                        if unit == 'pt':  return round(val * 96 / 72)
+                        if unit == 'in':  return round(val * 96)
+                        if unit == 'cm':  return round(val / 2.54 * 96)
+                        if unit == 'mm':  return round(val / 25.4 * 96)
+                    except Exception:
+                        pass
+                    return None
+
+                w_m = re.search(r'\bwidth\s*:\s*([\d.]+)\s*(px|pt|in|cm|mm)?',
+                                style_val, re.IGNORECASE)
+                h_m = re.search(r'\bheight\s*:\s*([\d.]+)\s*(px|pt|in|cm|mm)?',
+                                style_val, re.IGNORECASE)
+                # 忽略 height:auto（非数字）
                 if w_m:
-                    val  = float(w_m.group(1))
-                    unit = (w_m.group(2) or 'px').lower()
-                    if unit == 'px':  style_w_px = round(val)
-                    elif unit == 'pt': style_w_px = round(val * 96 / 72)
-                    elif unit == 'in': style_w_px = round(val * 96)
-                    elif unit == 'cm': style_w_px = round(val / 2.54 * 96)
-                    elif unit == 'mm': style_w_px = round(val / 25.4 * 96)
+                    style_w_px = _css_unit_to_px(w_m.group(1), w_m.group(2))
+                if h_m:
+                    style_h_px = _css_unit_to_px(h_m.group(1), h_m.group(2))
+
+            # 从 HTML 属性读 width/height（纯数字默认 px）
+            # 优先级：style > HTML 属性 > 物理像素
+            attr_w_m = re.search(r'\bwidth="([\d.]+)"',  tag, re.IGNORECASE)
+            attr_h_m = re.search(r'\bheight="([\d.]+)"', tag, re.IGNORECASE)
+            attr_w_px = round(float(attr_w_m.group(1))) if attr_w_m else None
+            attr_h_px = round(float(attr_h_m.group(1))) if attr_h_m else None
 
             # 确定最终 w/h（px）
-            w_px = style_w_px or phys_w
-            if w_px and phys_w and phys_h and phys_w > 0:
+            # style > HTML 属性 > 物理像素
+            w_px = style_w_px or attr_w_px or phys_w
+            # height:auto 或缺失时，根据 w_px 和物理宽高比等比推算
+            if style_h_px:
+                h_px = style_h_px
+            elif attr_h_px and attr_w_px:
+                # HTML 属性同时给了 w/h，等比换算到 w_px
+                if w_px and attr_w_px > 0:
+                    h_px = round(w_px * attr_h_px / attr_w_px)
+                else:
+                    h_px = attr_h_px
+            elif w_px and phys_w and phys_h and phys_w > 0:
                 h_px = round(w_px * phys_h / phys_w)
             else:
                 h_px = phys_h
@@ -3229,7 +3423,7 @@ if __name__ == "__main__":
 
     # 示例1：DOCX转单文件HTML（自动判断是否需要分片）
     input_docx = r"input_langwithtable.docx"
-    output_html = r"C:\Users\you62\Desktop\index.html"
+    output_html = r"output.html"
     # html_content = converter.docx_to_single_html(input_docx, output_html)
 
     # 示例2：HTML文本转DOCX
