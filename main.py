@@ -5,7 +5,7 @@ import time
 import urllib
 
 import aiohttp
-from fastapi import FastAPI, UploadFile, File, Body, Request, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, Form, Body, Request, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
@@ -2521,10 +2521,11 @@ def process_single_tree_node(
 
 
 @app.post("/doc_editor/update_html_by_node_new", summary="更新节点HTML文本")
-async def update_html_by_node_new(request: Request,
-        node_id: int = Body(..., description="要更新的节点ID"),
-        html_content: str = Body(..., description="更新后的HTML文本"),
-        title_text: Optional[str] = Body(None, description="可选：更新节点标题文本")
+async def update_html_by_node_new(
+        request: Request,
+        node_id: int = Form(..., description="要更新的节点ID"),
+        file: UploadFile = File(..., description="HTML文件（.html）"),
+        title_text: Optional[str] = Form(None, description="可选：更新节点标题文本")
 ) -> JSONResponse:
     """更新指定节点ID的HTML文本"""
     MAX_LEVEL_NODE = 9
@@ -2535,6 +2536,9 @@ async def update_html_by_node_new(request: Request,
                 message="节点ID必须为正整数",
                 data={}
             )
+
+        html_content = (await file.read()).decode("utf-8")
+
         if not html_content.strip():
             return unified_response(
                 code=400,
