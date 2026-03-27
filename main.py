@@ -2066,7 +2066,7 @@ async def route_docx2html_marge(
             code=200,
             message=f"文件html转换成功",
             data={
-                "html_url": save_html_and_get_url(total_html_content, request),
+                "http_path": save_html_and_get_url(total_html_content, request),
             }
         )
 
@@ -2222,7 +2222,7 @@ WHERE id = %s"""
                     "node_id": node_id,
                     "title_text": updated_result["title_text"],
                     "level": updated_result["level"],
-                    "html_url": save_html_and_get_url(updated_result["html_content"] or "", request),
+                    "http_path": save_html_and_get_url(updated_result["html_content"] or "", request),
                     "temp_file_docx_": temp_file_docx_
                 }
             )
@@ -2234,7 +2234,7 @@ WHERE id = %s"""
                     "node_id": node_id,
                     "title_text": result["title_text"],
                     "level": result["level"],
-                    "html_url": save_html_and_get_url(result["html_content"] or "", request),
+                    "http_path": save_html_and_get_url(result["html_content"] or "", request),
                 }
             )
 
@@ -3328,7 +3328,7 @@ async def generate_default_patent_doc(request: Request):
             code=200,
             message="节点HTML内容更新成功",
             data={
-                "html_url": save_html_and_get_url(html_content, request)
+                "http_path": save_html_and_get_url(html_content, request)
             }
         )
 
@@ -3419,7 +3419,7 @@ async def generate_default_patent_doc_patent_generator(
             code=200,
             message="生成专利生成器HTML内容成功",
             data={
-                "html_url": save_html_and_get_url(html_content, request)
+                "http_path": save_html_and_get_url(html_content, request)
             }
         )
 
@@ -3495,7 +3495,7 @@ async def generate_default_patent_doc_financial_report_generator(
             code=200,
             message="生成财报生成器HTML内容成功",
             data={
-                "html_url": save_html_and_get_url(html_content, request)
+                "http_path": save_html_and_get_url(html_content, request)
             }
         )
 
@@ -3573,7 +3573,7 @@ async def generate_default_patent_doc_vehicle_generator(
             code=200,
             message="生成车辆生成器HTML内容成功",
             data={
-                "html_url": save_html_and_get_url(html_content, request)
+                "http_path": save_html_and_get_url(html_content, request)
             }
         )
 
