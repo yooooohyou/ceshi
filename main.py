@@ -410,18 +410,15 @@ def local_upload_path_to_web_path(local_abs_path: str, request: Request) -> str:
     return str(full_url)  # 转为字符串，方便使用
 
 
-def save_html_and_get_url(html_content: str, request: Request) -> str:
+def save_html_and_get_url(html_content: str) -> str:
     """
-    将 HTML 字符串写入 uploads 目录，返回前端可直接访问的 URL。
-    代替在响应中内联传输 html_content 大文本。
+    将 HTML 字符串写入 uploads 目录，按配置文件的 STATIC_WEB_PREFIX 返回可访问的 URL。
     """
     filename = f"html_{uuid.uuid4().hex}.html"
     file_path = os.path.join(UPLOAD_DIR, filename)
     with open(file_path, 'w', encoding='utf-8') as f:
         f.write(html_content)
-    if WEB_File_Path:
-        return STATIC_WEB_PREFIX.rstrip('/') + '/' + filename
-    return str(request.url_for("uploads", path=filename))
+    return STATIC_WEB_PREFIX.rstrip('/') + '/' + filename
 
 
 def is_web_path_(path_str):
@@ -1915,7 +1912,6 @@ def merge_html_texts(html_list: list[str]) -> str:
 
 @app.post("/doc_editor/route_docx2html_marge", summary="文件路径docx转化html")
 async def route_docx2html_marge(
-        request: Request,
         # 替换原有的file参数，新增文件来源参数
         file_source_type: str = Body("url", description="文件来源类型：url-从URL下载，static-从静态路径读取"),
         file_source: str = Body(..., description="文件来源：URL地址 或 服务器静态文件路径"),
@@ -2066,7 +2062,7 @@ async def route_docx2html_marge(
             code=200,
             message=f"文件html转换成功",
             data={
-                "http_path": save_html_and_get_url(total_html_content, request),
+                "http_path": save_html_and_get_url(total_html_content),
             }
         )
 
@@ -2222,7 +2218,7 @@ WHERE id = %s"""
                     "node_id": node_id,
                     "title_text": updated_result["title_text"],
                     "level": updated_result["level"],
-                    "http_path": save_html_and_get_url(updated_result["html_content"] or "", request),
+                    "http_path": save_html_and_get_url(updated_result["html_content"] or ""),
                     "temp_file_docx_": temp_file_docx_
                 }
             )
@@ -2234,7 +2230,7 @@ WHERE id = %s"""
                     "node_id": node_id,
                     "title_text": result["title_text"],
                     "level": result["level"],
-                    "http_path": save_html_and_get_url(result["html_content"] or "", request),
+                    "http_path": save_html_and_get_url(result["html_content"] or ""),
                 }
             )
 
@@ -3278,7 +3274,7 @@ async def merge_docx_office_server(
 
 
 @app.post("/doc_editor/generate_patent_doc/default", summary="生成器示例接口")
-async def generate_default_patent_doc(request: Request):
+async def generate_default_patent_doc():
     """使用默认的专利数据和图片路径生成文档并返回下载"""
     try:
         save_path = os.path.join(UPLOAD_DIR, "专利报告.docx")
@@ -3328,7 +3324,7 @@ async def generate_default_patent_doc(request: Request):
             code=200,
             message="节点HTML内容更新成功",
             data={
-                "http_path": save_html_and_get_url(html_content, request)
+                "http_path": save_html_and_get_url(html_content)
             }
         )
 
@@ -3343,7 +3339,6 @@ async def generate_default_patent_doc(request: Request):
     """
 )
 async def generate_default_patent_doc_patent_generator(
-        request: Request,
         patent_data: List[List[Any]] = Body(
             ...,
             description="专利数据二维列表（必填），每行对应一条专利信息，顺序：[序号,专利类型,专利名称,专利号,专利权人,授权公告日]",
@@ -3419,7 +3414,7 @@ async def generate_default_patent_doc_patent_generator(
             code=200,
             message="生成专利生成器HTML内容成功",
             data={
-                "http_path": save_html_and_get_url(html_content, request)
+                "http_path": save_html_and_get_url(html_content)
             }
         )
 
@@ -3438,7 +3433,6 @@ async def generate_default_patent_doc_patent_generator(
     """
 )
 async def generate_default_patent_doc_financial_report_generator(
-        request: Request,
         title_text: str = Body(
             ...,
             description="报告标题文本（显示在表格第一行）",
@@ -3495,7 +3489,7 @@ async def generate_default_patent_doc_financial_report_generator(
             code=200,
             message="生成财报生成器HTML内容成功",
             data={
-                "http_path": save_html_and_get_url(html_content, request)
+                "http_path": save_html_and_get_url(html_content)
             }
         )
 
@@ -3511,7 +3505,6 @@ async def generate_default_patent_doc_financial_report_generator(
     - 图片特性：行驶证和车辆图片分别按固定宽度显示
     """)
 async def generate_default_patent_doc_vehicle_generator(
-    request: Request,
     car_data: List[List[Any]] = Body(
         ...,
         description="车辆数据列表，每行：[序号,车牌号,行驶证URL,车辆图片URL]",
@@ -3573,7 +3566,7 @@ async def generate_default_patent_doc_vehicle_generator(
             code=200,
             message="生成车辆生成器HTML内容成功",
             data={
-                "http_path": save_html_and_get_url(html_content, request)
+                "http_path": save_html_and_get_url(html_content)
             }
         )
 
