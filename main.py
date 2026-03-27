@@ -130,8 +130,9 @@ def get_server_uploads_config() -> dict:
 
         # 提取配置项并返回字典
         uploads_config = {
-            "user_local_path": config.get("server_uploads", "user_local_path", fallback=""),
-            "web_path": config.get("server_uploads", "web_path", fallback="")
+            "user_local_path":  config.get("server_uploads", "user_local_path",   fallback=""),
+            "web_backend_path": config.get("server_uploads", "web_backend_path",  fallback=""),
+            "web_front_path":   config.get("server_uploads", "web_front_path",    fallback="")
         }
         return uploads_config
     except Exception as e:
@@ -202,6 +203,7 @@ if system_path == "Windows":
     UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
     # # 静态文件的Web访问前缀（与mount的第一个参数保持一致）
     STATIC_WEB_PREFIX = "/uploads"
+    STATIC_WEB_FRONT_PREFIX = "/uploads"
     WEB_File_Path = False
     try:
         os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -214,7 +216,8 @@ if system_path == "Windows":
 else:
     uploads_config = get_server_uploads_config()
     UPLOAD_DIR = uploads_config["user_local_path"]
-    STATIC_WEB_PREFIX = uploads_config["web_path"]
+    STATIC_WEB_PREFIX = uploads_config["web_backend_path"]
+    STATIC_WEB_FRONT_PREFIX = uploads_config["web_front_path"]
     WEB_File_Path = True
 
 
@@ -418,7 +421,7 @@ def save_html_and_get_url(html_content: str) -> str:
     file_path = os.path.join(UPLOAD_DIR, filename)
     with open(file_path, 'w', encoding='utf-8') as f:
         f.write(html_content)
-    return STATIC_WEB_PREFIX.rstrip('/') + '/' + filename
+    return STATIC_WEB_FRONT_PREFIX.rstrip('/') + '/' + filename
 
 
 def is_web_path_(path_str):
@@ -3583,7 +3586,7 @@ async def test_use_config():
         # 读取上传配置
         uploads_config = get_server_uploads_config()
         local_path = uploads_config["user_local_path"]
-        web_path = uploads_config["web_path"]
+        web_path = uploads_config["web_backend_path"]
 
         # 模拟业务逻辑：拼接文件完整URL
         filename = "test_file.pdf"
