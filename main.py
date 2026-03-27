@@ -6,7 +6,7 @@ import urllib
 
 import aiohttp
 from fastapi import FastAPI, UploadFile, File, Form, Body, Request, HTTPException, Query
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -79,6 +79,75 @@ app.add_middleware(
     allow_methods=["*"],  # 允许所有HTTP方法
     allow_headers=["*"],  # 允许所有请求头
 )
+
+# ====================== HTTP 日志中间件 ======================
+# 跳过不需要记录入参/出参的路径
+_LOG_SKIP_PATHS = {"/api/logs", "/health", "/docs", "/redoc", "/openapi.json"}
+
+@app.middleware("http")
+async def http_log_middleware(request: Request, call_next):
+    # 跳过日志/健康检查等路径
+    if request.url.path in _LOG_SKIP_PATHS or request.url.path.startswith("/uploads"):
+        return await call_next(request)
+
+    start_time = time.time()
+    path = request.url.path
+    method = request.method
+    query = str(request.query_params) if request.query_params else ""
+
+    # 记录入参
+    content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" in content_type:
+        # multipart 不读取 body，只记录字段标识
+        logger.info("[REQ] %s %s query=%s body=<multipart/form-data>", method, path, query)
+    elif "application/json" in content_type:
+        try:
+            body_bytes = await request.body()
+            body_str = body_bytes.decode("utf-8", errors="replace")
+            if len(body_str) > 1000:
+                body_str = body_str[:1000] + "...(truncated)"
+            logger.info("[REQ] %s %s query=%s body=%s", method, path, query, body_str)
+            # 重建 request 以便后续路由能再次读取 body
+            async def receive():
+                return {"type": "http.request", "body": body_bytes, "more_body": False}
+            request = Request(request.scope, receive)
+        except Exception:
+            logger.info("[REQ] %s %s query=%s body=<unreadable>", method, path, query)
+    else:
+        logger.info("[REQ] %s %s query=%s", method, path, query)
+
+    # 调用下游处理
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        elapsed = time.time() - start_time
+        logger.error("[RESP] %s %s elapsed=%.3fs exception=%s", method, path, elapsed, exc, exc_info=True)
+        raise
+
+    elapsed = time.time() - start_time
+    resp_content_type = response.headers.get("content-type", "")
+
+    if "application/json" in resp_content_type:
+        # 读取响应体后重建 Response
+        resp_body = b""
+        async for chunk in response.body_iterator:
+            resp_body += chunk
+        body_str = resp_body.decode("utf-8", errors="replace")
+        if len(body_str) > 1000:
+            log_body = body_str[:1000] + "...(truncated)"
+        else:
+            log_body = body_str
+        logger.info("[RESP] %s %s status=%d elapsed=%.3fs body=%s", method, path, response.status_code, elapsed, log_body)
+        return Response(
+            content=resp_body,
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            media_type=resp_content_type,
+        )
+    else:
+        logger.info("[RESP] %s %s status=%d elapsed=%.3fs body=<non-json>", method, path, response.status_code, elapsed)
+        return response
+
 
 def read_sc_web_config(config_filename: str = "sc_web.conf") -> configparser.ConfigParser:
     """
