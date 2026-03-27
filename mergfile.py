@@ -137,7 +137,7 @@ def call_docx_merge(merge_request: MergeRequest):
     :param merge_request: 合并请求参数（tree+files）
     :return: 合并后的文件字节流
     """
-    url = f"{TARGET_BASE_URL} "  # 文档中为megre（merge笔误）
+    url = f"{TARGET_BASE_URL}/api/tool_api/docx/megre"  # 文档中拼写为 megre（merge笔误）
     try:
         data_ = merge_request.dict(exclude_unset=True)
         print(data_)
@@ -145,14 +145,8 @@ def call_docx_merge(merge_request: MergeRequest):
         response = requests.post(
             url,
             json=data_,
-            timeout=TIMEOUT_CONFIG["split"]
+            timeout=TIMEOUT_CONFIG["merge"]
         )
-        # response = requests.post(
-        #     url,
-        #     json=merge_request.dict(exclude_unset=True),
-        #     headers={"Content-Type": "application/json"},
-        #     timeout=TIMEOUT_CONFIG["merge"]
-        # )
         response.raise_for_status()
         # 返回合并后的文件字节流
         return SplitResponse(**response.json())
