@@ -1,3 +1,6 @@
+import logging
+logger = logging.getLogger(__name__)
+
 import configparser
 from pathlib import Path
 import requests
@@ -65,15 +68,14 @@ class SplitResponse(BaseModel):
 
     def __init__(self, *args, **kwargs):
         # 先打印传入的参数
-        print("===== 传入的参数信息 =====")
-        print(f"位置参数 args: {args}")
-        print(f"关键字参数 kwargs: {kwargs}")
+        logger.debug("===== 传入的参数信息 =====")
+        logger.debug(f"位置参数 args: {args}")
+        logger.debug(f"关键字参数 kwargs: {kwargs}")
         # 打印kwargs中每个变量的详细信息（可选，更清晰）
         if kwargs:
-            print("kwargs 中的具体变量：")
+            logger.debug("kwargs 中的具体变量：")
             for key, value in kwargs.items():
-                print(f"  {key} = {value} (类型: {type(value)})")
-
+                logger.debug(f"  {key} = {value} (类型: {type(value)})")
         # 必须将参数传给父类的__init__，否则BaseModel无法正常初始化
         super().__init__(*args, **kwargs)
 
@@ -112,7 +114,7 @@ def call_docx_split(file_stream: bytes, file_name: str, file_id: str, had_title:
         )
         response.raise_for_status()  # 抛出HTTP状态码异常
         result = response.json()
-        print(result)
+        logger.debug(result)
         return SplitResponse(**result)
     except requests.exceptions.HTTPError as e:
         raise HTTPException(
@@ -140,7 +142,7 @@ def call_docx_merge(merge_request: MergeRequest):
     url = f"{TARGET_BASE_URL}/api/tool_api/docx/megre"  # 文档中拼写为 megre（merge笔误）
     try:
         data_ = merge_request.dict(exclude_unset=True)
-        print(data_)
+        logger.debug(data_)
         data_["user_key"] = "DC4096F87722AD140F01AF8C3315B9A6"
         response = requests.post(
             url,

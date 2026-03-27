@@ -288,7 +288,7 @@ if system_path == "Windows":
     except PermissionError:
         UPLOAD_DIR = os.path.join(os.gettempdir(), "docx_uploads")
         os.makedirs(UPLOAD_DIR, exist_ok=True)
-        print(f"警告：无法在当前目录创建uploads文件夹，已切换到系统临时目录：{UPLOAD_DIR}")
+        logger.warning(f"警告：无法在当前目录创建uploads文件夹，已切换到系统临时目录：{UPLOAD_DIR}")
     app.mount(STATIC_WEB_PREFIX, StaticFiles(directory=UPLOAD_DIR), name="uploads")
     pass
 else:
@@ -364,7 +364,7 @@ async def download_image(url: str, save_dir: str = UPLOAD_DIR) -> str:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
                 if response.status != 200:
-                    print(f"⚠️ 图片下载失败：{url}，状态码：{response.status}，返回空路径")
+                    logger.warning(f"⚠️ 图片下载失败：{url}，状态码：{response.status}，返回空路径")
                     return ""
 
                 # 保存图片到本地
@@ -377,13 +377,13 @@ async def download_image(url: str, save_dir: str = UPLOAD_DIR) -> str:
                 img.verify()  # 验证图片完整性
         except Exception as e:
             os.remove(file_path)
-            print(f"⚠️ 图片文件无效：{url}，错误：{str(e)}，返回空路径")
+            logger.warning(f"⚠️ 图片文件无效：{url}，错误：{str(e)}，返回空路径")
             return ""
 
         return file_path
 
     except Exception as e:
-        print(f"⚠️ 下载图片失败：{url}，错误：{str(e)}，返回空路径")
+        logger.warning(f"⚠️ 下载图片失败：{url}，错误：{str(e)}，返回空路径")
         return ""
 
 
@@ -451,8 +451,7 @@ def generate_and_convert_to_html(generate_func, *args, **kwargs):
                 if os.path.exists(temp_dir):
                     shutil.rmtree(temp_dir, ignore_errors=True)
             except Exception as e:
-                print(f"⚠️ 清理临时文件警告：{e}")
-
+                logger.warning(f"⚠️ 清理临时文件警告：{e}")
         # 使用线程延迟清理（避免当前进程占用）
         import threading
         cleanup_thread = threading.Thread(target=clean_temp_files)
@@ -669,8 +668,7 @@ def docx_to_html(file_path: str):
         # 文件大小检查
         file_size = os.path.getsize(abs_file_path)
         if file_size > 10 * 1024 * 1024:
-            print(f"警告：文件过大（{file_size / 1024 / 1024:.2f}MB），可能转换失败")
-
+            logger.warning(f"警告：文件过大（{file_size / 1024 / 1024:.2f}MB），可能转换失败")
         converter = DocxHtmlConverter()
         temp_html_filename = generate_unique_filename("temp.html")
         temp_html_path = os.path.join(UPLOAD_DIR, temp_html_filename)
@@ -693,11 +691,11 @@ def docx_to_html(file_path: str):
                     os.remove(temp_html_path)
                     pass
                 except Exception as e:
-                    print(f"警告：无法删除临时文件 {temp_html_path} - {e}")
+                    logger.warning(f"警告：无法删除临时文件 {temp_html_path} - {e}")
         result_html = html_content or ""
         return result_html, abs_file_path
     except Exception as e:
-        print(f"Word转HTML失败: {str(e)}")
+        logger.debug(f"Word转HTML失败: {str(e)}")
         return f"<p>转换失败：{str(e)}</p>"
 
 
@@ -904,12 +902,10 @@ def init_db_tables():
                 cursor.execute(create_file_table_sql)
                 cursor.execute(create_title_tree_table_sql)
                 conn.commit()
-        print("PostgreSQL数据表初始化成功")
+        logger.debug("PostgreSQL数据表初始化成功")
     except Exception as e:
-        print(f"PostgreSQL数据表初始化失败：{str(e)}")
-        print("警告：数据库初始化失败，部分功能将不可用")
-
-
+        logger.debug(f"PostgreSQL数据表初始化失败：{str(e)}")
+        logger.warning("警告：数据库初始化失败，部分功能将不可用")
 # 初始化数据表（首次运行取消注释）
 # init_db_tables()
 
@@ -940,7 +936,7 @@ def download_image_to_base64(image_url, base_url=None, timeout=10):
                     decoded = urllib.parse.unquote_to_bytes(data_part)
                     return base64.b64encode(decoded).decode('utf-8'), content_type
             except Exception as e:
-                print(f"解析 data: URI 失败: {str(e)}")
+                logger.debug(f"解析 data: URI 失败: {str(e)}")
                 return None, None
 
         # 处理相对路径
@@ -985,7 +981,7 @@ def download_image_to_base64(image_url, base_url=None, timeout=10):
         return base64_encoded, content_type
 
     except Exception as e:
-        print(f"下载/转换图片失败 {image_url}: {str(e)}")
+        logger.debug(f"下载/转换图片失败 {image_url}: {str(e)}")
         return None, None
 
     finally:
@@ -995,12 +991,12 @@ def download_image_to_base64(image_url, base_url=None, timeout=10):
             while retry > 0:
                 try:
                     os.unlink(temp_file_path)
-                    print(f"临时文件已清理：{temp_file_path}")
+                    logger.debug(f"临时文件已清理：{temp_file_path}")
                     break
                 except Exception as e:
                     retry -= 1
                     if retry == 0:
-                        print(f"清理临时文件失败 {temp_file_path}: {str(e)}")
+                        logger.debug(f"清理临时文件失败 {temp_file_path}: {str(e)}")
                     else:
                         import time
                         time.sleep(0.1)
@@ -1019,7 +1015,7 @@ def html_img_url_to_base64(html_text, base_url=None, timeout=10):
         # 步骤2：提取所有img标签的列表（有序，保证一对一）
         img_tags = full_img_pattern.findall(html_text)
         if not img_tags:
-            print("未找到任何img标签，直接返回原HTML")
+            logger.debug("未找到任何img标签，直接返回原HTML")
             return html_text, {"success": 0, "fail": 0}
 
         # 步骤3：为每个img标签生成替换后的版本
@@ -1039,7 +1035,7 @@ def html_img_url_to_base64(html_text, base_url=None, timeout=10):
             if not src_match:
                 replacement_map[original_img_tag] = original_img_tag
                 fail_count += 1
-                print(f"跳过无src的img标签：{original_img_tag[:50]}...")
+                logger.debug(f"跳过无src的img标签：{original_img_tag[:50]}...")
                 continue
 
             # 获取纯净的src值
@@ -1049,7 +1045,7 @@ def html_img_url_to_base64(html_text, base_url=None, timeout=10):
             if not img_url:
                 replacement_map[original_img_tag] = original_img_tag
                 fail_count += 1
-                print(f"跳过空src的img标签：{original_img_tag[:50]}...")
+                logger.debug(f"跳过空src的img标签：{original_img_tag[:50]}...")
                 continue
 
             # 下载并转换为Base64
@@ -1064,12 +1060,11 @@ def html_img_url_to_base64(html_text, base_url=None, timeout=10):
                 )
                 replacement_map[original_img_tag] = new_img_tag
                 success_count += 1
-                print(f"成功替换图片：{img_url} → 标签已更新")
+                logger.debug(f"成功替换图片：{img_url} → 标签已更新")
             else:
                 replacement_map[original_img_tag] = original_img_tag
                 fail_count += 1
-                print(f"替换失败：{img_url} → 保留原标签")
-
+                logger.debug(f"替换失败：{img_url} → 保留原标签")
         # 步骤4：按顺序替换HTML中的所有img标签（一对一）
         processed_html = html_text
         for original_img_tag in img_tags:
@@ -1093,10 +1088,9 @@ def html_img_url_to_base64(html_text, base_url=None, timeout=10):
         if os.path.exists(temp_dir):
             try:
                 shutil.rmtree(temp_dir)
-                print(f"\n临时目录已清理：{temp_dir}")
+                logger.debug(f"\n临时目录已清理：{temp_dir}")
             except Exception as e:
-                print(f"\n清理临时目录失败 {temp_dir}: {str(e)}")
-
+                logger.debug(f"\n清理临时目录失败 {temp_dir}: {str(e)}")
 def build_eid_path_mapping(files: List[str]) -> Dict[str, str]:
     """
     构建 eid 到文件路径的映射关系
@@ -1544,7 +1538,7 @@ def create_single_main_node(
             node_id = cursor.fetchone()[0]
             conn.commit()
 
-    print(f"成功创建主节点：ID={node_id}, 标题={DEFAULT_MAIN_NODE['title']}")
+    logger.debug(f"成功创建主节点：ID={node_id}, 标题={DEFAULT_MAIN_NODE['title']}")
     return node_id
 
 def deduplicate_dict_list(dict_list):
@@ -1700,7 +1694,7 @@ async def upload_and_generate_tree(
             # 3. 为每个树节点分配文件路径
             for node in tree_nodes:
                 assign_file_path_to_tree(node, eid_path_map)
-            print(tree_nodes)
+            logger.debug(tree_nodes)
             batch_count = get_next_batch_count(record_id)
             node_ids = process_split_tree_nodes(
                 nodes=tree_nodes,
@@ -1733,8 +1727,7 @@ async def upload_and_generate_tree(
             #     delete_request = DeleteRequest(id=split_file_id)
             #     call_docx_delete(delete_request)
         except Exception as cleanup_e:
-            print(f"清理临时文件失败：{cleanup_e}")
-
+            logger.debug(f"清理临时文件失败：{cleanup_e}")
         return unified_response(
             code=500,
             message=f"上传处理失败（模式：{process_mode}）：{str(e)}",
@@ -1924,7 +1917,7 @@ async def route_generate_tree(
             # 3. 为每个树节点分配文件路径
             for node in tree_nodes:
                 assign_file_path_to_tree(node, eid_path_map)
-            print(tree_nodes)
+            logger.debug(tree_nodes)
             batch_count = get_next_batch_count(record_id)
             node_ids = process_split_tree_nodes(
                 nodes=tree_nodes,
@@ -1956,8 +1949,7 @@ async def route_generate_tree(
             #     delete_request = DeleteRequest(id=split_file_id)
             #     call_docx_delete(delete_request)
         except Exception as cleanup_e:
-            print(f"清理临时文件失败：{cleanup_e}")
-
+            logger.debug(f"清理临时文件失败：{cleanup_e}")
         return unified_response(
             code=500,
             message=f"文件处理失败（模式：{process_mode}）：{str(e)}",
@@ -2157,8 +2149,7 @@ async def route_docx2html_marge(
             #     delete_request = DeleteRequest(id=split_file_id)
             #     call_docx_delete(delete_request)
         except Exception as cleanup_e:
-            print(f"清理临时文件失败：{cleanup_e}")
-
+            logger.debug(f"清理临时文件失败：{cleanup_e}")
         return unified_response(
             code=500,
             message=f"文件处理失败：{str(e)}",
@@ -2215,16 +2206,16 @@ async def split_upload_and_generate_tree(
 
         # 日志记录
         if status == 0:
-            print(f"finish upload. sign:{file_sign} | file_no :{file_no} | total count:{files_total_count}")
+            logger.debug(f"finish upload. sign:{file_sign} | file_no :{file_no} | total count:{files_total_count}")
         if status == 1:
-            print(
+            logger.warning(
                 f"upload fail. error info:{msg} | sign:{file_sign} | file_no :{file_no} | total count:{files_total_count}")
 
         # 处理文件路径返回
         if result == 1:
             file_path = f"{path_}{full_file_name}"
-            print("--------TemplateUploadFile-finish--------")
-            print(f"file path : {file_path}")
+            logger.debug("--------TemplateUploadFile-finish--------")
+            logger.debug(f"file path : {file_path}")
         else:
             file_path = ''
             real_file_path = ''
@@ -2240,8 +2231,8 @@ async def split_upload_and_generate_tree(
         })
 
     except Exception as e:
-        print("--------TemplateUploadFile-fail--------")
-        print(f"TemplateUploadFile-失败：{str(e)}")
+        logger.debug("--------TemplateUploadFile-fail--------")
+        logger.debug(f"TemplateUploadFile-失败：{str(e)}")
         return JSONResponse(
             status_code=500,
             content={'status': 1, 'is_finish': 0, 'msg': '接口异常', "data": ""}
@@ -2777,7 +2768,7 @@ async def update_html_by_node_new(
         # ── 4b. 有标题分支（max_level > 0），需拆分 ───────────────────────
         else:
             success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
-            print(temp_docx_path_1)
+            logger.debug(temp_docx_path_1)
             if not success:
                 return unified_response(code=500, message=f"HTML转DOCX失败：{result}", data={})
 
@@ -3085,7 +3076,7 @@ async def merge_docx_office_server(
 
     # 转为标准返回格式（复用 process_split_tree_nodes_with_select）
     tree_ = nested_tree_items  # 直接用 TreeItem 列表，MergeRequest.tree 类型匹配
-    print(tree_)
+    logger.debug(tree_)
     def _collect_files(nodes: List[TreeItem]) -> List[str]:
         """DFS 遍历 TreeItem 树，按节点顺序收集文件路径（去重保序）"""
         paths: List[str] = []
@@ -3399,12 +3390,12 @@ async def generate_default_patent_doc():
         if not os.path.exists(save_path):
             raise HTTPException(status_code=404, detail="文档生成失败，文件不存在")
         html_content, temp_file_docx = docx_to_html(save_path)
-        print(save_path)
+        logger.debug(save_path)
         try:
             if os.path.exists(save_path):
                 os.remove(save_path)
         except Exception as e:
-            print(f"警告：无法删除临时文件 {save_path} - {e}")
+            logger.warning(f"警告：无法删除临时文件 {save_path} - {e}")
         return unified_response(
             code=200,
             message="节点HTML内容更新成功",
@@ -3896,11 +3887,9 @@ def cleanup_temp_files(temp_dir: str):
     if os.path.exists(temp_dir):
         try:
             shutil.rmtree(temp_dir)
-            print(f"临时目录 {temp_dir} 已清理")
+            logger.debug(f"临时目录 {temp_dir} 已清理")
         except Exception as e:
-            print(f"清理临时目录失败：{str(e)}")
-
-
+            logger.debug(f"清理临时目录失败：{str(e)}")
 # ====================== 启动服务 ======================
 if __name__ == "__main__":
     import uvicorn
