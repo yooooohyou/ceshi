@@ -145,7 +145,7 @@ def call_docx_merge(merge_request: MergeRequest):
         response = requests.post(
             url,
             json=data_,
-            timeout=TIMEOUT_CONFIG["split"]
+            timeout=TIMEOUT_CONFIG["merge"]
         )
         # response = requests.post(
         #     url,
