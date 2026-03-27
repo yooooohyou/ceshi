@@ -137,7 +137,7 @@ def call_docx_merge(merge_request: MergeRequest):
     :param merge_request: 合并请求参数（tree+files）
     :return: 合并后的文件字节流
     """
-    url = f"{TARGET_BASE_URL}/api/tool_api/docx/megre"  # 文档中为megre（merge笔误）
+    url = f"{TARGET_BASE_URL} "  # 文档中为megre（merge笔误）
     try:
         data_ = merge_request.dict(exclude_unset=True)
         print(data_)

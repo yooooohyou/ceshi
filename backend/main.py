@@ -835,6 +835,23 @@ def download_image_to_base64(image_url, base_url=None, timeout=10):
         if image_url.startswith(('"', "'")) and image_url.endswith(('"', "'")):
             image_url = image_url[1:-1]
 
+        # 处理 data: URI（已是base64编码，无需下载）
+        if image_url.startswith('data:'):
+            try:
+                header, data_part = image_url.split(',', 1)
+                meta = header[5:]  # 去掉 "data:"
+                parts = meta.split(';')
+                content_type = parts[0] if parts[0] else 'image/jpeg'
+                if 'base64' in parts:
+                    return data_part, content_type
+                else:
+                    import urllib.parse
+                    decoded = urllib.parse.unquote_to_bytes(data_part)
+                    return base64.b64encode(decoded).decode('utf-8'), content_type
+            except Exception as e:
+                print(f"解析 data: URI 失败: {str(e)}")
+                return None, None
+
         # 处理相对路径
         if base_url and not image_url.startswith(('http://', 'https://')):
             image_url = f"{base_url.rstrip('/')}/{image_url.lstrip('/')}"
@@ -2665,6 +2682,7 @@ async def update_html_by_node_new(request: Request,
         # ── 4b. 有标题分支（max_level > 0），需拆分 ───────────────────────
         else:
             success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
+            print(temp_docx_path_1)
             if not success:
                 return unified_response(code=500, message=f"HTML转DOCX失败：{result}", data={})
 
@@ -3782,7 +3800,6 @@ def cleanup_temp_files(temp_dir: str):
 # ====================== 启动服务 ======================
 if __name__ == "__main__":
     import uvicorn
-
 
     uvicorn.run(
         app=__name__ + ":app",
