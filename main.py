@@ -103,10 +103,16 @@ async def http_log_middleware(request: Request, call_next):
     elif "application/json" in content_type:
         try:
             body_bytes = await request.body()
-            body_str = body_bytes.decode("utf-8", errors="replace")
-            if len(body_str) > 1000:
-                body_str = body_str[:1000] + "...(truncated)"
-            logger.info("[REQ] %s %s query=%s body=%s", method, path, query, body_str)
+            # 检测是否为二进制内容（非可打印字节占比超过10%则视为二进制）
+            sample = body_bytes[:200]
+            non_printable = sum(1 for b in sample if b < 0x09 or (0x0e <= b <= 0x1f) or b == 0x7f)
+            if sample and non_printable / len(sample) > 0.1:
+                logger.info("[REQ] %s %s query=%s body=<binary %d bytes>", method, path, query, len(body_bytes))
+            else:
+                body_str = body_bytes.decode("utf-8", errors="replace")
+                if len(body_str) > 1000:
+                    body_str = body_str[:1000] + "...(truncated)"
+                logger.info("[REQ] %s %s query=%s body=%s", method, path, query, body_str)
             # 重建 request 以便后续路由能再次读取 body
             async def receive():
                 return {"type": "http.request", "body": body_bytes, "more_body": False}
@@ -138,10 +144,13 @@ async def http_log_middleware(request: Request, call_next):
         else:
             log_body = body_str
         logger.info("[RESP] %s %s status=%d elapsed=%.3fs body=%s", method, path, response.status_code, elapsed, log_body)
+        # 剔除 transfer-encoding / content-length，避免与固定 body 冲突导致客户端乱码
+        _skip_headers = {"transfer-encoding", "content-length"}
+        safe_headers = {k: v for k, v in response.headers.items() if k.lower() not in _skip_headers}
         return Response(
             content=resp_body,
             status_code=response.status_code,
-            headers=dict(response.headers),
+            headers=safe_headers,
             media_type=resp_content_type,
         )
     else:
