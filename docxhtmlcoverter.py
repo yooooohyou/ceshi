@@ -2196,6 +2196,47 @@ class DocxHtmlConverter:
         print(f"📦 HTML 切分为 {len(chunks_html)} 个 chunk（总估算段落：{self._html_count_paragraphs(body_content)}）")
         return chunks_html
 
+    @staticmethod
+    def _find_top_level_trs(html: str) -> list[str]:
+        """
+        从表格 HTML 中提取顶层 <tr>...</tr>，正确跳过嵌套表格内的行。
+        使用深度计数而非正则，避免嵌套 <table><tr> 被误匹配。
+        """
+        rows = []
+        tag_re = re.compile(r'<(/?)(?:tr|table)\b[^>]*>', re.IGNORECASE)
+        table_depth = 0  # 当前 <tr> 内部嵌套 <table> 的深度
+        tr_start = -1   # 顶层 <tr> 的起始位置
+        tr_depth = 0    # 顶层 <tr> 的嵌套层数（处理同级 tr 计数）
+
+        for m in tag_re.finditer(html):
+            is_close = m.group(1) == '/'
+            tag_name_m = re.match(r'</?([a-zA-Z]+)', m.group(0))
+            if not tag_name_m:
+                continue
+            tag_name = tag_name_m.group(1).lower()
+
+            if tag_name == 'table':
+                if not is_close:
+                    if tr_start >= 0:   # 在顶层 <tr> 内部遇到 <table>
+                        table_depth += 1
+                else:
+                    if tr_start >= 0 and table_depth > 0:
+                        table_depth -= 1
+            elif tag_name == 'tr':
+                if not is_close:
+                    if table_depth == 0:   # 顶层 <tr>（不在嵌套 table 内）
+                        if tr_depth == 0:
+                            tr_start = m.start()
+                        tr_depth += 1
+                else:
+                    if table_depth == 0 and tr_depth > 0:
+                        tr_depth -= 1
+                        if tr_depth == 0:
+                            rows.append(html[tr_start:m.end()])
+                            tr_start = -1
+
+        return rows
+
     def _split_html_table_rows(self, table_html: str, preamble: str) -> list[str]:
         """
         将单张超大 HTML 表格按 <tr> 行粒度切分为多个 chunk。
@@ -2211,8 +2252,7 @@ class DocxHtmlConverter:
         if thead_m:
             body_area = table_html[:thead_m.start()] + table_html[thead_m.end():]
 
-        tr_pattern = re.compile(r'<tr[\s>].*?</tr\s*>', re.IGNORECASE | re.DOTALL)
-        all_trs = tr_pattern.findall(body_area)
+        all_trs = self._find_top_level_trs(body_area)
 
         chunks_html = []
         current_trs = []
@@ -2437,6 +2477,34 @@ class DocxHtmlConverter:
             '\n'.join(extra_rels) + '\n</Relationships>'
         )
 
+        # 更新 [Content_Types].xml：补充后续 chunk 引入的新媒体文件扩展名
+        CONTENT_TYPES_PATH = '[Content_Types].xml'
+        KNOWN_EXT_TYPES = {
+            'png':  'image/png',
+            'jpg':  'image/jpeg',
+            'jpeg': 'image/jpeg',
+            'gif':  'image/gif',
+            'bmp':  'image/bmp',
+            'tif':  'image/tiff',
+            'tiff': 'image/tiff',
+            'webp': 'image/webp',
+        }
+        content_types_xml = base_files.get(CONTENT_TYPES_PATH, b'').decode('utf-8')
+        new_content_types_entries = []
+        for zip_path in extra_media:
+            ext = os.path.splitext(zip_path)[1].lstrip('.').lower()
+            mime = KNOWN_EXT_TYPES.get(ext)
+            if mime and f'Extension="{ext}"' not in content_types_xml:
+                new_content_types_entries.append(
+                    f'<Default Extension="{ext}" ContentType="{mime}"/>'
+                )
+                content_types_xml += ''  # 标记需写入
+        if new_content_types_entries:
+            content_types_xml = content_types_xml.replace(
+                '</Types>',
+                '\n'.join(new_content_types_entries) + '\n</Types>'
+            )
+
         tmp_path = output_docx_path + '.mergetmp'
         with zipfile.ZipFile(chunk_docx_paths[0], 'r') as src_zip, \
              zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED) as dst_zip:
@@ -2446,6 +2514,8 @@ class DocxHtmlConverter:
                     dst_zip.writestr(item, new_doc_xml)
                 elif item.filename == RELS_PATH:
                     dst_zip.writestr(item, new_rels_xml.encode('utf-8'))
+                elif item.filename == CONTENT_TYPES_PATH and new_content_types_entries:
+                    dst_zip.writestr(item, content_types_xml.encode('utf-8'))
                 else:
                     dst_zip.writestr(item, src_zip.read(item.filename))
 
