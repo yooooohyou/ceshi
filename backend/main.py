@@ -3342,11 +3342,10 @@ async def generate_default_patent_doc_patent_generator(
             min_items=1,  # 至少1条专利数据
             max_items=100  # 最多100条专利数据
         ),
-        cert_img_urls: List[str] = Body(
+        cert_img_urls: List[Any] = Body(
             [],
-            description="专利证书图片的网络URL列表（可选）",
-            example=["https://example.com/patent1.jpg", "https://example.com/patent2.png"],
-            min_items=0
+            description="专利证书图片URL列表（可选），支持多层嵌套，例如：['url1', ['url2', 'url3'], [['url4'], 'url5']]，最终会被展平为有序的一维URL列表",
+            example=["https://example.com/patent1.jpg", ["https://example.com/patent2.png", "https://example.com/patent3.jpg"]],
         ),
         fill_empty_space: bool = Body(
             False,
@@ -3361,6 +3360,19 @@ async def generate_default_patent_doc_patent_generator(
             le=2
         )
 ):
+    def _flatten_urls(obj) -> List[str]:
+        """递归展平多层嵌套的 URL 结构，跳过空值。"""
+        if obj is None:
+            return []
+        if isinstance(obj, str):
+            return [obj] if obj.strip() else []
+        if isinstance(obj, list):
+            result = []
+            for item in obj:
+                result.extend(_flatten_urls(item))
+            return result
+        return [str(obj)] if obj else []
+
     try:
         # 数据校验：确保每行都有6个字段
         for idx, row in enumerate(patent_data):
@@ -3368,8 +3380,9 @@ async def generate_default_patent_doc_patent_generator(
                 raise ValueError(
                     f"专利数据第{idx + 1}行必须包含6个字段（序号、专利类型、专利名称、专利号、专利权人、授权公告日）")
 
-        # 下载图片
-        cert_img_paths = await download_images(cert_img_urls)
+        # 展平多层嵌套的 URL 列表后再下载
+        flat_urls = _flatten_urls(cert_img_urls)
+        cert_img_paths = await download_images(flat_urls)
 
         # 生成文档并转换为HTML
         html_content = generate_and_convert_to_html(
