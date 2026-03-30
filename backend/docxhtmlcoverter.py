@@ -2507,6 +2507,26 @@ class DocxHtmlConverter:
     #  公开方法（续）                                                        #
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _clean_mce_html(html: str) -> str:
+        """
+        清理 TinyMCE 产生的冗余标记，避免 Spire 转换时因空块级元素报错：
+        1. 去除所有 data-mce-* 属性（包括 data-mce-bogus、data-mce-style 等）
+        2. 将仅含 <br> 的空块级元素（h1-h6、p、div）替换为 <p>&nbsp;</p>
+        """
+        # 1. 去除 data-mce-* 属性
+        html = re.sub(r'\s+data-mce-[a-zA-Z0-9_-]+(?:="[^"]*"|=\'[^\']*\'|(?=[>\s]))', '', html)
+
+        # 2. 空块级元素（内容为空或只有 <br>）→ <p>&nbsp;</p>
+        block_tags = r'(?:h[1-6]|p|div)'
+        html = re.sub(
+            r'<(' + block_tags + r')(\s[^>]*)?>(\s*<br\s*/?>)*\s*</\1>',
+            '<p>&nbsp;</p>',
+            html,
+            flags=re.IGNORECASE
+        )
+        return html
+
     def html_text_to_docx(self, html_text: str, output_docx_path: str):
         """
         公开方法：HTML文本转DOCX
@@ -2518,6 +2538,7 @@ class DocxHtmlConverter:
         :return: 成功返回True，失败返回False
         """
         output_docx_path = self._normalize_path(output_docx_path)
+        html_text = self._clean_mce_html(html_text)
 
         if not html_text.strip():
             logger.error("❌ HTML文本为空，无法转换")
