@@ -99,7 +99,6 @@ def call_docx_split(file_stream: bytes, file_name: str, file_id: str, had_title:
     :return: 拆分接口返回结果
     """
     url = f"{TARGET_BASE_URL}/api/tool_api/docx/split"
-    rm_outline_in_doc=0
     try:
         # 构造multipart/form-data请求
         files = {
