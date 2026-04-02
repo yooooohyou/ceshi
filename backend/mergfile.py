@@ -133,11 +133,12 @@ def call_docx_split(file_stream: bytes, file_name: str, file_id: str, had_title:
         )
 
 
-def call_docx_merge(merge_request: MergeRequest, add_title=0):
+def call_docx_merge(merge_request: MergeRequest, add_title=0, add_heading_num=1):
     """
     调用文件合并接口（同步）
     :param merge_request: 合并请求参数（tree+files）
     :param add_title: 是否添加标题 1：是，0：否
+    :param add_heading_num: 是否添加自动标号 1：是，0：否
     :return: 合并后的文件字节流
     """
     url = f"{TARGET_BASE_URL}/api/tool_api/docx/megre"  # 文档中拼写为 megre（merge笔误）
@@ -145,6 +146,7 @@ def call_docx_merge(merge_request: MergeRequest, add_title=0):
         data_ = merge_request.dict(exclude_unset=True)
         logger.debug(data_)
         data_["add_title"] = add_title
+        data_["add_heading_num"] = add_heading_num
         data_["user_key"] = "DC4096F87722AD140F01AF8C3315B9A6"
         response = requests.post(
             url,

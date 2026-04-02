@@ -3343,7 +3343,7 @@ async def merge_docx_office_server(
 
     try:
         merge_request = MergeRequest(tree=tree_, files=files_, format_args=format_args)
-        merged_file_message = call_docx_merge(merge_request, add_title=0)
+        merged_file_message = call_docx_merge(merge_request, add_title=0, add_heading_num=1)
         return merged_file_message
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件合并失败：{str(e)}")
