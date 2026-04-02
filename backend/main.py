@@ -51,8 +51,8 @@ def setup_logging():
 
     # 配置根日志器
     logging.basicConfig(
-        level=logging.DEBUG,
-        # level=log_level,
+        # level=logging.DEBUG,
+        level=log_level,
         format=log_format,
         handlers=[
             logging.StreamHandler(sys.stdout),  # 输出到终端
