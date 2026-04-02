@@ -3099,7 +3099,6 @@ async def merge_docx_office_server(
     files_ = _collect_files(tree_)
 
     # ── 4. 构造合并请求并调用合并接口 ───────────────────────────────────
-    format_config = {}
     # format_config = {
     #     "Heading": {
     #         "Heading1": {
@@ -3336,7 +3335,7 @@ async def merge_docx_office_server(
     #     }
     # }
     format_args = {
-        "config_dict": format_config,
+        # "config_dict": format_config,
         "token": "984f5b0a2793eeafeeddfd2cd095ad31",
         "key": "984f5b0a2793eeafeeddfd2cd095ad31-1772598822992"
     }
