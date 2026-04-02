@@ -51,7 +51,8 @@ def setup_logging():
 
     # 配置根日志器
     logging.basicConfig(
-        level=log_level,
+        level=logging.DEBUG,
+        # level=log_level,
         format=log_format,
         handlers=[
             logging.StreamHandler(sys.stdout),  # 输出到终端
@@ -1682,7 +1683,7 @@ async def upload_and_generate_tree(
                 file_stream=file_content,
                 file_name=original_filename,
                 file_id=split_file_id,
-                had_title=0,
+                had_title=1,
                 rm_outline_in_doc=1
             )
 
@@ -1904,7 +1905,7 @@ async def route_generate_tree(
                 file_stream=file_content,
                 file_name=original_filename,
                 file_id=split_file_id,
-                had_title=0,
+                had_title=1,
                 rm_outline_in_doc=1
             )
 
@@ -2803,7 +2804,7 @@ async def update_html_by_node_new(
                 file_stream=file_bytes,
                 file_name=original_filename,
                 file_id=str(node_id),
-                had_title=0,
+                had_title=1,
                 rm_outline_in_doc=1
             )
             if split_result.status == 1:
