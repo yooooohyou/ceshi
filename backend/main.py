@@ -3099,243 +3099,243 @@ async def merge_docx_office_server(
     files_ = _collect_files(tree_)
 
     # ── 4. 构造合并请求并调用合并接口 ───────────────────────────────────
-    # format_config = {
-    #     "Heading": {
-    #         "Heading1": {
-    #             "use": True,
-    #             "style": {
-    #                 "alignment": "left",
-    #                 "line_spacing": "single",
-    #                 "line_spacing_value": 1,
-    #                 "left_indent": 0,
-    #                 "right_indent": 0,
-    #                 "space_before": 0,
-    #                 "space_after": 0,
-    #                 "first_line_indent": 0,
-    #                 "font_name": "仿宋",
-    #                 "font_size": "初号",
-    #                 "bold": True,
-    #                 "italic": True,
-    #                 "underline": None,
-    #                 "color": None
-    #             }
-    #         },
-    #         "Heading2": {
-    #             "use": False,
-    #             "style": {
-    #                 "alignment": "left",
-    #                 "line_spacing": "single",
-    #                 "line_spacing_value": 1,
-    #                 "left_indent": 0,
-    #                 "right_indent": 0,
-    #                 "space_before": 0,
-    #                 "space_after": 0,
-    #                 "first_line_indent": 0,
-    #                 "font_name": "仿宋",
-    #                 "font_size": "三号",
-    #                 "bold": True,
-    #                 "italic": False,
-    #                 "underline": None,
-    #                 "color": None
-    #             }
-    #         },
-    #         "Heading3": {
-    #             "use": False,
-    #             "style": {
-    #                 "alignment": "left",
-    #                 "line_spacing": "single",
-    #                 "line_spacing_value": 1,
-    #                 "left_indent": 0,
-    #                 "right_indent": 0,
-    #                 "space_before": 0,
-    #                 "space_after": 0,
-    #                 "first_line_indent": 0,
-    #                 "font_name": "仿宋",
-    #                 "font_size": "三号",
-    #                 "bold": True,
-    #                 "italic": False,
-    #                 "underline": None,
-    #                 "color": None
-    #             }
-    #         },
-    #         "Heading4": {
-    #             "use": False,
-    #             "style": {
-    #                 "alignment": "left",
-    #                 "line_spacing": "single",
-    #                 "line_spacing_value": 1,
-    #                 "left_indent": 0,
-    #                 "right_indent": 0,
-    #                 "space_before": 0,
-    #                 "space_after": 0,
-    #                 "first_line_indent": 0,
-    #                 "font_name": "仿宋",
-    #                 "font_size": "四号",
-    #                 "bold": True,
-    #                 "italic": False,
-    #                 "underline": None,
-    #                 "color": None
-    #             }
-    #         },
-    #         "Heading5": {
-    #             "use": False,
-    #             "style": {
-    #                 "alignment": "left",
-    #                 "line_spacing": "single",
-    #                 "line_spacing_value": 1,
-    #                 "left_indent": 0,
-    #                 "right_indent": 0,
-    #                 "space_before": 0,
-    #                 "space_after": 0,
-    #                 "first_line_indent": 0,
-    #                 "font_name": "仿宋",
-    #                 "font_size": "四号",
-    #                 "bold": True,
-    #                 "italic": False,
-    #                 "underline": None,
-    #                 "color": None
-    #             }
-    #         },
-    #         "Heading6": {
-    #             "use": False,
-    #             "style": {
-    #                 "alignment": "left",
-    #                 "line_spacing": "single",
-    #                 "line_spacing_value": 1,
-    #                 "left_indent": 0,
-    #                 "right_indent": 0,
-    #                 "space_before": 0,
-    #                 "space_after": 0,
-    #                 "first_line_indent": 0,
-    #                 "font_name": "仿宋",
-    #                 "font_size": "小四",
-    #                 "bold": True,
-    #                 "italic": False,
-    #                 "underline": None,
-    #                 "color": None
-    #             }
-    #         },
-    #         "Heading7": {
-    #             "use": False,
-    #             "style": {
-    #                 "alignment": "left",
-    #                 "line_spacing": "single",
-    #                 "line_spacing_value": 1,
-    #                 "left_indent": 0,
-    #                 "right_indent": 0,
-    #                 "space_before": 0,
-    #                 "space_after": 0,
-    #                 "first_line_indent": 0,
-    #                 "font_name": "仿宋",
-    #                 "font_size": "小四",
-    #                 "bold": True,
-    #                 "italic": False,
-    #                 "underline": None,
-    #                 "color": None
-    #             }
-    #         },
-    #         "Heading8": {
-    #             "use": False,
-    #             "style": {
-    #                 "alignment": "left",
-    #                 "line_spacing": "single",
-    #                 "line_spacing_value": 1,
-    #                 "left_indent": 0,
-    #                 "right_indent": 0,
-    #                 "space_before": 0,
-    #                 "space_after": 0,
-    #                 "first_line_indent": 0,
-    #                 "font_name": "仿宋",
-    #                 "font_size": "小四",
-    #                 "bold": True,
-    #                 "italic": False,
-    #                 "underline": None,
-    #                 "color": None
-    #             }
-    #         },
-    #         "Heading9": {
-    #             "use": False,
-    #             "style": {
-    #                 "alignment": "left",
-    #                 "line_spacing": "single",
-    #                 "line_spacing_value": 1,
-    #                 "left_indent": 0,
-    #                 "right_indent": 0,
-    #                 "space_before": 0,
-    #                 "space_after": 0,
-    #                 "first_line_indent": 0,
-    #                 "font_name": "仿宋",
-    #                 "font_size": "五号",
-    #                 "bold": True,
-    #                 "italic": False,
-    #                 "underline": None,
-    #                 "color": None
-    #             }
-    #         }
-    #     },
-    #     "Text": {
-    #         "use": True,
-    #         "style": {
-    #             "alignment": "left",
-    #             "line_spacing": "single",
-    #             "line_spacing_value": 1,
-    #             "left_indent": 0,
-    #             "right_indent": 0,
-    #             "space_before": 0,
-    #             "space_after": 0,
-    #             "first_line_indent": 0,
-    #             "font_name": "仿宋",
-    #             "font_size": "小四",
-    #             "bold": None,
-    #             "italic": None,
-    #             "underline": True,
-    #             "color": None
-    #         }
-    #     },
-    #     "Table": {
-    #         "use": False,
-    #         "style": {
-    #             "repeat_header": False,
-    #             "line_break": False,
-    #             "alignment": "left",
-    #             "font_name": "仿宋",
-    #             "font_size": "五号",
-    #             "left_indent": 0,
-    #             "right_indent": 0,
-    #             "first_line_indent": 0,
-    #             "bold": None,
-    #             "italic": None,
-    #             "underline": None,
-    #             "color": None
-    #         }
-    #     },
-    #     "Header": {
-    #         "use": True,
-    #         "show_logo": True,
-    #         "logo": "",
-    #         "show_name": False,
-    #         "name": "123"
-    #     },
-    #     "Footer": {
-    #         "use": False,
-    #         "style": {
-    #             "alignment": "left"
-    #         }
-    #     },
-    #     "other": {
-    #         "numbering": True,
-    #         "use": False
-    #     },
-    #     "Margin": {
-    #         "use": False,
-    #         "top": 2.54,
-    #         "bottom": 2.54,
-    #         "left": 3.18,
-    #         "right": 3.18
-    #     }
-    # }
+    format_config = {
+        "Heading": {
+            "Heading1": {
+                "use": True,
+                "style": {
+                    "alignment": "left",
+                    "line_spacing": "single",
+                    "line_spacing_value": 1,
+                    "left_indent": 0,
+                    "right_indent": 0,
+                    "space_before": 0,
+                    "space_after": 0,
+                    "first_line_indent": 0,
+                    "font_name": "仿宋",
+                    "font_size": "初号",
+                    "bold": True,
+                    "italic": True,
+                    "underline": None,
+                    "color": None
+                }
+            },
+            "Heading2": {
+                "use": False,
+                "style": {
+                    "alignment": "left",
+                    "line_spacing": "single",
+                    "line_spacing_value": 1,
+                    "left_indent": 0,
+                    "right_indent": 0,
+                    "space_before": 0,
+                    "space_after": 0,
+                    "first_line_indent": 0,
+                    "font_name": "仿宋",
+                    "font_size": "三号",
+                    "bold": True,
+                    "italic": False,
+                    "underline": None,
+                    "color": None
+                }
+            },
+            "Heading3": {
+                "use": False,
+                "style": {
+                    "alignment": "left",
+                    "line_spacing": "single",
+                    "line_spacing_value": 1,
+                    "left_indent": 0,
+                    "right_indent": 0,
+                    "space_before": 0,
+                    "space_after": 0,
+                    "first_line_indent": 0,
+                    "font_name": "仿宋",
+                    "font_size": "三号",
+                    "bold": True,
+                    "italic": False,
+                    "underline": None,
+                    "color": None
+                }
+            },
+            "Heading4": {
+                "use": False,
+                "style": {
+                    "alignment": "left",
+                    "line_spacing": "single",
+                    "line_spacing_value": 1,
+                    "left_indent": 0,
+                    "right_indent": 0,
+                    "space_before": 0,
+                    "space_after": 0,
+                    "first_line_indent": 0,
+                    "font_name": "仿宋",
+                    "font_size": "四号",
+                    "bold": True,
+                    "italic": False,
+                    "underline": None,
+                    "color": None
+                }
+            },
+            "Heading5": {
+                "use": False,
+                "style": {
+                    "alignment": "left",
+                    "line_spacing": "single",
+                    "line_spacing_value": 1,
+                    "left_indent": 0,
+                    "right_indent": 0,
+                    "space_before": 0,
+                    "space_after": 0,
+                    "first_line_indent": 0,
+                    "font_name": "仿宋",
+                    "font_size": "四号",
+                    "bold": True,
+                    "italic": False,
+                    "underline": None,
+                    "color": None
+                }
+            },
+            "Heading6": {
+                "use": False,
+                "style": {
+                    "alignment": "left",
+                    "line_spacing": "single",
+                    "line_spacing_value": 1,
+                    "left_indent": 0,
+                    "right_indent": 0,
+                    "space_before": 0,
+                    "space_after": 0,
+                    "first_line_indent": 0,
+                    "font_name": "仿宋",
+                    "font_size": "小四",
+                    "bold": True,
+                    "italic": False,
+                    "underline": None,
+                    "color": None
+                }
+            },
+            "Heading7": {
+                "use": False,
+                "style": {
+                    "alignment": "left",
+                    "line_spacing": "single",
+                    "line_spacing_value": 1,
+                    "left_indent": 0,
+                    "right_indent": 0,
+                    "space_before": 0,
+                    "space_after": 0,
+                    "first_line_indent": 0,
+                    "font_name": "仿宋",
+                    "font_size": "小四",
+                    "bold": True,
+                    "italic": False,
+                    "underline": None,
+                    "color": None
+                }
+            },
+            "Heading8": {
+                "use": False,
+                "style": {
+                    "alignment": "left",
+                    "line_spacing": "single",
+                    "line_spacing_value": 1,
+                    "left_indent": 0,
+                    "right_indent": 0,
+                    "space_before": 0,
+                    "space_after": 0,
+                    "first_line_indent": 0,
+                    "font_name": "仿宋",
+                    "font_size": "小四",
+                    "bold": True,
+                    "italic": False,
+                    "underline": None,
+                    "color": None
+                }
+            },
+            "Heading9": {
+                "use": False,
+                "style": {
+                    "alignment": "left",
+                    "line_spacing": "single",
+                    "line_spacing_value": 1,
+                    "left_indent": 0,
+                    "right_indent": 0,
+                    "space_before": 0,
+                    "space_after": 0,
+                    "first_line_indent": 0,
+                    "font_name": "仿宋",
+                    "font_size": "五号",
+                    "bold": True,
+                    "italic": False,
+                    "underline": None,
+                    "color": None
+                }
+            }
+        },
+        "Text": {
+            "use": True,
+            "style": {
+                "alignment": "left",
+                "line_spacing": "single",
+                "line_spacing_value": 1,
+                "left_indent": 0,
+                "right_indent": 0,
+                "space_before": 0,
+                "space_after": 0,
+                "first_line_indent": 0,
+                "font_name": "仿宋",
+                "font_size": "小四",
+                "bold": None,
+                "italic": None,
+                "underline": True,
+                "color": None
+            }
+        },
+        "Table": {
+            "use": False,
+            "style": {
+                "repeat_header": False,
+                "line_break": False,
+                "alignment": "left",
+                "font_name": "仿宋",
+                "font_size": "五号",
+                "left_indent": 0,
+                "right_indent": 0,
+                "first_line_indent": 0,
+                "bold": None,
+                "italic": None,
+                "underline": None,
+                "color": None
+            }
+        },
+        "Header": {
+            "use": True,
+            "show_logo": True,
+            "logo": "",
+            "show_name": False,
+            "name": "123"
+        },
+        "Footer": {
+            "use": False,
+            "style": {
+                "alignment": "left"
+            }
+        },
+        "other": {
+            "numbering": True,
+            "use": False
+        },
+        "Margin": {
+            "use": False,
+            "top": 2.54,
+            "bottom": 2.54,
+            "left": 3.18,
+            "right": 3.18
+        }
+    }
     format_args = {
-        # "config_dict": format_config,
+        "config_dict": format_config,
         "token": "984f5b0a2793eeafeeddfd2cd095ad31",
         "key": "984f5b0a2793eeafeeddfd2cd095ad31-1772598822992"
     }
