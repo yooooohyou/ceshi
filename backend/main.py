@@ -2637,7 +2637,6 @@ async def update_html_by_node_new(
         # ── 2. 公共预处理 ────────────────────────────────────────────────
         html_content, status_ = html_img_url_to_base64(html_content)
 
-
         # with open("index.html", "w", encoding="utf-8") as f:
         #     f.write(html_content)
         #
