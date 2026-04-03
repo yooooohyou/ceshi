@@ -2748,20 +2748,26 @@ class DocxHtmlConverter:
     @staticmethod
     def _fix_exif_orientation(img_bytes: bytes) -> bytes:
         """
-        将图片的 EXIF Orientation 信息烘焙到像素中并清除该标签。
+        将 JPEG 图片的 EXIF Orientation 信息烘焙到像素中并清除该标签。
         浏览器会自动应用 EXIF 方向，但 Spire 不处理，导致 DOCX 中图片旋转。
-        Pillow 不可用时原样返回。
+        非 JPEG、方向正常（orientation==1）或 Pillow 不可用时原样返回，不重新编码。
         """
+        if img_bytes[:2] != b'\xff\xd8':   # 非 JPEG，跳过
+            return img_bytes
         try:
             from PIL import Image as _PILImage, ImageOps as _ImageOps
             import io as _io
             img = _PILImage.open(_io.BytesIO(img_bytes))
-            rotated = _ImageOps.exif_transpose(img)  # 无需手动读 Orientation，交由 Pillow 处理
-            if rotated is img:
-                return img_bytes   # exif_transpose 未做任何修改，方向正常
-            fmt = img.format or 'JPEG'
+            # 明确读取 Orientation 值，避免依赖 `rotated is img` 的 Pillow 版本差异
+            try:
+                orientation = img.getexif().get(0x0112, 1)
+            except Exception:
+                orientation = 1
+            if orientation in (None, 1):
+                return img_bytes   # 方向正常，无需重新编码
+            rotated = _ImageOps.exif_transpose(img)
             buf = _io.BytesIO()
-            rotated.save(buf, format=fmt)   # 保存时不写 EXIF，彻底清除方向标签
+            rotated.save(buf, format='JPEG', quality=92)   # 不写 EXIF，清除方向标签
             return buf.getvalue()
         except Exception:
             return img_bytes
