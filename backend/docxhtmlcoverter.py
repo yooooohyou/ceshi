@@ -488,7 +488,7 @@ class DocxHtmlConverter:
 
     @staticmethod
     def _fix_html_table_widths(html_content: str,
-                                content_width_pt: float = 467.0) -> str:
+                                content_width_pt: float = 400.0) -> str:
         """
         将 Spire 导出 HTML 中超出版心宽度的表格等比缩放至版心宽度以内。
         """
@@ -610,7 +610,7 @@ class DocxHtmlConverter:
 
     def _fix_html_img_sizes_for_import(self, html_text: str,
                                         page_width_px: int = 794,
-                                        content_width_px: int = 620) -> str:
+                                        content_width_px: int = 400) -> str:
         """
         HTML→DOCX 方向的图片尺寸修正。
         """
