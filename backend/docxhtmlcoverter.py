@@ -2748,22 +2748,20 @@ class DocxHtmlConverter:
     @staticmethod
     def _fix_exif_orientation(img_bytes: bytes) -> bytes:
         """
-        将 JPEG 图片的 EXIF Orientation 信息烘焙到像素中并清除该标签。
+        将图片的 EXIF Orientation 信息烘焙到像素中并清除该标签。
         浏览器会自动应用 EXIF 方向，但 Spire 不处理，导致 DOCX 中图片旋转。
-        非 JPEG 或 Pillow 不可用时原样返回。
+        Pillow 不可用时原样返回。
         """
-        if img_bytes[:2] != b'\xff\xd8':   # 非 JPEG，跳过
-            return img_bytes
         try:
             from PIL import Image as _PILImage, ImageOps as _ImageOps
             import io as _io
             img = _PILImage.open(_io.BytesIO(img_bytes))
-            orientation = (img.getexif() or {}).get(0x0112, 1)  # 0x0112 = Orientation
-            if orientation == 1:
-                return img_bytes   # 方向正常，无需处理
-            img = _ImageOps.exif_transpose(img)   # 旋转/镜像到正确方向
+            rotated = _ImageOps.exif_transpose(img)  # 无需手动读 Orientation，交由 Pillow 处理
+            if rotated is img:
+                return img_bytes   # exif_transpose 未做任何修改，方向正常
+            fmt = img.format or 'JPEG'
             buf = _io.BytesIO()
-            img.save(buf, format='JPEG', quality=92)  # 不写 EXIF，彻底清除方向标签
+            rotated.save(buf, format=fmt)   # 保存时不写 EXIF，彻底清除方向标签
             return buf.getvalue()
         except Exception:
             return img_bytes
@@ -2866,9 +2864,11 @@ class DocxHtmlConverter:
                                  'image/bmp', 'image/gif'}
             if real_mime in SPIRE_UNSUPPORTED:
                 try:
-                    from PIL import Image as _PILImage
+                    from PIL import Image as _PILImage, ImageOps as _ImageOps
                     import io as _io
-                    pil_img = _PILImage.open(_io.BytesIO(img_bytes)).convert('RGB')
+                    pil_img = _PILImage.open(_io.BytesIO(img_bytes))
+                    pil_img = _ImageOps.exif_transpose(pil_img)  # 先修正 EXIF 方向，再转 RGB（否则 convert 会丢弃 EXIF）
+                    pil_img = pil_img.convert('RGB')
                     buf = _io.BytesIO()
                     pil_img.save(buf, format='JPEG', quality=92)
                     img_bytes = buf.getvalue()
@@ -2876,12 +2876,11 @@ class DocxHtmlConverter:
                     logger.debug(f"   🔄 {real_mime} 不受 Spire 支持，已用 Pillow 转换为 JPEG")
                 except Exception as e:
                     logger.debug(f"   ⚠️ Pillow 转换失败（{real_mime}→JPEG）：{e}，保留原格式")
-            # 修正 JPEG EXIF 方向（Spire 不处理 Orientation，浏览器会自动应用）
-            if real_mime == 'image/jpeg':
-                fixed = self._fix_exif_orientation(img_bytes)
-                if fixed is not img_bytes:
-                    logger.debug(f"   🔄 已修正 JPEG EXIF Orientation")
-                    img_bytes = fixed
+            # 修正 EXIF 方向（Spire 不处理 Orientation，浏览器会自动应用；无条件调用，函数内部自行判断）
+            fixed = self._fix_exif_orientation(img_bytes)
+            if fixed is not img_bytes:
+                logger.debug(f"   🔄 已修正 EXIF Orientation")
+                img_bytes = fixed
 
             ext   = MIME_TO_EXT.get(real_mime, '.png')
             fname = f"img_{len(patch_list):04d}{ext}"
