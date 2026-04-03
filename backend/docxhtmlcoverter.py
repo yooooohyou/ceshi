@@ -2909,6 +2909,8 @@ class DocxHtmlConverter:
 
             style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE | re.DOTALL)
             style_w_px = None
+            style_h_px = None
+            style_val  = ''
             if style_m:
                 style_val = re.sub(r'[\r\n]+\s*', ' ', style_m.group(1))
                 w_m = re.search(
@@ -2923,9 +2925,30 @@ class DocxHtmlConverter:
                     elif unit == 'in': style_w_px = round(val * 96)
                     elif unit == 'cm': style_w_px = round(val / 2.54 * 96)
                     elif unit == 'mm': style_w_px = round(val / 25.4 * 96)
+                h_m = re.search(
+                    r'(?<![a-zA-Z\-])height\s*:\s*([\d.]+)\s*(px|pt|in|cm|mm)',
+                    style_val, re.IGNORECASE
+                )
+                if h_m:
+                    val  = float(h_m.group(1))
+                    unit = h_m.group(2).lower()
+                    if unit == 'px':  style_h_px = round(val)
+                    elif unit == 'pt': style_h_px = round(val * 96 / 72)
+                    elif unit == 'in': style_h_px = round(val * 96)
+                    elif unit == 'cm': style_h_px = round(val / 2.54 * 96)
+                    elif unit == 'mm': style_h_px = round(val / 25.4 * 96)
 
-            w_px = style_w_px or phys_w
-            if w_px and phys_w and phys_h and phys_w > 0:
+            # 读取 HTML width/height 属性（优先级低于 style，高于物理尺寸）
+            attr_w_m2 = re.search(r'\bwidth="(\d+(?:\.\d+)?)"', tag, re.IGNORECASE)
+            attr_w_px = round(float(attr_w_m2.group(1))) if attr_w_m2 else None
+            attr_h_m2 = re.search(r'\bheight="(\d+(?:\.\d+)?)"', tag, re.IGNORECASE)
+            attr_h_px = round(float(attr_h_m2.group(1))) if attr_h_m2 else None
+
+            w_px = style_w_px or attr_w_px or phys_w
+            declared_h = style_h_px or attr_h_px
+            if declared_h:
+                h_px = declared_h
+            elif w_px and phys_w and phys_h and phys_w > 0:
                 h_px = round(w_px * phys_h / phys_w)
             else:
                 h_px = phys_h
