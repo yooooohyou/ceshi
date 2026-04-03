@@ -51,6 +51,7 @@ def setup_logging():
 
     # 配置根日志器
     logging.basicConfig(
+        # level=logging.DEBUG,
         level=log_level,
         format=log_format,
         handlers=[
@@ -721,12 +722,12 @@ def convert_html_to_docx(html_content: str) -> Tuple[bool, Union[io.BytesIO, str
         docx_stream.seek(0)
 
 
-        # # 删除临时文件
-        # try:
-        #     if os.path.exists(temp_docx_path):
-        #         os.remove(temp_docx_path)
-        # except Exception as e:
-        #     print(f"警告：无法删除临时文件 {temp_docx_path} - {e}")
+        # 删除临时文件
+        try:
+            if os.path.exists(temp_docx_path):
+                os.remove(temp_docx_path)
+        except Exception as e:
+            print(f"警告：无法删除临时文件 {temp_docx_path} - {e}")
 
         return True, docx_stream, temp_docx_path
     except PermissionError:
@@ -1682,7 +1683,7 @@ async def upload_and_generate_tree(
                 file_stream=file_content,
                 file_name=original_filename,
                 file_id=split_file_id,
-                had_title=0,
+                had_title=1,
                 rm_outline_in_doc=1
             )
 
@@ -1904,7 +1905,7 @@ async def route_generate_tree(
                 file_stream=file_content,
                 file_name=original_filename,
                 file_id=split_file_id,
-                had_title=0,
+                had_title=1,
                 rm_outline_in_doc=1
             )
 
@@ -2607,7 +2608,6 @@ async def update_html_by_node_new(
             )
 
         html_content = (await file.read()).decode("utf-8")
-
         if not html_content.strip():
             return unified_response(
                 code=400,
@@ -2636,6 +2636,7 @@ async def update_html_by_node_new(
 
         # ── 2. 公共预处理 ────────────────────────────────────────────────
         html_content, status_ = html_img_url_to_base64(html_content)
+
 
         # with open("index.html", "w", encoding="utf-8") as f:
         #     f.write(html_content)
@@ -2803,7 +2804,7 @@ async def update_html_by_node_new(
                 file_stream=file_bytes,
                 file_name=original_filename,
                 file_id=str(node_id),
-                had_title=0,
+                had_title=1,
                 rm_outline_in_doc=1
             )
             if split_result.status == 1:
@@ -3342,7 +3343,7 @@ async def merge_docx_office_server(
 
     try:
         merge_request = MergeRequest(tree=tree_, files=files_, format_args=format_args)
-        merged_file_message = call_docx_merge(merge_request)
+        merged_file_message = call_docx_merge(merge_request, add_title=0, add_heading_num=1)
         return merged_file_message
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件合并失败：{str(e)}")
