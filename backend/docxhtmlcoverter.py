@@ -488,7 +488,7 @@ class DocxHtmlConverter:
 
     @staticmethod
     def _fix_html_table_widths(html_content: str,
-                                content_width_pt: float = 467.0) -> str:
+                                content_width_pt: float = 400.0) -> str:
         """
         将 Spire 导出 HTML 中超出版心宽度的表格等比缩放至版心宽度以内。
         """
@@ -610,7 +610,7 @@ class DocxHtmlConverter:
 
     def _fix_html_img_sizes_for_import(self, html_text: str,
                                         page_width_px: int = 794,
-                                        content_width_px: int = 620) -> str:
+                                        content_width_px: int = 400) -> str:
         """
         HTML→DOCX 方向的图片尺寸修正。
         """
@@ -822,9 +822,9 @@ class DocxHtmlConverter:
             phys_w, phys_h = _get_phys_size(src, tag)
 
             if not phys_w or not phys_h:
-                # 无法获取物理尺寸时，用内容宽度作为上限强制约束，防止 Spire 按原始大小渲染
-                tag = _apply_sizes(tag, round(max_w_px), round(max_w_px))
-                logger.debug(f"   ⚠️ 无法获取物理像素，回退到上下文宽度：{src[:60]}")
+                if 'max-width' in style_dict or 'max-height' in style_dict:
+                    tag = _apply_sizes(tag, round(max_w_px), round(max_w_px))
+                    logger.debug(f"   ⚠️ 无法获取物理像素，回退到上下文宽度：{src[:60]}")
                 return tag
 
             if phys_w:
