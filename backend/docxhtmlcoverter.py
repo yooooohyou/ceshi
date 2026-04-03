@@ -2552,6 +2552,7 @@ class DocxHtmlConverter:
 
         try:
             html_text, temp_img_dir = self._extract_base64_images(html_text, output_dir)
+            html_text = self._fix_centered_images_for_import(html_text)
             html_text = self._fix_html_img_sizes_for_import(html_text)
 
             para_count = self._html_count_paragraphs(html_text)
@@ -2605,6 +2606,88 @@ class DocxHtmlConverter:
                     logger.debug(f"🗑️ 清理chunk目录：{chunk_dir}")
                 except Exception as e:
                     logger.warning(f"⚠️ 清理chunk目录失败：{e}")
+    # ------------------------------------------------------------------ #
+    #  图片居中适配（HTML→DOCX 方向）                                       #
+    # ------------------------------------------------------------------ #
+
+    def _fix_centered_images_for_import(self, html_text: str) -> str:
+        """
+        将 <img> 标签上的 CSS 居中写法（display:block + margin-left/right:auto）
+        转换为 DOCX 可识别的段落居中（text-align:center）。
+
+        处理逻辑：
+          1. 若居中 img 在 <p> 内 → 给该 <p> 加 text-align:center，并清除 img 上的居中 CSS
+          2. 若居中 img 为独立标签  → 用 <p style="text-align:center;"> 包裹，并清除 img 上的居中 CSS
+        """
+        IMG_RE = re.compile(r'<img\b[^>]*>', re.IGNORECASE | re.DOTALL)
+
+        def _has_center_style(style_str: str) -> bool:
+            s = style_str.lower()
+            has_block = bool(re.search(r'\bdisplay\s*:\s*block\b', s))
+            has_ml    = bool(re.search(r'\bmargin-left\s*:\s*auto\b', s))
+            has_mr    = bool(re.search(r'\bmargin-right\s*:\s*auto\b', s))
+            # 支持 margin: X auto 简写形式
+            has_short = bool(re.search(r'\bmargin\s*:\s*\S+\s+auto\b', s)) or \
+                        bool(re.search(r'\bmargin\s*:\s*auto\b', s))
+            return has_block and ((has_ml and has_mr) or has_short)
+
+        def _img_is_centered(tag: str) -> bool:
+            style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE)
+            return bool(style_m and _has_center_style(style_m.group(1)))
+
+        def _remove_center_css(tag: str) -> str:
+            """从 img 标签 style 中移除居中相关 CSS 属性。"""
+            style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE)
+            if not style_m:
+                return tag
+            s = style_m.group(1)
+            s = re.sub(r'\bdisplay\s*:\s*block\s*;?\s*', '', s, flags=re.IGNORECASE)
+            s = re.sub(r'\bmargin-left\s*:\s*auto\s*;?\s*', '', s, flags=re.IGNORECASE)
+            s = re.sub(r'\bmargin-right\s*:\s*auto\s*;?\s*', '', s, flags=re.IGNORECASE)
+            s = s.strip().strip(';').strip()
+            return tag[:style_m.start()] + f'style="{s}"' + tag[style_m.end():]
+
+        # ── Step 1：对含有居中 img 的 <p>，追加 text-align:center ─────────
+        def _fix_p(m):
+            p_open, p_body, p_close = m.group(1), m.group(2), m.group(3)
+            if not any(_img_is_centered(im.group(0)) for im in IMG_RE.finditer(p_body)):
+                return m.group(0)
+            # 给 <p> 加 text-align:center
+            style_m = re.search(r'style="([^"]*)"', p_open, re.IGNORECASE)
+            if style_m:
+                s = style_m.group(1)
+                if not re.search(r'\btext-align\s*:', s, re.IGNORECASE):
+                    s = s.rstrip('; ') + '; text-align:center'
+                    p_open = p_open[:style_m.start()] + f'style="{s}"' + p_open[style_m.end():]
+            else:
+                p_open = re.sub(r'(<p\b)', r'\1 style="text-align:center"',
+                                p_open, flags=re.IGNORECASE)
+            # 清理 img 上的居中 CSS（避免 Step 2 重复包裹）
+            p_body = IMG_RE.sub(
+                lambda im: _remove_center_css(im.group(0)) if _img_is_centered(im.group(0))
+                           else im.group(0),
+                p_body
+            )
+            return p_open + p_body + p_close
+
+        html_text = re.sub(
+            r'(<p\b[^>]*>)(.*?)(</p\s*>)',
+            _fix_p,
+            html_text,
+            flags=re.IGNORECASE | re.DOTALL
+        )
+
+        # ── Step 2：剩余独立居中 img（不在 <p> 内）包裹为居中段落 ──────────
+        def _wrap_img(m):
+            tag = m.group(0)
+            if not _img_is_centered(tag):
+                return tag
+            logger.debug(f"   🖼️ 居中 img 包裹为 <p text-align:center>")
+            return f'<p style="text-align:center;">{_remove_center_css(tag)}</p>'
+
+        html_text = IMG_RE.sub(_wrap_img, html_text)
+        return html_text
+
     # ------------------------------------------------------------------ #
     #  图片预处理工具（HTML→DOCX 方向）                                     #
     # ------------------------------------------------------------------ #
@@ -2872,7 +2955,7 @@ if __name__ == "__main__":
 
     # 示例1：DOCX转单文件HTML（自动判断是否需要分片）
     input_docx = r"C:\Users\you62\Desktop\企业基本情况表-动态参考素材.docx"
-    output_html = r"C:\Users\you62\Desktop\1.html"
+    output_html = r"C:\Users\you62\Desktop\index.html"
     # html_content = converter.docx_to_single_html(input_docx, output_html)
 
     # 示例2：HTML文本转DOCX
