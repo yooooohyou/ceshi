@@ -2508,6 +2508,39 @@ class DocxHtmlConverter:
     # ------------------------------------------------------------------ #
 
     @staticmethod
+    def _strip_paragraph_spacing_css(html: str) -> str:
+        """
+        HTML→DOCX 方向的段落间距预处理。
+
+        Spire 将 DOCX 导出为 HTML 时，会把段落的 before/after 间距编码为
+        <p> 标签的 margin-top / margin-bottom 内联样式。当该 HTML 被 Spire
+        再次导入为 DOCX 时，这些 CSS 值会被叠加到 Word 段落样式自带的间距上，
+        造成段前/段后间距翻倍（表现为行与行之间出现额外空白）。
+
+        解决方案：在导入前把 <p> 标签 style 属性里的
+        margin-top / margin-bottom / padding-top / padding-bottom
+        全部置零，交由 Word 样式控制间距，避免 CSS 与样式双重叠加。
+        """
+        BLOCK_RE = re.compile(r'<(p|h[1-6])\b([^>]*)>', re.IGNORECASE)
+
+        def _zero_spacing(m):
+            tag_name = m.group(1)
+            attrs    = m.group(2)
+            style_m  = re.search(r'style="([^"]*)"', attrs, re.IGNORECASE)
+            if not style_m:
+                return m.group(0)
+            style = style_m.group(1)
+            for prop in ('margin-top', 'margin-bottom', 'padding-top', 'padding-bottom'):
+                style = re.sub(
+                    rf'\b{prop}\s*:[^;]+;?', f'{prop}:0pt;',
+                    style, flags=re.IGNORECASE
+                )
+            new_attrs = attrs[:style_m.start()] + f'style="{style}"' + attrs[style_m.end():]
+            return f'<{tag_name}{new_attrs}>'
+
+        return BLOCK_RE.sub(_zero_spacing, html)
+
+    @staticmethod
     def _clean_mce_html(html: str) -> str:
         """
         清理 TinyMCE 产生的冗余标记，避免 Spire 转换时因空块级元素报错：
@@ -2554,6 +2587,7 @@ class DocxHtmlConverter:
             html_text, temp_img_dir = self._extract_base64_images(html_text, output_dir)
             html_text = self._fix_centered_images_for_import(html_text)
             html_text = self._fix_html_img_sizes_for_import(html_text)
+            html_text = self._strip_paragraph_spacing_css(html_text)
 
             para_count = self._html_count_paragraphs(html_text)
             logger.debug(f"📊 HTML 段落估算：{para_count}，阈值：{self.MAX_PARAGRAPHS}")
