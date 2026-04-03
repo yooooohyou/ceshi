@@ -822,9 +822,9 @@ class DocxHtmlConverter:
             phys_w, phys_h = _get_phys_size(src, tag)
 
             if not phys_w or not phys_h:
-                if 'max-width' in style_dict or 'max-height' in style_dict:
-                    tag = _apply_sizes(tag, round(max_w_px), round(max_w_px))
-                    logger.debug(f"   ⚠️ 无法获取物理像素，回退到上下文宽度：{src[:60]}")
+                # 无法获取物理尺寸时，用内容宽度作为上限强制约束，防止 Spire 按原始大小渲染
+                tag = _apply_sizes(tag, round(max_w_px), round(max_w_px))
+                logger.debug(f"   ⚠️ 无法获取物理像素，回退到上下文宽度：{src[:60]}")
                 return tag
 
             if phys_w:
@@ -2647,12 +2647,12 @@ class DocxHtmlConverter:
             s = s.strip().strip(';').strip()
             return tag[:style_m.start()] + f'style="{s}"' + tag[style_m.end():]
 
-        # ── Step 1：对含有居中 img 的 <p>，追加 text-align:center ─────────
-        def _fix_p(m):
-            p_open, p_body, p_close = m.group(1), m.group(2), m.group(3)
-            if not any(_img_is_centered(im.group(0)) for im in IMG_RE.finditer(p_body)):
-                return m.group(0)
-            # 给 <p> 加 text-align:center
+        def _add_center_to_p(p_open: str) -> str:
+            """给 <p> 同时加 align="center" 属性和 text-align:center 样式，兼容 Spire 各版本。"""
+            # align 属性
+            if not re.search(r'\balign\s*=', p_open, re.IGNORECASE):
+                p_open = re.sub(r'(<p\b)', r'\1 align="center"', p_open, flags=re.IGNORECASE)
+            # text-align:center 样式
             style_m = re.search(r'style="([^"]*)"', p_open, re.IGNORECASE)
             if style_m:
                 s = style_m.group(1)
@@ -2662,6 +2662,14 @@ class DocxHtmlConverter:
             else:
                 p_open = re.sub(r'(<p\b)', r'\1 style="text-align:center"',
                                 p_open, flags=re.IGNORECASE)
+            return p_open
+
+        # ── Step 1：对含有居中 img 的 <p>，追加居中属性 ──────────────────────
+        def _fix_p(m):
+            p_open, p_body, p_close = m.group(1), m.group(2), m.group(3)
+            if not any(_img_is_centered(im.group(0)) for im in IMG_RE.finditer(p_body)):
+                return m.group(0)
+            p_open = _add_center_to_p(p_open)
             # 清理 img 上的居中 CSS（避免 Step 2 重复包裹）
             p_body = IMG_RE.sub(
                 lambda im: _remove_center_css(im.group(0)) if _img_is_centered(im.group(0))
@@ -2682,8 +2690,8 @@ class DocxHtmlConverter:
             tag = m.group(0)
             if not _img_is_centered(tag):
                 return tag
-            logger.debug(f"   🖼️ 居中 img 包裹为 <p text-align:center>")
-            return f'<p style="text-align:center;">{_remove_center_css(tag)}</p>'
+            logger.debug(f"   🖼️ 居中 img 包裹为居中段落")
+            return f'<p align="center" style="text-align:center;">{_remove_center_css(tag)}</p>'
 
         html_text = IMG_RE.sub(_wrap_img, html_text)
         return html_text
