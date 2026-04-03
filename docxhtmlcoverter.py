@@ -488,7 +488,7 @@ class DocxHtmlConverter:
 
     @staticmethod
     def _fix_html_table_widths(html_content: str,
-                                content_width_pt: float = 467.0) -> str:
+                                content_width_pt: float = 400.0) -> str:
         """
         将 Spire 导出 HTML 中超出版心宽度的表格等比缩放至版心宽度以内。
         """
@@ -610,9 +610,9 @@ class DocxHtmlConverter:
 
     def _fix_html_img_sizes_for_import(self, html_text: str,
                                         page_width_px: int = 794,
-                                        content_width_px: int = 620) -> str:
+                                        content_width_px: int = 400) -> str:
         """
-        HTML→DOCX 方向的图片尺寸修正。
+        HTML→DOCX 方向的图片尺寸修正 。
         """
         import struct
         import urllib.request
@@ -2552,6 +2552,7 @@ class DocxHtmlConverter:
 
         try:
             html_text, temp_img_dir = self._extract_base64_images(html_text, output_dir)
+            html_text = self._fix_centered_images_for_import(html_text)
             html_text = self._fix_html_img_sizes_for_import(html_text)
 
             para_count = self._html_count_paragraphs(html_text)
@@ -2605,6 +2606,96 @@ class DocxHtmlConverter:
                     logger.debug(f"🗑️ 清理chunk目录：{chunk_dir}")
                 except Exception as e:
                     logger.warning(f"⚠️ 清理chunk目录失败：{e}")
+    # ------------------------------------------------------------------ #
+    #  图片居中适配（HTML→DOCX 方向）                                       #
+    # ------------------------------------------------------------------ #
+
+    def _fix_centered_images_for_import(self, html_text: str) -> str:
+        """
+        将 <img> 标签上的 CSS 居中写法（display:block + margin-left/right:auto）
+        转换为 DOCX 可识别的段落居中（text-align:center）。
+
+        处理逻辑：
+          1. 若居中 img 在 <p> 内 → 给该 <p> 加 text-align:center，并清除 img 上的居中 CSS
+          2. 若居中 img 为独立标签  → 用 <p style="text-align:center;"> 包裹，并清除 img 上的居中 CSS
+        """
+        IMG_RE = re.compile(r'<img\b[^>]*>', re.IGNORECASE | re.DOTALL)
+
+        def _has_center_style(style_str: str) -> bool:
+            s = style_str.lower()
+            has_block = bool(re.search(r'\bdisplay\s*:\s*block\b', s))
+            has_ml    = bool(re.search(r'\bmargin-left\s*:\s*auto\b', s))
+            has_mr    = bool(re.search(r'\bmargin-right\s*:\s*auto\b', s))
+            # 支持 margin: X auto 简写形式
+            has_short = bool(re.search(r'\bmargin\s*:\s*\S+\s+auto\b', s)) or \
+                        bool(re.search(r'\bmargin\s*:\s*auto\b', s))
+            return has_block and ((has_ml and has_mr) or has_short)
+
+        def _img_is_centered(tag: str) -> bool:
+            style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE)
+            return bool(style_m and _has_center_style(style_m.group(1)))
+
+        def _remove_center_css(tag: str) -> str:
+            """从 img 标签 style 中移除居中相关 CSS 属性。"""
+            style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE)
+            if not style_m:
+                return tag
+            s = style_m.group(1)
+            s = re.sub(r'\bdisplay\s*:\s*block\s*;?\s*', '', s, flags=re.IGNORECASE)
+            s = re.sub(r'\bmargin-left\s*:\s*auto\s*;?\s*', '', s, flags=re.IGNORECASE)
+            s = re.sub(r'\bmargin-right\s*:\s*auto\s*;?\s*', '', s, flags=re.IGNORECASE)
+            s = s.strip().strip(';').strip()
+            return tag[:style_m.start()] + f'style="{s}"' + tag[style_m.end():]
+
+        def _add_center_to_p(p_open: str) -> str:
+            """给 <p> 同时加 align="center" 属性和 text-align:center 样式，兼容 Spire 各版本。"""
+            # align 属性
+            if not re.search(r'\balign\s*=', p_open, re.IGNORECASE):
+                p_open = re.sub(r'(<p\b)', r'\1 align="center"', p_open, flags=re.IGNORECASE)
+            # text-align:center 样式
+            style_m = re.search(r'style="([^"]*)"', p_open, re.IGNORECASE)
+            if style_m:
+                s = style_m.group(1)
+                if not re.search(r'\btext-align\s*:', s, re.IGNORECASE):
+                    s = s.rstrip('; ') + '; text-align:center'
+                    p_open = p_open[:style_m.start()] + f'style="{s}"' + p_open[style_m.end():]
+            else:
+                p_open = re.sub(r'(<p\b)', r'\1 style="text-align:center"',
+                                p_open, flags=re.IGNORECASE)
+            return p_open
+
+        # ── Step 1：对含有居中 img 的 <p>，追加居中属性 ──────────────────────
+        def _fix_p(m):
+            p_open, p_body, p_close = m.group(1), m.group(2), m.group(3)
+            if not any(_img_is_centered(im.group(0)) for im in IMG_RE.finditer(p_body)):
+                return m.group(0)
+            p_open = _add_center_to_p(p_open)
+            # 清理 img 上的居中 CSS（避免 Step 2 重复包裹）
+            p_body = IMG_RE.sub(
+                lambda im: _remove_center_css(im.group(0)) if _img_is_centered(im.group(0))
+                           else im.group(0),
+                p_body
+            )
+            return p_open + p_body + p_close
+
+        html_text = re.sub(
+            r'(<p\b[^>]*>)(.*?)(</p\s*>)',
+            _fix_p,
+            html_text,
+            flags=re.IGNORECASE | re.DOTALL
+        )
+
+        # ── Step 2：剩余独立居中 img（不在 <p> 内）包裹为居中段落 ──────────
+        def _wrap_img(m):
+            tag = m.group(0)
+            if not _img_is_centered(tag):
+                return tag
+            logger.debug(f"   🖼️ 居中 img 包裹为居中段落")
+            return f'<p align="center" style="text-align:center;">{_remove_center_css(tag)}</p>'
+
+        html_text = IMG_RE.sub(_wrap_img, html_text)
+        return html_text
+
     # ------------------------------------------------------------------ #
     #  图片预处理工具（HTML→DOCX 方向）                                     #
     # ------------------------------------------------------------------ #
@@ -2661,6 +2752,33 @@ class DocxHtmlConverter:
         except Exception:
             pass
         return None, None
+
+    @staticmethod
+    def _fix_exif_orientation(img_bytes: bytes) -> bytes:
+        """
+        将 JPEG 图片的 EXIF Orientation 信息烘焙到像素中并清除该标签。
+        浏览器会自动应用 EXIF 方向，但 Spire 不处理，导致 DOCX 中图片旋转。
+        非 JPEG、方向正常（orientation==1）或 Pillow 不可用时原样返回，不重新编码。
+        """
+        if img_bytes[:2] != b'\xff\xd8':   # 非 JPEG，跳过
+            return img_bytes
+        try:
+            from PIL import Image as _PILImage, ImageOps as _ImageOps
+            import io as _io
+            img = _PILImage.open(_io.BytesIO(img_bytes))
+            # 明确读取 Orientation 值，避免依赖 `rotated is img` 的 Pillow 版本差异
+            try:
+                orientation = img.getexif().get(0x0112, 1)
+            except Exception:
+                orientation = 1
+            if orientation in (None, 1):
+                return img_bytes   # 方向正常，无需重新编码
+            rotated = _ImageOps.exif_transpose(img)
+            buf = _io.BytesIO()
+            rotated.save(buf, format='JPEG', quality=92)   # 不写 EXIF，清除方向标签
+            return buf.getvalue()
+        except Exception:
+            return img_bytes
 
     @staticmethod
     def _guess_mime(data: bytes) -> str:
@@ -2760,9 +2878,11 @@ class DocxHtmlConverter:
                                  'image/bmp', 'image/gif'}
             if real_mime in SPIRE_UNSUPPORTED:
                 try:
-                    from PIL import Image as _PILImage
+                    from PIL import Image as _PILImage, ImageOps as _ImageOps
                     import io as _io
-                    pil_img = _PILImage.open(_io.BytesIO(img_bytes)).convert('RGB')
+                    pil_img = _PILImage.open(_io.BytesIO(img_bytes))
+                    pil_img = _ImageOps.exif_transpose(pil_img)  # 先修正 EXIF 方向，再转 RGB（否则 convert 会丢弃 EXIF）
+                    pil_img = pil_img.convert('RGB')
                     buf = _io.BytesIO()
                     pil_img.save(buf, format='JPEG', quality=92)
                     img_bytes = buf.getvalue()
@@ -2770,6 +2890,12 @@ class DocxHtmlConverter:
                     logger.debug(f"   🔄 {real_mime} 不受 Spire 支持，已用 Pillow 转换为 JPEG")
                 except Exception as e:
                     logger.debug(f"   ⚠️ Pillow 转换失败（{real_mime}→JPEG）：{e}，保留原格式")
+            # 修正 EXIF 方向（Spire 不处理 Orientation，浏览器会自动应用；无条件调用，函数内部自行判断）
+            fixed = self._fix_exif_orientation(img_bytes)
+            if fixed is not img_bytes:
+                logger.debug(f"   🔄 已修正 EXIF Orientation")
+                img_bytes = fixed
+
             ext   = MIME_TO_EXT.get(real_mime, '.png')
             fname = f"img_{len(patch_list):04d}{ext}"
             fpath = self._normalize_path(os.path.join(temp_img_dir, fname))
@@ -2783,6 +2909,8 @@ class DocxHtmlConverter:
 
             style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE | re.DOTALL)
             style_w_px = None
+            style_h_px = None
+            style_val  = ''
             if style_m:
                 style_val = re.sub(r'[\r\n]+\s*', ' ', style_m.group(1))
                 w_m = re.search(
@@ -2797,9 +2925,30 @@ class DocxHtmlConverter:
                     elif unit == 'in': style_w_px = round(val * 96)
                     elif unit == 'cm': style_w_px = round(val / 2.54 * 96)
                     elif unit == 'mm': style_w_px = round(val / 25.4 * 96)
+                h_m = re.search(
+                    r'(?<![a-zA-Z\-])height\s*:\s*([\d.]+)\s*(px|pt|in|cm|mm)',
+                    style_val, re.IGNORECASE
+                )
+                if h_m:
+                    val  = float(h_m.group(1))
+                    unit = h_m.group(2).lower()
+                    if unit == 'px':  style_h_px = round(val)
+                    elif unit == 'pt': style_h_px = round(val * 96 / 72)
+                    elif unit == 'in': style_h_px = round(val * 96)
+                    elif unit == 'cm': style_h_px = round(val / 2.54 * 96)
+                    elif unit == 'mm': style_h_px = round(val / 25.4 * 96)
 
-            w_px = style_w_px or phys_w
-            if w_px and phys_w and phys_h and phys_w > 0:
+            # 读取 HTML width/height 属性（优先级低于 style，高于物理尺寸）
+            attr_w_m2 = re.search(r'\bwidth="(\d+(?:\.\d+)?)"', tag, re.IGNORECASE)
+            attr_w_px = round(float(attr_w_m2.group(1))) if attr_w_m2 else None
+            attr_h_m2 = re.search(r'\bheight="(\d+(?:\.\d+)?)"', tag, re.IGNORECASE)
+            attr_h_px = round(float(attr_h_m2.group(1))) if attr_h_m2 else None
+
+            w_px = style_w_px or attr_w_px or phys_w
+            declared_h = style_h_px or attr_h_px
+            if declared_h:
+                h_px = declared_h
+            elif w_px and phys_w and phys_h and phys_w > 0:
                 h_px = round(w_px * phys_h / phys_w)
             else:
                 h_px = phys_h

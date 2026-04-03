@@ -723,11 +723,11 @@ def convert_html_to_docx(html_content: str) -> Tuple[bool, Union[io.BytesIO, str
 
 
         # 删除临时文件
-        try:
-            if os.path.exists(temp_docx_path):
-                os.remove(temp_docx_path)
-        except Exception as e:
-            print(f"警告：无法删除临时文件 {temp_docx_path} - {e}")
+        # try:
+        #     if os.path.exists(temp_docx_path):
+        #         os.remove(temp_docx_path)
+        # except Exception as e:
+        #     print(f"警告：无法删除临时文件 {temp_docx_path} - {e}")
 
         return True, docx_stream, temp_docx_path
     except PermissionError:
@@ -2636,7 +2636,6 @@ async def update_html_by_node_new(
 
         # ── 2. 公共预处理 ────────────────────────────────────────────────
         html_content, status_ = html_img_url_to_base64(html_content)
-
 
         # with open("index.html", "w", encoding="utf-8") as f:
         #     f.write(html_content)
