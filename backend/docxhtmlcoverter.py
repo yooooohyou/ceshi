@@ -612,7 +612,7 @@ class DocxHtmlConverter:
                                         page_width_px: int = 794,
                                         content_width_px: int = 400) -> str:
         """
-        HTML→DOCX 方向的图片尺寸修正。
+        HTML→DOCX 方向的图片尺寸修正 。
         """
         import struct
         import urllib.request
