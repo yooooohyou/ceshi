@@ -488,7 +488,7 @@ class DocxHtmlConverter:
 
     @staticmethod
     def _fix_html_table_widths(html_content: str,
-                                content_width_pt: float = 400.0) -> str:
+                                content_width_pt: float = 467.0) -> str:
         """
         将 Spire 导出 HTML 中超出版心宽度的表格等比缩放至版心宽度以内。
         """
@@ -610,7 +610,7 @@ class DocxHtmlConverter:
 
     def _fix_html_img_sizes_for_import(self, html_text: str,
                                         page_width_px: int = 794,
-                                        content_width_px: int = 400) -> str:
+                                        content_width_px: int = 620) -> str:
         """
         HTML→DOCX 方向的图片尺寸修正。
         """
@@ -2746,6 +2746,29 @@ class DocxHtmlConverter:
         return None, None
 
     @staticmethod
+    def _fix_exif_orientation(img_bytes: bytes) -> bytes:
+        """
+        将 JPEG 图片的 EXIF Orientation 信息烘焙到像素中并清除该标签。
+        浏览器会自动应用 EXIF 方向，但 Spire 不处理，导致 DOCX 中图片旋转。
+        非 JPEG 或 Pillow 不可用时原样返回。
+        """
+        if img_bytes[:2] != b'\xff\xd8':   # 非 JPEG，跳过
+            return img_bytes
+        try:
+            from PIL import Image as _PILImage, ImageOps as _ImageOps
+            import io as _io
+            img = _PILImage.open(_io.BytesIO(img_bytes))
+            orientation = (img.getexif() or {}).get(0x0112, 1)  # 0x0112 = Orientation
+            if orientation == 1:
+                return img_bytes   # 方向正常，无需处理
+            img = _ImageOps.exif_transpose(img)   # 旋转/镜像到正确方向
+            buf = _io.BytesIO()
+            img.save(buf, format='JPEG', quality=92)  # 不写 EXIF，彻底清除方向标签
+            return buf.getvalue()
+        except Exception:
+            return img_bytes
+
+    @staticmethod
     def _guess_mime(data: bytes) -> str:
         """从文件头推断真实 MIME 类型，默认返回 image/png。"""
         if data[:8]  == b'\x89PNG\r\n\x1a\n': return 'image/png'
@@ -2853,6 +2876,13 @@ class DocxHtmlConverter:
                     logger.debug(f"   🔄 {real_mime} 不受 Spire 支持，已用 Pillow 转换为 JPEG")
                 except Exception as e:
                     logger.debug(f"   ⚠️ Pillow 转换失败（{real_mime}→JPEG）：{e}，保留原格式")
+            # 修正 JPEG EXIF 方向（Spire 不处理 Orientation，浏览器会自动应用）
+            if real_mime == 'image/jpeg':
+                fixed = self._fix_exif_orientation(img_bytes)
+                if fixed is not img_bytes:
+                    logger.debug(f"   🔄 已修正 JPEG EXIF Orientation")
+                    img_bytes = fixed
+
             ext   = MIME_TO_EXT.get(real_mime, '.png')
             fname = f"img_{len(patch_list):04d}{ext}"
             fpath = self._normalize_path(os.path.join(temp_img_dir, fname))
@@ -2866,8 +2896,6 @@ class DocxHtmlConverter:
 
             style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE | re.DOTALL)
             style_w_px = None
-            style_h_px = None
-            style_val  = ''
             if style_m:
                 style_val = re.sub(r'[\r\n]+\s*', ' ', style_m.group(1))
                 w_m = re.search(
@@ -2882,30 +2910,9 @@ class DocxHtmlConverter:
                     elif unit == 'in': style_w_px = round(val * 96)
                     elif unit == 'cm': style_w_px = round(val / 2.54 * 96)
                     elif unit == 'mm': style_w_px = round(val / 25.4 * 96)
-                h_m = re.search(
-                    r'(?<![a-zA-Z\-])height\s*:\s*([\d.]+)\s*(px|pt|in|cm|mm)',
-                    style_val, re.IGNORECASE
-                )
-                if h_m:
-                    val  = float(h_m.group(1))
-                    unit = h_m.group(2).lower()
-                    if unit == 'px':  style_h_px = round(val)
-                    elif unit == 'pt': style_h_px = round(val * 96 / 72)
-                    elif unit == 'in': style_h_px = round(val * 96)
-                    elif unit == 'cm': style_h_px = round(val / 2.54 * 96)
-                    elif unit == 'mm': style_h_px = round(val / 25.4 * 96)
 
-            # 读取 HTML width/height 属性（优先级低于 style，高于物理尺寸）
-            attr_w_m2 = re.search(r'\bwidth="(\d+(?:\.\d+)?)"', tag, re.IGNORECASE)
-            attr_w_px = round(float(attr_w_m2.group(1))) if attr_w_m2 else None
-            attr_h_m2 = re.search(r'\bheight="(\d+(?:\.\d+)?)"', tag, re.IGNORECASE)
-            attr_h_px = round(float(attr_h_m2.group(1))) if attr_h_m2 else None
-
-            w_px = style_w_px or attr_w_px or phys_w
-            declared_h = style_h_px or attr_h_px
-            if declared_h:
-                h_px = declared_h
-            elif w_px and phys_w and phys_h and phys_w > 0:
+            w_px = style_w_px or phys_w
+            if w_px and phys_w and phys_h and phys_w > 0:
                 h_px = round(w_px * phys_h / phys_w)
             else:
                 h_px = phys_h
