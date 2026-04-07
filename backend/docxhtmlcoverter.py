@@ -455,7 +455,7 @@ class DocxHtmlConverter:
         # 1. 修复 <table> 的 style 宽度（使用负向断言，防止误删 border-width）
         html = re.sub(
             r'(<table\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+pt;?',
-            r'\1width: 100%;',
+            r'\1;',
             html_content,
             flags=re.IGNORECASE
         )
@@ -463,7 +463,7 @@ class DocxHtmlConverter:
         # 2. 将 <table width="..."> 属性改为 100%
         html = re.sub(
             r'(<table\b[^>]*?)\s*\bwidth="\d+(?:\.\d+)?"',
-            r'\1 width="100%"',
+            r'\1',
             html,
             flags=re.IGNORECASE
         )
