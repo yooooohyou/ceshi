@@ -212,13 +212,23 @@ def generate_fully_centered_patent_doc(
         set_font(run, RGBColor(255, 255, 255))
         run.bold = True
 
-    def set_border(cell, color='4472C4', sz='2'):
+    def set_border(cell, color='4472C4', sz='6'):  # 将 sz 默认改为 6 (0.75磅)
+        tcPr = cell._element.get_or_add_tcPr()
+
+        # 显式清除可能存在的旧边框定义
+        existing_borders = tcPr.xpath('./w:tcBorders')
+        for b in existing_borders:
+            tcPr.remove(b)
+
+        tcBorders = OxmlElement('w:tcBorders')
         for k in ['top', 'left', 'bottom', 'right']:
             b = OxmlElement(f'w:{k}')
             b.set(qn('w:val'), 'single')
             b.set(qn('w:color'), color)
-            b.set(qn('w:sz'), sz)
-            cell._element.tcPr.append(b)
+            b.set(qn('w:sz'), str(sz))  # 磅值
+            b.set(qn('w:space'), '0')
+            tcBorders.append(b)
+        tcPr.append(tcBorders)
 
     # 专利表格
     table1 = doc.add_table(rows=len(patent_data) + 1, cols=6)
