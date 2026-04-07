@@ -462,7 +462,7 @@ class DocxHtmlConverter:
         # 2. 将 <table width="440"> 属性改为 100%
         html = re.sub(
             r'(<table[^>]*)\bwidth="\d+(?:\.\d+)?"',
-            r'\1"',
+            r'\1',
             html,
             flags=re.IGNORECASE
         )
