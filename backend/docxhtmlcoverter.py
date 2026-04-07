@@ -47,70 +47,6 @@ class DocxHtmlConverter:
     #  路径工具                                                             #
     # ------------------------------------------------------------------ #
 
-    def _fix_spire_image_distortion(self, html: str) -> str:
-        """
-        终极解决图片变形和黑框问题：
-        抛弃对 <td> 的强制宽度干预（这会导致 100% 表格时的挤压变形）。
-        转而对 <img> 标签进行“格式洗牌”：剥离所有外部干扰类和属性，
-        仅注入最底层、最绝对的物理宽高和无边框指令。
-        """
-
-        def _rebuild_img(m):
-            tag = m.group(0)
-
-            # 1. 读取已经通过前置流程算好的像素宽高
-            w_px, h_px = None, None
-            w_m = re.search(r'\bwidth="(\d+(?:\.\d+)?)"', tag, re.IGNORECASE)
-            h_m = re.search(r'\bheight="(\d+(?:\.\d+)?)"', tag, re.IGNORECASE)
-            if w_m: w_px = float(w_m.group(1))
-            if h_m: h_px = float(h_m.group(1))
-
-            # 如果属性没读到，去 style 里兜底
-            if w_px is None or h_px is None:
-                style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE)
-                if style_m:
-                    sw_m = re.search(r'\bwidth\s*:\s*([\d.]+)(px|pt)', style_m.group(1), re.IGNORECASE)
-                    sh_m = re.search(r'\bheight\s*:\s*([\d.]+)(px|pt)', style_m.group(1), re.IGNORECASE)
-                    if sw_m: w_px = float(sw_m.group(1)) if sw_m.group(2).lower() == 'px' else float(
-                        sw_m.group(1)) * 96 / 72
-                    if sh_m: h_px = float(sh_m.group(1)) if sh_m.group(2).lower() == 'px' else float(
-                        sh_m.group(1)) * 96 / 72
-
-            # 2. 暴力剥离所有可能引起拉伸和黑框的源头属性
-            tag = re.sub(r'\bclass="[^"]*"', '', tag, flags=re.IGNORECASE)
-            tag = re.sub(r'\bstyle="[^"]*"', '', tag, flags=re.IGNORECASE)
-            tag = re.sub(r'\bborder="[^"]*"', '', tag, flags=re.IGNORECASE)
-            tag = re.sub(r'\bwidth="[^"]*"', '', tag, flags=re.IGNORECASE)
-            tag = re.sub(r'\bheight="[^"]*"', '', tag, flags=re.IGNORECASE)
-
-            # 3. 重新注入“黄金属性”
-            # 使用 !important 封死 Spire 的内部样式覆盖
-            # 添加 display: inline-block 维持独立盒子
-            new_style = "border: none !important; outline: none !important; margin: 0; padding: 0; display: inline-block;"
-            attrs = ' border="0" vspace="0" hspace="0"'
-
-            if w_px and h_px:
-                w_pt = w_px * 72.0 / 96.0
-                h_pt = h_px * 72.0 / 96.0
-                new_style += f" width: {w_pt:.2f}pt !important; height: {h_pt:.2f}pt !important;"
-                attrs += f' width="{round(w_px)}" height="{round(h_px)}"'
-
-            tag = re.sub(r'(<img\b)', rf'\1 style="{new_style}"{attrs}', tag, flags=re.IGNORECASE)
-            return re.sub(r'\s+', ' ', tag).replace(' >', '>')
-
-        html = re.sub(r'<img\b[^>]*>', _rebuild_img, html, flags=re.IGNORECASE)
-
-        # 4. 修复父级容器：如果单元格或段落写了 justify（两端对齐），会导致内部的图片被强制横向拉伸
-        def _fix_justify(m):
-            tag = m.group(0)
-            if 'justify' in tag.lower():
-                tag = re.sub(r'text-align\s*:\s*justify\s*;?', 'text-align: center;', tag, flags=re.IGNORECASE)
-            return tag
-
-        html = re.sub(r'<(td|th|p|div)\b[^>]*>', _fix_justify, html, flags=re.IGNORECASE)
-
-        return html
-
     def _normalize_path(self, path):
         """【内部方法】统一路径格式并转为绝对路径"""
         if not path:
@@ -511,6 +447,33 @@ class DocxHtmlConverter:
         except Exception as e:
             logger.warning(f"⚠️ 提取页面内容宽度失败：{e}，使用默认值 {DEFAULT_PT}pt")
             return DEFAULT_PT
+
+    def _make_tables_responsive(self, html_content: str) -> str:
+        """
+        移除 Spire 导出的固定表格和单元格宽度，使表格在 HTML 中自适应 100%
+        """
+        # 1. 将 <table style="... width: 440.9pt;"> 改为 width: 100%;
+        html = re.sub(
+            r'(<table[^>]*style="[^"]*)\bwidth\s*:\s*[\d.]+pt;?',
+            r'\1width:100%;',
+            html_content,
+            flags=re.IGNORECASE
+        )
+        # 2. 将 <table width="440"> 属性改为 100%
+        html = re.sub(
+            r'(<table[^>]*)\bwidth="\d+(?:\.\d+)?"',
+            r'\1 width="100%"',
+            html,
+            flags=re.IGNORECASE
+        )
+        # 3. 清理 <td> / <th> 中的死宽度限制 (例如代码片段中的 width: 439.4pt;)
+        html = re.sub(
+            r'(<t[dh][^>]*style="[^"]*)\bwidth\s*:\s*[\d.]+pt;?',
+            r'\1',
+            html,
+            flags=re.IGNORECASE
+        )
+        return html
 
     def _fix_html_img_sizes(self, html_content: str, size_map: dict,
                              spire_img_names: list, image_display_order: list) -> str:
@@ -2127,6 +2090,11 @@ class DocxHtmlConverter:
                 html_content, img_size_map, image_display_order, image_display_order
             )
 
+        # ====== 新增：修正表格固定宽度，使其网页自适应 ======
+        logger.debug("📏 将表格固定宽度改为 100% 自适应...")
+        html_content = self._make_tables_responsive(html_content)
+        # ====================================================
+
         # 13. 保存最终HTML
         with open(html_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
@@ -2713,8 +2681,6 @@ class DocxHtmlConverter:
             html_text, temp_img_dir = self._extract_base64_images(html_text, output_dir)
             html_text = self._fix_centered_images_for_import(html_text)
             html_text = self._normalize_img_units_for_import(html_text)
-
-            html_text = self._fix_spire_image_distortion(html_text)
 
             para_count = self._html_count_paragraphs(html_text)
             logger.debug(f"📊 HTML 段落估算：{para_count}，阈值：{self.MAX_PARAGRAPHS}")
