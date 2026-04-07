@@ -2888,8 +2888,12 @@ class DocxHtmlConverter:
             new_style = (size_css + '; ' + new_style).rstrip('; ') if new_style else size_css
 
             # ── 4. 重建 tag ───────────────────────────────────────────────
-            # 注意：必须先替换 style（用 regex 而非位置切片，避免后续属性删除导致偏移），
-            # 再删除旧的 width/height 属性，最后追加新属性。
+            # 策略：CSS style 使用 pt（Spire Word 引擎读取），
+            #       HTML 属性使用无单位整数 px（HTML 规范标准写法）。
+            # pt 带单位的属性值（如 width="146.00pt"）不符合 HTML 规范，
+            # Spire 可能将其截断为浮点数再按 px 处理，导致单位混乱。
+            # 注意：必须先替换 style（regex 不依赖旧坐标），再删除旧属性，最后追加新属性。
+            PX_PER_PT = 96.0 / 72.0
             if style_m:
                 tag = re.sub(r'style="[^"]*"', f'style="{new_style}"',
                              tag, count=1, flags=re.IGNORECASE)
@@ -2899,10 +2903,13 @@ class DocxHtmlConverter:
             tag = re.sub(r'\s+width="[^"]*"',  '', tag, flags=re.IGNORECASE)
             tag = re.sub(r'\s+height="[^"]*"', '', tag, flags=re.IGNORECASE)
 
+            # 属性值写为无单位整数（px），与 CSS style 中的 pt 值换算一致
             if final_w is not None:
-                tag = re.sub(r'(<img\b)', rf'\1 width="{final_w:.2f}pt"', tag, flags=re.IGNORECASE)
+                w_px = round(final_w * PX_PER_PT)
+                tag = re.sub(r'(<img\b)', rf'\1 width="{w_px}"', tag, flags=re.IGNORECASE)
             if final_h is not None:
-                tag = re.sub(r'(<img\b)', rf'\1 height="{final_h:.2f}pt"', tag, flags=re.IGNORECASE)
+                h_px = round(final_h * PX_PER_PT)
+                tag = re.sub(r'(<img\b)', rf'\1 height="{h_px}"', tag, flags=re.IGNORECASE)
 
             return tag
 
