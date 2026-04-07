@@ -47,123 +47,69 @@ class DocxHtmlConverter:
     #  路径工具                                                             #
     # ------------------------------------------------------------------ #
 
-    def _protect_table_image_width(self, html: str) -> str:
+    def _fix_spire_image_distortion(self, html: str) -> str:
         """
-        终极修复版：防止 Spire 将表格中的图片挤压缩放，并彻底消除默认黑框。
-        1. 净化 <img>：清除残留的 auto 属性（防止高度塌陷），强制添加 border="0" 消除黑框。
-        2. 撑开 <td>：将图片的物理宽度强制注入到单元格的 style (min-width) 和属性中。
+        终极解决图片变形和黑框问题：
+        抛弃对 <td> 的强制宽度干预（这会导致 100% 表格时的挤压变形）。
+        转而对 <img> 标签进行“格式洗牌”：剥离所有外部干扰类和属性，
+        仅注入最底层、最绝对的物理宽高和无边框指令。
         """
 
-        # 第一步：净化所有 img 标签，消除缩放和黑框隐患
-        def _purify_img(m):
+        def _rebuild_img(m):
             tag = m.group(0)
 
-            # 1. 消除HTML属性的黑框
+            # 1. 读取已经通过前置流程算好的像素宽高
+            w_px, h_px = None, None
+            w_m = re.search(r'\bwidth="(\d+(?:\.\d+)?)"', tag, re.IGNORECASE)
+            h_m = re.search(r'\bheight="(\d+(?:\.\d+)?)"', tag, re.IGNORECASE)
+            if w_m: w_px = float(w_m.group(1))
+            if h_m: h_px = float(h_m.group(1))
+
+            # 如果属性没读到，去 style 里兜底
+            if w_px is None or h_px is None:
+                style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE)
+                if style_m:
+                    sw_m = re.search(r'\bwidth\s*:\s*([\d.]+)(px|pt)', style_m.group(1), re.IGNORECASE)
+                    sh_m = re.search(r'\bheight\s*:\s*([\d.]+)(px|pt)', style_m.group(1), re.IGNORECASE)
+                    if sw_m: w_px = float(sw_m.group(1)) if sw_m.group(2).lower() == 'px' else float(
+                        sw_m.group(1)) * 96 / 72
+                    if sh_m: h_px = float(sh_m.group(1)) if sh_m.group(2).lower() == 'px' else float(
+                        sh_m.group(1)) * 96 / 72
+
+            # 2. 暴力剥离所有可能引起拉伸和黑框的源头属性
+            tag = re.sub(r'\bclass="[^"]*"', '', tag, flags=re.IGNORECASE)
+            tag = re.sub(r'\bstyle="[^"]*"', '', tag, flags=re.IGNORECASE)
             tag = re.sub(r'\bborder="[^"]*"', '', tag, flags=re.IGNORECASE)
-            tag = re.sub(r'(<img\b)', r'\1 border="0"', tag, flags=re.IGNORECASE)
+            tag = re.sub(r'\bwidth="[^"]*"', '', tag, flags=re.IGNORECASE)
+            tag = re.sub(r'\bheight="[^"]*"', '', tag, flags=re.IGNORECASE)
 
-            # 2. 清理 style 中的干扰项
-            style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE)
-            if style_m:
-                s = style_m.group(1)
-                # 移除之前阶段引入的 auto 属性，防止在表格中高度塌陷
-                s = re.sub(r'\b(width|height)\s*:\s*auto\s*(?:!important)?\s*;?', '', s, flags=re.IGNORECASE)
-                # 强制移除内联边框
-                s = re.sub(r'\bborder[^:]*:[^;]+;?', '', s, flags=re.IGNORECASE)
-                s = re.sub(r'\boutline[^:]*:[^;]+;?', '', s, flags=re.IGNORECASE)
+            # 3. 重新注入“黄金属性”
+            # 使用 !important 封死 Spire 的内部样式覆盖
+            # 添加 display: inline-block 维持独立盒子
+            new_style = "border: none !important; outline: none !important; margin: 0; padding: 0; display: inline-block;"
+            attrs = ' border="0" vspace="0" hspace="0"'
 
-                s = s.rstrip('; ') + '; border:none; outline:none;'
-                tag = tag[:style_m.start()] + f'style="{s}"' + tag[style_m.end():]
-            else:
-                tag = re.sub(r'(<img\b)', r'\1 style="border:none; outline:none;"', tag, flags=re.IGNORECASE)
+            if w_px and h_px:
+                w_pt = w_px * 72.0 / 96.0
+                h_pt = h_px * 72.0 / 96.0
+                new_style += f" width: {w_pt:.2f}pt !important; height: {h_pt:.2f}pt !important;"
+                attrs += f' width="{round(w_px)}" height="{round(h_px)}"'
 
+            tag = re.sub(r'(<img\b)', rf'\1 style="{new_style}"{attrs}', tag, flags=re.IGNORECASE)
+            return re.sub(r'\s+', ' ', tag).replace(' >', '>')
+
+        html = re.sub(r'<img\b[^>]*>', _rebuild_img, html, flags=re.IGNORECASE)
+
+        # 4. 修复父级容器：如果单元格或段落写了 justify（两端对齐），会导致内部的图片被强制横向拉伸
+        def _fix_justify(m):
+            tag = m.group(0)
+            if 'justify' in tag.lower():
+                tag = re.sub(r'text-align\s*:\s*justify\s*;?', 'text-align: center;', tag, flags=re.IGNORECASE)
             return tag
 
-        html = re.sub(r'<img\b[^>]*>', _purify_img, html, flags=re.IGNORECASE)
+        html = re.sub(r'<(td|th|p|div)\b[^>]*>', _fix_justify, html, flags=re.IGNORECASE)
 
-        # 第二步：使用栈结构解析 td/th，锁定单元格宽度
-        tag_re = re.compile(r'<(/?)(td|th|img)\b([^>]*)>', re.IGNORECASE)
-        stack = []
-        td_widths = {}
-
-        for m in tag_re.finditer(html):
-            is_close = m.group(1) == '/'
-            tag_name = m.group(2).lower()
-
-            if tag_name in ('td', 'th'):
-                if not is_close:
-                    stack.append(m.start())
-                else:
-                    if stack:
-                        stack.pop()
-            elif tag_name == 'img':
-                if stack:
-                    current_td_start = stack[-1]
-                    tag_full = m.group(0)
-                    pt_val = 0.0
-
-                    # 优先从清洗后的 style 中读取精准宽度
-                    style_m = re.search(r'style="([^"]*)"', tag_full, re.IGNORECASE)
-                    if style_m:
-                        w_m = re.search(r'\bwidth\s*:\s*([\d.]+)(pt|px|in|cm|mm)', style_m.group(1), re.IGNORECASE)
-                        if w_m:
-                            val = float(w_m.group(1))
-                            unit = w_m.group(2).lower()
-                            if unit == 'pt':
-                                pt_val = val
-                            elif unit == 'px':
-                                pt_val = val * 72.0 / 96.0
-                            elif unit == 'in':
-                                pt_val = val * 72.0
-                            elif unit == 'cm':
-                                pt_val = val / 2.54 * 72.0
-                            elif unit == 'mm':
-                                pt_val = val / 25.4 * 72.0
-
-                    if pt_val == 0.0:
-                        attr_w_m = re.search(r'\bwidth="(\d+(?:\.\d+)?)"', tag_full, re.IGNORECASE)
-                        if attr_w_m:
-                            pt_val = float(attr_w_m.group(1)) * 72.0 / 96.0
-
-                    if pt_val > 0:
-                        td_widths[current_td_start] = max(td_widths.get(current_td_start, 0.0), pt_val)
-
-        if not td_widths:
-            return html
-
-        result = list(html)
-        # 从后往前替换，保证前面的 index 不会因为字符串长度改变而错乱
-        for start_idx in sorted(td_widths.keys(), reverse=True):
-            end_idx = html.find('>', start_idx) + 1
-            td_open = html[start_idx:end_idx]
-
-            max_w_pt = td_widths[start_idx] + 2.0  # 增加 2pt 安全余量
-            td_w_px = round(max_w_pt * 96.0 / 72.0)
-
-            tag_name_m = re.match(r'<([a-zA-Z]+)', td_open)
-            if not tag_name_m:
-                continue
-            t_name = tag_name_m.group(1)
-
-            style_match = re.search(r'style="([^"]*)"', td_open, re.IGNORECASE)
-            if style_match:
-                s = style_match.group(1)
-                s = re.sub(r'\b(?:min-)?width\s*:[^;]+;?', '', s, flags=re.IGNORECASE)
-                s = s.rstrip('; ') + f'; width:{max_w_pt:.2f}pt; min-width:{max_w_pt:.2f}pt;'
-                td_open = td_open[:style_match.start()] + f'style="{s}"' + td_open[style_match.end():]
-            else:
-                td_open = re.sub(rf'(<{t_name}\b)', rf'\1 style="width:{max_w_pt:.2f}pt; min-width:{max_w_pt:.2f}pt;"',
-                                 td_open, flags=re.IGNORECASE)
-
-            td_open = re.sub(r'\s+width="[^"]*"', '', td_open, flags=re.IGNORECASE)
-            td_open = re.sub(rf'(<{t_name}\b)', rf'\1 width="{td_w_px}"', td_open, flags=re.IGNORECASE)
-
-            if 'nowrap' not in td_open.lower():
-                td_open = re.sub(rf'(<{t_name}\b)', rf'\1 nowrap="nowrap"', td_open, flags=re.IGNORECASE)
-
-            result[start_idx:end_idx] = list(td_open)
-
-        return "".join(result)
+        return html
 
     def _normalize_path(self, path):
         """【内部方法】统一路径格式并转为绝对路径"""
@@ -2768,8 +2714,7 @@ class DocxHtmlConverter:
             html_text = self._fix_centered_images_for_import(html_text)
             html_text = self._normalize_img_units_for_import(html_text)
 
-            # 保护表格中图片的宽度
-            html_text = self._protect_table_image_width(html_text)
+            html_text = self._fix_spire_image_distortion(html_text)
 
             para_count = self._html_count_paragraphs(html_text)
             logger.debug(f"📊 HTML 段落估算：{para_count}，阈值：{self.MAX_PARAGRAPHS}")
