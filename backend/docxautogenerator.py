@@ -212,16 +212,21 @@ def generate_fully_centered_patent_doc(
         set_font(run, RGBColor(255, 255, 255))
         run.bold = True
 
-    def set_border(cell, color='4472C4', sz='6'):  # 将 sz 改为 6 (0.75磅)，更易被转换器识别
+    def set_border(cell, color='4472C4', sz='6'):  # 建议 sz 改为 6 (0.75磅)，2太细了容易看不清
         tcPr = cell._element.get_or_add_tcPr()
+
+        # 1. 创建符合标准的 tcBorders 容器节点
         tcBorders = OxmlElement('w:tcBorders')
+
+        # 2. 将四个方向的边框放进 tcBorders 容器中
         for k in ['top', 'left', 'bottom', 'right']:
             b = OxmlElement(f'w:{k}')
             b.set(qn('w:val'), 'single')
             b.set(qn('w:color'), color)
             b.set(qn('w:sz'), str(sz))
-            b.set(qn('w:space'), '0')
             tcBorders.append(b)
+
+        # 3. 最后将 tcBorders 挂载到 tcPr 下
         tcPr.append(tcBorders)
 
     # 专利表格
