@@ -455,14 +455,14 @@ class DocxHtmlConverter:
         # 1. 将 <table style="... width: 440.9pt;"> 改为 width: 100%;
         html = re.sub(
             r'(<table[^>]*style="[^"]*)\bwidth\s*:\s*[\d.]+pt;?',
-            r'\1width:100%;',
+            r'\1',
             html_content,
             flags=re.IGNORECASE
         )
         # 2. 将 <table width="440"> 属性改为 100%
         html = re.sub(
             r'(<table[^>]*)\bwidth="\d+(?:\.\d+)?"',
-            r'\1 width="100%"',
+            r'\1"',
             html,
             flags=re.IGNORECASE
         )
