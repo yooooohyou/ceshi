@@ -2888,13 +2888,16 @@ class DocxHtmlConverter:
             new_style = (size_css + '; ' + new_style).rstrip('; ') if new_style else size_css
 
             # ── 4. 重建 tag ───────────────────────────────────────────────
-            tag = re.sub(r'\s+width="[^"]*"',  '', tag, flags=re.IGNORECASE)
-            tag = re.sub(r'\s+height="[^"]*"', '', tag, flags=re.IGNORECASE)
-
+            # 注意：必须先替换 style（用 regex 而非位置切片，避免后续属性删除导致偏移），
+            # 再删除旧的 width/height 属性，最后追加新属性。
             if style_m:
-                tag = tag[:style_m.start()] + f'style="{new_style}"' + tag[style_m.end():]
+                tag = re.sub(r'style="[^"]*"', f'style="{new_style}"',
+                             tag, count=1, flags=re.IGNORECASE)
             else:
                 tag = re.sub(r'(<img\b)', rf'\1 style="{new_style}"', tag, flags=re.IGNORECASE)
+
+            tag = re.sub(r'\s+width="[^"]*"',  '', tag, flags=re.IGNORECASE)
+            tag = re.sub(r'\s+height="[^"]*"', '', tag, flags=re.IGNORECASE)
 
             if final_w is not None:
                 tag = re.sub(r'(<img\b)', rf'\1 width="{final_w:.2f}pt"', tag, flags=re.IGNORECASE)
