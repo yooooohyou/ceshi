@@ -377,13 +377,23 @@ def generate_car_info_doc(car_data, save_path='公司车辆信息.docx', table_t
         set_font(run, RGBColor(255, 255, 255))
         run.bold = True
 
-    def set_border(cell, color='4472C4', sz='2'):
+    def set_border(cell, color='4472C4', sz='6'):
+        tcPr = cell._element.get_or_add_tcPr()
+
+        # ✅ 核心修复 1：创建了一个专属的边框容器
+        tcBorders = OxmlElement('w:tcBorders')
+
         for k in ['top', 'left', 'bottom', 'right']:
             b = OxmlElement(f'w:{k}')
             b.set(qn('w:val'), 'single')
             b.set(qn('w:color'), color)
-            b.set(qn('w:sz'), sz)
-            cell._element.tcPr.append(b)
+            b.set(qn('w:sz'), str(sz))
+
+            # ✅ 核心修复 2：把边框塞进容器里
+            tcBorders.append(b)
+
+            # ✅ 核心修复 3：把完整的容器，塞进 tcPr 里
+        tcPr.append(tcBorders)
     # ==========================================================================
 
     # 自定义工具函数（基于指定函数扩展，保证样式统一）
