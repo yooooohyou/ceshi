@@ -452,27 +452,32 @@ class DocxHtmlConverter:
         """
         移除 Spire 导出的固定表格和单元格宽度，使表格在 HTML 中自适应 100%
         """
-        # 1. 将 <table style="... width: 440.9pt;"> 改为 width: 100%;
+        # 1. 修复 <table> 的 style 宽度（使用负向断言，防止误删 border-width）
         html = re.sub(
-            r'(<table[^>]*style="[^"]*)\bwidth\s*:\s*[\d.]+pt;?',
-            r'\1',
+            r'(<table\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+pt;?',
+            r'\1width: 100%;',
             html_content,
             flags=re.IGNORECASE
         )
-        # 2. 将 <table width="440"> 属性改为 100%
+
+        # 2. 将 <table width="..."> 属性改为 100%
         html = re.sub(
-            r'(<table[^>]*)\bwidth="\d+(?:\.\d+)?"',
-            r'\1',
+            r'(<table\b[^>]*?)\s*\bwidth="\d+(?:\.\d+)?"',
+            r'\1 width="100%"',
             html,
             flags=re.IGNORECASE
         )
-        # 3. 清理 <td> / <th> 中的死宽度限制 (例如代码片段中的 width: 439.4pt;)
-        html = re.sub(
-            r'(<t[dh][^>]*style="[^"]*)\bwidth\s*:\s*[\d.]+pt;?',
-            r'\1',
-            html,
-            flags=re.IGNORECASE
-        )
+
+        # 3. 清理 <td> / <th> 中的死宽度限制 (同样防止误伤 border-width)
+        # 循环两遍是因为 <td> 里可能同时存在 style="..." 和 data-mce-style="..." 两个属性
+        for _ in range(2):
+            html = re.sub(
+                r'(<t[dh]\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+pt;?',
+                r'\1',
+                html,
+                flags=re.IGNORECASE
+            )
+
         return html
 
     def _fix_html_img_sizes(self, html_content: str, size_map: dict,
