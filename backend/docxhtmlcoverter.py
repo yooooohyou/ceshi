@@ -1321,26 +1321,16 @@ class DocxHtmlConverter:
 
     def _sanitize_html_styles_for_import(self, html: str) -> str:
         """
-        HTML→DOCX 导入前的样式清洗：
-        1. 强制表格自适应：将固定 pt 宽度改为 100% 或删除，防止溢出版心
-        2. 修复图片比例：如果 style 只定义了一个维度，强制将另一个维度设为 auto，
-           并移除 HTML 属性中的冲突数值，防止拉伸
+        [针对 64% 缩放问题的专项修复]
+        1. 表格：强制 100% 宽度，消除 440pt 导致的挤压。
+        2. 图片：如果只有单维度，通过 style="width:auto; height:auto" 配合属性清除，
+           强制 Spire 走等比缩放逻辑，不触发 96->72 的二次缩放。
         """
-        # --- 处理表格宽度 ---
-        # 匹配 <table style="...width: 439.4pt;..."> 并改为 width: 100%
-        html = re.sub(
-            r'(<table[^>]*style="[^"]*)\bwidth\s*:\s*[\d.]+pt;?',
-            r'\1width:100%;',
-            html, flags=re.IGNORECASE
-        )
-        # 匹配 <table width="439.4"> 属性并改为 width="100%"
-        html = re.sub(
-            r'(<table[^>]*)\bwidth="\d+(?:\.\d+)?"',
-            r'\1 width="100%"',
-            html, flags=re.IGNORECASE
-        )
+        # --- 修复表格：从 439.4pt 固宽改为 100% 自适应 ---
+        html = re.sub(r'(<table[^>]*style="[^"]*)\bwidth\s*:\s*[\d.]+pt;?', r'\1width:100%;', html, flags=re.IGNORECASE)
+        html = re.sub(r'(<table[^>]*)\bwidth="\d+(?:\.\d+)?"', r'\1 width="100%"', html, flags=re.IGNORECASE)
 
-        # --- 处理图片比例锁定 ---
+        # --- 修复图片：防止 64% 比例偏移 ---
         def _fix_img_ratio(m):
             tag = m.group(0)
             style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE)
@@ -1348,21 +1338,23 @@ class DocxHtmlConverter:
                 return tag
 
             style_str = style_m.group(1)
-            # 检查 style 中是否显式定义了宽或高
-            has_style_w = bool(re.search(r'\bwidth\s*:', style_str, re.IGNORECASE))
-            has_style_h = bool(re.search(r'\bheight\s*:', style_str, re.IGNORECASE))
+            # 提取 style 中的宽高（pt 或 px）
+            sw_m = re.search(r'\bwidth\s*:\s*([\d.]+)(pt|px)', style_str, re.IGNORECASE)
+            sh_m = re.search(r'\bheight\s*:\s*([\d.]+)(pt|px)', style_str, re.IGNORECASE)
 
-            # 情况 A: 只有宽度定义 -> 强制高度自适应，删除 height 属性
-            if has_style_w and not has_style_h:
-                tag = re.sub(r'\s+height="[^"]*"', '', tag, flags=re.IGNORECASE)
-                style_str = style_str.rstrip('; ') + "; height:auto;"
+            # 策略：如果只有宽度（如 146pt），必须显式把 height 设为 auto 并移除 HTML 属性
+            # 这样 Spire 才会根据图片原始比例计算，而不会去读那个 height="113" 的旧像素值
+            if sw_m and not sh_m:
+                tag = re.sub(r'\s+height="[^"]*"', '', tag, flags=re.IGNORECASE)  # 移除属性
+                style_str = re.sub(r'\bheight\s*:[^;]+;?', '', style_str, flags=re.IGNORECASE)
+                style_str = style_str.rstrip('; ') + "; height:auto !important;"
 
-            # 情况 B: 只有高度定义 -> 强制宽度自适应，删除 width 属性
-            elif has_style_h and not has_style_w:
-                tag = re.sub(r'\s+width="[^"]*"', '', tag, flags=re.IGNORECASE)
-                style_str = style_str.rstrip('; ') + "; width:auto;"
+            elif sh_m and not sw_m:
+                tag = re.sub(r'\s+width="[^"]*"', '', tag, flags=re.IGNORECASE)  # 移除属性
+                style_str = re.sub(r'\bwidth\s*:[^;]+;?', '', style_str, flags=re.IGNORECASE)
+                style_str = style_str.rstrip('; ') + "; width:auto !important;"
 
-            return re.sub(r'style="[^"]*"', f'style="{style_str}"', tag, count=1, flags=re.IGNORECASE)
+            return re.sub(r'style="([^"]*)"', f'style="{style_str}"', tag, count=1, flags=re.IGNORECASE)
 
         html = re.sub(r'<img\b[^>]*>', _fix_img_ratio, html, flags=re.IGNORECASE | re.DOTALL)
         return html
@@ -2643,7 +2635,7 @@ class DocxHtmlConverter:
         if not html_text.strip():
             logger.error("❌ HTML文本为空，无法转换")
             return False
-        
+
         # 在处理图片 base64 之前，先修正表格宽度和图片比例意图
         logger.debug("🧹 正在优化 HTML 表格宽度与图片比例...")
         html_text = self._sanitize_html_styles_for_import(html_text)
