@@ -47,6 +47,100 @@ class DocxHtmlConverter:
     #  路径工具                                                             #
     # ------------------------------------------------------------------ #
 
+    def _protect_table_image_width(self, html: str) -> str:
+        """
+        防止 Spire 将表格中的图片挤压缩放：
+        通过栈结构解析 HTML，找到包含图片的 <td>/<th>，并将该图片的物理宽度
+        强制注入到单元格的 style (min-width) 和属性 (width, nowrap) 中，强制撑开列宽。
+        """
+        tag_re = re.compile(r'<(/?)(td|th|img)\b([^>]*)>', re.IGNORECASE)
+        stack = []
+        td_widths = {}  # 记录 tag_start_index -> max_img_width_pt
+
+        for m in tag_re.finditer(html):
+            is_close = m.group(1) == '/'
+            tag_name = m.group(2).lower()
+
+            if tag_name in ('td', 'th'):
+                if not is_close:
+                    stack.append(m.start())
+                else:
+                    if stack:
+                        stack.pop()
+            elif tag_name == 'img':
+                if stack:
+                    current_td_start = stack[-1]
+                    tag_full = m.group(0)
+                    pt_val = 0.0
+
+                    # 1. 尝试从 style 获取宽度
+                    style_m = re.search(r'style="([^"]*)"', tag_full, re.IGNORECASE)
+                    if style_m:
+                        w_m = re.search(r'\bwidth\s*:\s*([\d.]+)(pt|px|in|cm|mm)', style_m.group(1), re.IGNORECASE)
+                        if w_m:
+                            val = float(w_m.group(1))
+                            unit = w_m.group(2).lower()
+                            if unit == 'pt':
+                                pt_val = val
+                            elif unit == 'px':
+                                pt_val = val * 72.0 / 96.0
+                            elif unit == 'in':
+                                pt_val = val * 72.0
+                            elif unit == 'cm':
+                                pt_val = val / 2.54 * 72.0
+                            elif unit == 'mm':
+                                pt_val = val / 25.4 * 72.0
+
+                    # 2. 尝试从 width 属性获取
+                    if pt_val == 0.0:
+                        attr_w_m = re.search(r'\bwidth="(\d+(?:\.\d+)?)"', tag_full, re.IGNORECASE)
+                        if attr_w_m:
+                            pt_val = float(attr_w_m.group(1)) * 72.0 / 96.0
+
+                    if pt_val > 0:
+                        td_widths[current_td_start] = max(td_widths.get(current_td_start, 0.0), pt_val)
+
+        if not td_widths:
+            return html
+
+        # 从后往前替换，避免影响未处理标签的字符串索引
+        result = list(html)
+        for start_idx in sorted(td_widths.keys(), reverse=True):
+            end_idx = html.find('>', start_idx) + 1
+            td_open = html[start_idx:end_idx]
+
+            max_w_pt = td_widths[start_idx] + 2.0  # 增加 2pt 安全余量
+            td_w_px = round(max_w_pt * 96.0 / 72.0)
+
+            # 获取原始标签名 (td 还是 th)
+            tag_name_m = re.match(r'<([a-zA-Z]+)', td_open)
+            if not tag_name_m:
+                continue
+            t_name = tag_name_m.group(1)
+
+            # 注入 style="width: Xpt; min-width: Xpt;"
+            style_match = re.search(r'style="([^"]*)"', td_open, re.IGNORECASE)
+            if style_match:
+                s = style_match.group(1)
+                s = re.sub(r'\b(?:min-)?width\s*:[^;]+;?', '', s, flags=re.IGNORECASE)
+                s = s.rstrip('; ') + f'; width:{max_w_pt:.2f}pt; min-width:{max_w_pt:.2f}pt;'
+                td_open = td_open[:style_match.start()] + f'style="{s}"' + td_open[style_match.end():]
+            else:
+                td_open = re.sub(rf'(<{t_name}\b)', rf'\1 style="width:{max_w_pt:.2f}pt; min-width:{max_w_pt:.2f}pt;"',
+                                 td_open, flags=re.IGNORECASE)
+
+            # 注入 width="X" 属性
+            td_open = re.sub(r'\s+width="[^"]*"', '', td_open, flags=re.IGNORECASE)
+            td_open = re.sub(rf'(<{t_name}\b)', rf'\1 width="{td_w_px}"', td_open, flags=re.IGNORECASE)
+
+            # 注入 nowrap="nowrap" 属性，防止由于文本换行继续挤压图片
+            if 'nowrap' not in td_open.lower():
+                td_open = re.sub(rf'(<{t_name}\b)', rf'\1 nowrap="nowrap"', td_open, flags=re.IGNORECASE)
+
+            result[start_idx:end_idx] = list(td_open)
+
+        return "".join(result)
+
     def _normalize_path(self, path):
         """【内部方法】统一路径格式并转为绝对路径"""
         if not path:
@@ -2650,6 +2744,9 @@ class DocxHtmlConverter:
             html_text = self._fix_centered_images_for_import(html_text)
             html_text = self._normalize_img_units_for_import(html_text)
 
+            # 保护表格中图片的宽度
+            html_text = self._protect_table_image_width(html_text)
+
             para_count = self._html_count_paragraphs(html_text)
             logger.debug(f"📊 HTML 段落估算：{para_count}，阈值：{self.MAX_PARAGRAPHS}")
             if para_count <= self.MAX_PARAGRAPHS:
@@ -3196,7 +3293,7 @@ if __name__ == "__main__":
     converter = DocxHtmlConverter()
 
     # 示例1：DOCX转单文件HTML（自动判断是否需要分片）
-    input_docx = r"C:\Users\you62\Desktop\企业基本情况表-动态参考素材.docx"
+    input_docx = r"C:\Users\you62\Desktop\公司车辆信息.docx"
     output_html = r"C:\Users\you62\Desktop\index.html"
     # html_content = converter.docx_to_single_html(input_docx, output_html)
 
