@@ -49,13 +49,42 @@ class DocxHtmlConverter:
 
     def _protect_table_image_width(self, html: str) -> str:
         """
-        防止 Spire 将表格中的图片挤压缩放：
-        通过栈结构解析 HTML，找到包含图片的 <td>/<th>，并将该图片的物理宽度
-        强制注入到单元格的 style (min-width) 和属性 (width, nowrap) 中，强制撑开列宽。
+        终极修复版：防止 Spire 将表格中的图片挤压缩放，并彻底消除默认黑框。
+        1. 净化 <img>：清除残留的 auto 属性（防止高度塌陷），强制添加 border="0" 消除黑框。
+        2. 撑开 <td>：将图片的物理宽度强制注入到单元格的 style (min-width) 和属性中。
         """
+
+        # 第一步：净化所有 img 标签，消除缩放和黑框隐患
+        def _purify_img(m):
+            tag = m.group(0)
+
+            # 1. 消除HTML属性的黑框
+            tag = re.sub(r'\bborder="[^"]*"', '', tag, flags=re.IGNORECASE)
+            tag = re.sub(r'(<img\b)', r'\1 border="0"', tag, flags=re.IGNORECASE)
+
+            # 2. 清理 style 中的干扰项
+            style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE)
+            if style_m:
+                s = style_m.group(1)
+                # 移除之前阶段引入的 auto 属性，防止在表格中高度塌陷
+                s = re.sub(r'\b(width|height)\s*:\s*auto\s*(?:!important)?\s*;?', '', s, flags=re.IGNORECASE)
+                # 强制移除内联边框
+                s = re.sub(r'\bborder[^:]*:[^;]+;?', '', s, flags=re.IGNORECASE)
+                s = re.sub(r'\boutline[^:]*:[^;]+;?', '', s, flags=re.IGNORECASE)
+
+                s = s.rstrip('; ') + '; border:none; outline:none;'
+                tag = tag[:style_m.start()] + f'style="{s}"' + tag[style_m.end():]
+            else:
+                tag = re.sub(r'(<img\b)', r'\1 style="border:none; outline:none;"', tag, flags=re.IGNORECASE)
+
+            return tag
+
+        html = re.sub(r'<img\b[^>]*>', _purify_img, html, flags=re.IGNORECASE)
+
+        # 第二步：使用栈结构解析 td/th，锁定单元格宽度
         tag_re = re.compile(r'<(/?)(td|th|img)\b([^>]*)>', re.IGNORECASE)
         stack = []
-        td_widths = {}  # 记录 tag_start_index -> max_img_width_pt
+        td_widths = {}
 
         for m in tag_re.finditer(html):
             is_close = m.group(1) == '/'
@@ -73,7 +102,7 @@ class DocxHtmlConverter:
                     tag_full = m.group(0)
                     pt_val = 0.0
 
-                    # 1. 尝试从 style 获取宽度
+                    # 优先从清洗后的 style 中读取精准宽度
                     style_m = re.search(r'style="([^"]*)"', tag_full, re.IGNORECASE)
                     if style_m:
                         w_m = re.search(r'\bwidth\s*:\s*([\d.]+)(pt|px|in|cm|mm)', style_m.group(1), re.IGNORECASE)
@@ -91,7 +120,6 @@ class DocxHtmlConverter:
                             elif unit == 'mm':
                                 pt_val = val / 25.4 * 72.0
 
-                    # 2. 尝试从 width 属性获取
                     if pt_val == 0.0:
                         attr_w_m = re.search(r'\bwidth="(\d+(?:\.\d+)?)"', tag_full, re.IGNORECASE)
                         if attr_w_m:
@@ -103,8 +131,8 @@ class DocxHtmlConverter:
         if not td_widths:
             return html
 
-        # 从后往前替换，避免影响未处理标签的字符串索引
         result = list(html)
+        # 从后往前替换，保证前面的 index 不会因为字符串长度改变而错乱
         for start_idx in sorted(td_widths.keys(), reverse=True):
             end_idx = html.find('>', start_idx) + 1
             td_open = html[start_idx:end_idx]
@@ -112,13 +140,11 @@ class DocxHtmlConverter:
             max_w_pt = td_widths[start_idx] + 2.0  # 增加 2pt 安全余量
             td_w_px = round(max_w_pt * 96.0 / 72.0)
 
-            # 获取原始标签名 (td 还是 th)
             tag_name_m = re.match(r'<([a-zA-Z]+)', td_open)
             if not tag_name_m:
                 continue
             t_name = tag_name_m.group(1)
 
-            # 注入 style="width: Xpt; min-width: Xpt;"
             style_match = re.search(r'style="([^"]*)"', td_open, re.IGNORECASE)
             if style_match:
                 s = style_match.group(1)
@@ -129,11 +155,9 @@ class DocxHtmlConverter:
                 td_open = re.sub(rf'(<{t_name}\b)', rf'\1 style="width:{max_w_pt:.2f}pt; min-width:{max_w_pt:.2f}pt;"',
                                  td_open, flags=re.IGNORECASE)
 
-            # 注入 width="X" 属性
             td_open = re.sub(r'\s+width="[^"]*"', '', td_open, flags=re.IGNORECASE)
             td_open = re.sub(rf'(<{t_name}\b)', rf'\1 width="{td_w_px}"', td_open, flags=re.IGNORECASE)
 
-            # 注入 nowrap="nowrap" 属性，防止由于文本换行继续挤压图片
             if 'nowrap' not in td_open.lower():
                 td_open = re.sub(rf'(<{t_name}\b)', rf'\1 nowrap="nowrap"', td_open, flags=re.IGNORECASE)
 
