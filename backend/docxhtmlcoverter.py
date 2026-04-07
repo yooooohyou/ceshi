@@ -488,7 +488,7 @@ class DocxHtmlConverter:
 
     @staticmethod
     def _fix_html_table_widths(html_content: str,
-                                content_width_pt: float = 400.0) -> str:
+                                content_width_pt: float = 300.0) -> str:
         """
         将 Spire 导出 HTML 中超出版心宽度的表格等比缩放至版心宽度以内。
         """
