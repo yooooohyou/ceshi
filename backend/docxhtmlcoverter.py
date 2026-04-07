@@ -418,6 +418,36 @@ class DocxHtmlConverter:
         logger.debug(f"📐 从 DOCX 提取到 {len(size_map)} 张图片的显示尺寸")
         return size_map
 
+    @staticmethod
+    def _extract_content_width_pt(docx_path: str) -> float:
+        """
+        从 DOCX 的 sectPr 中读取页面宽度和左右边距，计算实际内容区宽度（单位 pt）。
+        单位换算：OOXML 使用 twips（1 twip = 1/20 pt）。
+        失败时返回 451.0 pt（A4 + 2.54cm 双边距的典型值）。
+        """
+        W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+        DEFAULT_PT = 451.0
+        try:
+            with zipfile.ZipFile(docx_path, 'r') as zf:
+                doc_xml = zf.read('word/document.xml').decode('utf-8')
+            root = etree.fromstring(doc_xml.encode('utf-8'))
+            sectPr = root.find(f'.//{{{W_NS}}}sectPr')
+            if sectPr is None:
+                return DEFAULT_PT
+            pgSz  = sectPr.find(f'{{{W_NS}}}pgSz')
+            pgMar = sectPr.find(f'{{{W_NS}}}pgMar')
+            if pgSz is None:
+                return DEFAULT_PT
+            page_w  = int(pgSz.get(f'{{{W_NS}}}w', 11906))
+            left    = int(pgMar.get(f'{{{W_NS}}}left',  1800)) if pgMar is not None else 1800
+            right   = int(pgMar.get(f'{{{W_NS}}}right', 1800)) if pgMar is not None else 1800
+            content = (page_w - left - right) / 20.0
+            logger.debug(f"📐 页面内容宽度：{content:.1f}pt（页宽{page_w/20:.1f}pt - 左{left/20:.1f}pt - 右{right/20:.1f}pt）")
+            return max(content, 200.0)
+        except Exception as e:
+            logger.warning(f"⚠️ 提取页面内容宽度失败：{e}，使用默认值 {DEFAULT_PT}pt")
+            return DEFAULT_PT
+
     def _fix_html_img_sizes(self, html_content: str, size_map: dict,
                              spire_img_names: list, image_display_order: list) -> str:
         """
@@ -610,7 +640,7 @@ class DocxHtmlConverter:
 
     def _fix_html_img_sizes_for_import(self, html_text: str,
                                         page_width_px: int = 794,
-                                        content_width_px: int = 300) -> str:
+                                        content_width_px: int = 400) -> str:
         """
         HTML→DOCX 方向的图片尺寸修正 。
         """
@@ -1875,13 +1905,6 @@ class DocxHtmlConverter:
                 with open(html_path, 'w', encoding='utf-8') as f:
                     f.write(html_content)
 
-            logger.debug("📏 修正表格宽度...")
-            with open(html_path, 'r', encoding='utf-8') as f:
-                html_content = f.read()
-            html_content = self._fix_html_table_widths(html_content)
-            with open(html_path, 'w', encoding='utf-8') as f:
-                f.write(html_content)
-
             logger.debug(f"🎉 分片转换完成：{html_path}")
         except Exception as e:
             logger.error(f"❌ 分片转换异常：{e}")
@@ -2000,15 +2023,11 @@ class DocxHtmlConverter:
                 html_content, img_size_map, image_display_order, image_display_order
             )
 
-        # 13. 修正表格宽度（超出 A4 版心时等比缩放）
-        logger.debug("📏 修正表格宽度...")
-        html_content = self._fix_html_table_widths(html_content)
-
-        # 14. 保存最终HTML
+        # 13. 保存最终HTML
         with open(html_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
 
-        # 15. 清理临时文件
+        # 14. 清理临时文件
         for temp_path in [spire_temp_dir, css_file_path]:
             if os.path.exists(temp_path):
                 try:
@@ -2586,8 +2605,6 @@ class DocxHtmlConverter:
         try:
             html_text, temp_img_dir = self._extract_base64_images(html_text, output_dir)
             html_text = self._fix_centered_images_for_import(html_text)
-            html_text = self._fix_html_img_sizes_for_import(html_text)
-            html_text = self._strip_paragraph_spacing_css(html_text)
 
             para_count = self._html_count_paragraphs(html_text)
             logger.debug(f"📊 HTML 段落估算：{para_count}，阈值：{self.MAX_PARAGRAPHS}")
