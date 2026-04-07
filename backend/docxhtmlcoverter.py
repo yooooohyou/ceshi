@@ -2073,7 +2073,7 @@ class DocxHtmlConverter:
             logger.debug("✅ 已内嵌CSS样式")
         # 8. 【修复】去除页眉页脚（非分片路径补充，与分片路径行为一致）
         logger.debug("🧹 去除页眉页脚...")
-        # html_content = self._clean_header_footer(html_content)
+        html_content = self._clean_header_footer(html_content)
 
         # 9. 将处理后的HTML写回文件，供 _embed_images_to_html 读取
         with open(html_path, 'w', encoding='utf-8') as f:
