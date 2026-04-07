@@ -610,7 +610,7 @@ class DocxHtmlConverter:
 
     def _fix_html_img_sizes_for_import(self, html_text: str,
                                         page_width_px: int = 794,
-                                        content_width_px: int = 400) -> str:
+                                        content_width_px: int = 300) -> str:
         """
         HTML→DOCX 方向的图片尺寸修正 。
         """
