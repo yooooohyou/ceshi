@@ -2810,23 +2810,32 @@ class DocxHtmlConverter:
         """
         HTML→DOCX 方向图片尺寸单位归一化。
 
-        富文本编辑器（如 TinyMCE）有时产生单位不一致的 <img> 标签，典型场景：
-          style="width: 146pt;"  ← CSS 中 width 使用 pt
-          height="113"            ← HTML 属性 height 无单位，浏览器视为 px
+        核心规则：
+          CSS style 中显式设置的维度 = 用户意图的显示尺寸（以 pt 为准）。
+          HTML 属性 height/width（无单位=px）只是浏览器预布局提示，当
+          style 未设置对应维度时，不应将其当作显示尺寸强制写入。
 
-        Spire 读取时若将两者当作相同单位处理（均当 pt），则
-          width=146pt, height=113pt → 长宽比失真（原本应为 height=113px=84.75pt）
+        典型问题场景（TinyMCE 生成）：
+          style="width: 146pt;"   ← 用户设定的显示宽度，单位 pt
+          height="113"             ← 原始图片像素高度，非显示高度
+          width="146pt"            ← 非标准 pt 单位属性
 
-        修复策略：
-          1. 收集 <img> 标签 CSS style 与 HTML 属性中的 width/height
-          2. 将所有值统一换算为 pt（无单位属性视为 px）
-          3. 把 width 和 height 以 pt 为单位写回 CSS style
-          4. 同步更新 HTML 属性为对应 pt 字符串，确保 Spire 单位一致
+        错误处理：把 height="113" 当作显示高度 113px=84.75pt 写入 →
+          最终 width=146pt, height=84.75pt，但图片原始高度是 2.99cm
+          (≈84.75pt)，等于按 100% 高度 + 64% 宽度显示 → 长宽比失真。
+
+        正确处理：
+          - 只处理 CSS style 中明确声明的维度；
+          - style 有 width 无 height → 只设 width，删 height 属性（高度自动等比）；
+          - style 有 height 无 width → 只设 height，删 width 属性；
+          - style 同时有两者 → 都设置，统一换算为 pt；
+          - style 什么都没有 → 不修改。
+          写入时：style 用 pt，属性用无单位整数 px（HTML 规范），两者换算一致。
         """
         PT_PER_PX = 72.0 / 96.0
+        PX_PER_PT = 96.0 / 72.0
 
         def _parse_to_pt(val_str):
-            """解析尺寸字符串，返回 pt 浮点值；无单位视为 px；失败返回 None。"""
             if not val_str:
                 return None
             s = val_str.strip().lower()
@@ -2844,56 +2853,40 @@ class DocxHtmlConverter:
         def _process_img(m):
             tag = m.group(0)
 
-            # ── 1. 从 CSS style 中提取 width / height ──────────────────────
+            # ── 1. 仅从 CSS style 中提取显示尺寸（属性不参与显示尺寸决策）
             style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE)
             style_str = style_m.group(1) if style_m else ''
 
-            sw_m = re.search(r'\bwidth\s*:\s*([^;]+)', style_str, re.IGNORECASE)
+            sw_m = re.search(r'\bwidth\s*:\s*([^;]+)',  style_str, re.IGNORECASE)
             sh_m = re.search(r'\bheight\s*:\s*([^;]+)', style_str, re.IGNORECASE)
             sw_pt = _parse_to_pt(sw_m.group(1).strip() if sw_m else None)
             sh_pt = _parse_to_pt(sh_m.group(1).strip() if sh_m else None)
 
-            # ── 2. 从 HTML 属性中提取 width / height（style 优先）──────────
-            aw_m = re.search(r'\bwidth="([^"]*)"',  tag, re.IGNORECASE)
-            ah_m = re.search(r'\bheight="([^"]*)"', tag, re.IGNORECASE)
-            aw_pt = _parse_to_pt(aw_m.group(1).strip() if aw_m else None)
-            ah_pt = _parse_to_pt(ah_m.group(1).strip() if ah_m else None)
-
-            final_w = sw_pt if sw_pt is not None else aw_pt
-            final_h = sh_pt if sh_pt is not None else ah_pt
-
-            # 宽高至少有一个才处理
-            if final_w is None and final_h is None:
+            # style 里没有任何尺寸信息 → 不修改
+            if sw_pt is None and sh_pt is None:
                 return tag
 
-            # 单位本就完全一致时跳过（避免浮点微差反复修改）
-            # 判断条件：style 已同时含 width 和 height 且均为 pt
+            # style 中的单位已全为 pt → 无需处理
             if (sw_pt is not None and sh_pt is not None
                     and sw_m and 'pt' in sw_m.group(1).lower()
                     and sh_m and 'pt' in sh_m.group(1).lower()):
                 return tag
 
-            # ── 3. 重建 CSS style ─────────────────────────────────────────
+            # ── 2. 重建 CSS style（只保留 style 中本来就有的维度）
             new_style = style_str
             new_style = re.sub(r'\bwidth\s*:[^;]+;?\s*',  '', new_style, flags=re.IGNORECASE)
             new_style = re.sub(r'\bheight\s*:[^;]+;?\s*', '', new_style, flags=re.IGNORECASE)
             new_style = new_style.strip().rstrip(';').strip()
 
             size_parts = []
-            if final_w is not None:
-                size_parts.append(f'width:{final_w:.2f}pt')
-            if final_h is not None:
-                size_parts.append(f'height:{final_h:.2f}pt')
+            if sw_pt is not None:
+                size_parts.append(f'width:{sw_pt:.2f}pt')
+            if sh_pt is not None:
+                size_parts.append(f'height:{sh_pt:.2f}pt')
             size_css = '; '.join(size_parts)
             new_style = (size_css + '; ' + new_style).rstrip('; ') if new_style else size_css
 
-            # ── 4. 重建 tag ───────────────────────────────────────────────
-            # 策略：CSS style 使用 pt（Spire Word 引擎读取），
-            #       HTML 属性使用无单位整数 px（HTML 规范标准写法）。
-            # pt 带单位的属性值（如 width="146.00pt"）不符合 HTML 规范，
-            # Spire 可能将其截断为浮点数再按 px 处理，导致单位混乱。
-            # 注意：必须先替换 style（regex 不依赖旧坐标），再删除旧属性，最后追加新属性。
-            PX_PER_PT = 96.0 / 72.0
+            # ── 3. 重建 tag（先替换 style，再删旧属性，最后追加新属性）
             if style_m:
                 tag = re.sub(r'style="[^"]*"', f'style="{new_style}"',
                              tag, count=1, flags=re.IGNORECASE)
@@ -2903,13 +2896,14 @@ class DocxHtmlConverter:
             tag = re.sub(r'\s+width="[^"]*"',  '', tag, flags=re.IGNORECASE)
             tag = re.sub(r'\s+height="[^"]*"', '', tag, flags=re.IGNORECASE)
 
-            # 属性值写为无单位整数（px），与 CSS style 中的 pt 值换算一致
-            if final_w is not None:
-                w_px = round(final_w * PX_PER_PT)
-                tag = re.sub(r'(<img\b)', rf'\1 width="{w_px}"', tag, flags=re.IGNORECASE)
-            if final_h is not None:
-                h_px = round(final_h * PX_PER_PT)
-                tag = re.sub(r'(<img\b)', rf'\1 height="{h_px}"', tag, flags=re.IGNORECASE)
+            # 属性写为无单位整数 px，且只写 style 中有的维度
+            # （style 没设 height → 不写 height 属性 → Spire 自动等比缩放高度）
+            if sw_pt is not None:
+                tag = re.sub(r'(<img\b)', rf'\1 width="{round(sw_pt * PX_PER_PT)}"',
+                             tag, flags=re.IGNORECASE)
+            if sh_pt is not None:
+                tag = re.sub(r'(<img\b)', rf'\1 height="{round(sh_pt * PX_PER_PT)}"',
+                             tag, flags=re.IGNORECASE)
 
             return tag
 
