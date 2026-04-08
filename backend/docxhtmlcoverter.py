@@ -48,6 +48,64 @@ class DocxHtmlConverter:
     #  路径工具                                                             #
     # ------------------------------------------------------------------ #
 
+    def _force_a4_and_scale_elements(self, document):
+        """
+        [私有方法] 在转换为 HTML 之前，强制将整个 DOCX 文档的所有页面设置为 A4，
+        并将超出边界的表格和图片等比缩小，从源头上杜绝撑爆页面的问题。
+        """
+        # A4 纸的安全内容宽度（版心宽度：A4总宽减去左右约 3.18cm 的默认边距）
+        A4_SAFE_WIDTH_PT = 450.0
+
+        # 遍历文档的所有节 (Section，不同节可能设置了不同的纸张大小，比如某一节被设成了 A3)
+        for i in range(document.Sections.Count):
+            section = document.Sections.get_Item(i)
+
+            # 1. 强制将纸张大小设置为标准的 A4
+            try:
+                section.PageSetup.PageSize = PageSize.A4()
+            except Exception as e:
+                logger.warning(f"⚠️ 无法设置 A4 纸张，保留原尺寸进行元素缩放: {e}")
+
+            # 2. 处理直接在节体 (Body) 下的表格
+            for j in range(section.Body.Tables.Count):
+                table = section.Body.Tables.get_Item(j)
+                # 🌟 杀手锏：调用 Word 原生的“根据窗口自动调整”功能
+                # 这会强行清除 A3 遗留的绝对宽度，让表格100%适应当前 A4 的页边距
+                table.AutoFit(AutoFitBehaviorType.AutoFitToWindow)
+
+            # 3. 递归处理图片 (图片可能在段落中，也可能嵌套在表格单元格中)
+            self._scale_pictures_in_element(section.Body, A4_SAFE_WIDTH_PT)
+
+    def _scale_pictures_in_element(self, element, max_width_pt):
+        """
+        [私有方法] 递归遍历 DOCX 节点，将物理尺寸超宽的图片等比例缩小
+        """
+        for i in range(element.ChildObjects.Count):
+            obj = element.ChildObjects.get_Item(i)
+
+            # 如果是段落，检查里面有没有图片
+            if obj.DocumentObjectType == DocumentObjectType.Paragraph:
+                para = obj
+                for j in range(para.ChildObjects.Count):
+                    child = para.ChildObjects.get_Item(j)
+
+                    if child.DocumentObjectType == DocumentObjectType.Picture:
+                        pic = child
+                        # 如果图片宽度超过 A4 版心限制，则进行等比缩小
+                        if pic.Width > max_width_pt:
+                            ratio = max_width_pt / pic.Width
+                            pic.Width = max_width_pt
+                            pic.Height = pic.Height * ratio
+
+            # 如果是表格，需要递归进入每一个单元格 (Cell) 去找图片
+            elif obj.DocumentObjectType == DocumentObjectType.Table:
+                table = obj
+                for r in range(table.Rows.Count):
+                    row = table.Rows.get_Item(r)
+                    for c in range(row.Cells.Count):
+                        cell = row.Cells.get_Item(c)
+                        self._scale_pictures_in_element(cell, max_width_pt)
+
     def _apply_style_and_preserve_format(self, para, target_builtin_style):
         """
         [私有方法] 自定义的“无损 ApplyStyle”函数。
@@ -1864,6 +1922,8 @@ class DocxHtmlConverter:
             document.HtmlExportOptions.ImageEmbedded = False
             document.HtmlExportOptions.ImagesPath = spire_img_dir
             document.HtmlExportOptions.ImageFormat = self.default_image_format
+            self._clean_docx_headings_before_convert(document)
+            self._force_a4_and_scale_elements(document)
             document.SaveToFile(html_path, FileFormat.Html)
         except Exception as e:
             logger.error(f"❌ Spire转换HTML失败：{e}")
@@ -2160,6 +2220,7 @@ class DocxHtmlConverter:
             document.HtmlExportOptions.ImageFormat = self.default_image_format
             # 标题清理格式
             self._clean_docx_headings_before_convert(document)
+            self._force_a4_and_scale_elements(document)
             document.SaveToFile(html_path, FileFormat.Html)
         except Exception as e:
             logger.error(f"❌ Spire转换HTML失败：{e}")
