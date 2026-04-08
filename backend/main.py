@@ -2128,7 +2128,7 @@ async def route_docx2html_marge(
         #     html_list.append(html_content)
         # total_html_content = merge_html_texts(html_list)
 
-        total_html_content, temp_file_docx_ = docx_to_html(static_file_path)
+        total_html_content, temp_file_docx_ = docx_to_html(abs_file_path)
         # html_content, temp_file_docx_ = docx_to_html(result["origin_file_path"])
         # 返回结果（保持原有结构）
         return unified_response(
