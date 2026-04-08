@@ -71,6 +71,9 @@ class DocxHtmlConverter:
                 table = section.Body.Tables.get_Item(j)
                 # 🌟 杀手锏：调用 Word 原生的“根据窗口自动调整”功能
                 # 这会强行清除 A3 遗留的绝对宽度，让表格100%适应当前 A4 的页边距
+                table.PreferredWidth = PreferredWidth(WidthType.Percentage, 100)
+
+                # 配合“根据窗口自动调整”使用，彻底打断 A3 遗留的固定尺寸
                 table.AutoFit(AutoFitBehaviorType.AutoFitToWindow)
 
             # 3. 递归处理图片 (图片可能在段落中，也可能嵌套在表格单元格中)
