@@ -81,6 +81,47 @@ class DocxHtmlConverter:
             # obj.CharacterFormat.TextColor = backup["text_color"]
             # obj.CharacterFormat.Bold = backup["is_bold"]
 
+    def _fix_underline_span_width(self, html_content: str) -> str:
+        """
+        [私有方法] 修复下划线变长的问题：
+        清理带有固定 width 和 display: inline-block 的下划线 span，
+        让其仅依靠内部的 &nbsp; 或空格自然撑开宽度，避免渲染引擎叠加计算。
+        """
+
+        def replacer(m):
+            span_tag = m.group(1)
+            content = m.group(2)
+            span_close = m.group(3)
+
+            # 特征检查：
+            # 1. 包含下划线
+            # 2. 包含 width 宽度限制
+            # 3. 内部确实有实体内容（如 &nbsp; 或文本），如果是纯空 span 则不能删 width
+            is_underline = 'underline' in span_tag.lower()
+            has_width = 'width' in span_tag.lower()
+            has_content = bool(content.strip().replace('&nbsp;', '')) or '&nbsp;' in content
+
+            if is_underline and has_width and has_content:
+                # 同时处理 style 和 data-mce-style (兼容 TinyMCE)
+                for attr_name in ['style', 'data-mce-style']:
+                    attr_m = re.search(rf'{attr_name}="([^"]*)"', span_tag, re.IGNORECASE)
+                    if attr_m:
+                        s = attr_m.group(1)
+
+                        # 剔除导致变长的物理维度属性
+                        s = re.sub(r'\bwidth\s*:\s*[\d.]+[a-zA-Z%]+\s*;?', '', s, flags=re.IGNORECASE)
+                        s = re.sub(r'\bdisplay\s*:\s*inline-block\s*;?', '', s, flags=re.IGNORECASE)
+                        s = re.sub(r'\btext-indent\s*:\s*[\d.]+[a-zA-Z%]+\s*;?', '', s, flags=re.IGNORECASE)
+
+                        # 拼接回标签中
+                        new_attr = f'{attr_name}="{s.strip()}"'
+                        span_tag = span_tag[:attr_m.start()] + new_attr + span_tag[attr_m.end():]
+
+            return span_tag + content + span_close
+
+        # 使用 DOTALL 匹配 HTML 中的 span 块
+        return re.sub(r'(<span\b[^>]*>)(.*?)(</span\s*>)', replacer, html_content, flags=re.IGNORECASE | re.DOTALL)
+
     def _clean_docx_headings_before_convert(self, document):
         """
         [私有方法] 在导出 HTML 前，遍历 DOCX 文档。
@@ -2171,6 +2212,7 @@ class DocxHtmlConverter:
         logger.debug("📏 将表格固定宽度改为 100% 自适应...")
         html_content = self._make_tables_responsive(html_content)
         # ====================================================
+        html_content = self._fix_underline_span_width(html_content)
 
         # 13. 保存最终HTML
         with open(html_path, 'w', encoding='utf-8') as f:
