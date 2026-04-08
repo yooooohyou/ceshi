@@ -48,6 +48,35 @@ class DocxHtmlConverter:
     #  路径工具                                                             #
     # ------------------------------------------------------------------ #
 
+    def _make_tables_responsive_recursive(self, element):
+        """
+        [私有方法] 递归遍历 DOM 节点，将所有层级（含嵌套）的表格设置为自适应 100% 宽度
+        """
+        # 如果当前元素是表格，则进行属性覆盖
+        if element.DocumentObjectType == DocumentObjectType.Table:
+            table = element
+            try:
+                # 🌟 强行覆盖所有绝对固定宽度，改为 100% 宽度
+                table.PreferredWidth = PreferredWidth(WidthType.Percentage, 100)
+                # 根据窗口自动调整
+                table.AutoFit(AutoFitBehaviorType.AutoFitToWindow)
+            except Exception as e:
+                logger.warning(f"⚠️ 无法调整嵌套表格属性: {e}")
+
+            # 表格内部可能嵌套了更深层的表格，必须深入到单元格 (Cell) 级别去检查
+            for r in range(table.Rows.Count):
+                row = table.Rows.get_Item(r)
+                for c in range(row.Cells.Count):
+                    cell = row.Cells.get_Item(c)
+                    # 递归调用：检查单元格里面有没有表格
+                    self._make_tables_responsive_recursive(cell)
+
+        # 如果当前元素包含子对象（例如 Section.Body），则遍历其子节点
+        elif hasattr(element, 'ChildObjects'):
+            for i in range(element.ChildObjects.Count):
+                child = element.ChildObjects.get_Item(i)
+                self._make_tables_responsive_recursive(child)
+
     def _force_a4_and_scale_elements(self, document):
         """
         [私有方法] 在转换为 HTML 之前，强制将整个 DOCX 文档的所有页面设置为 A4，
@@ -74,10 +103,10 @@ class DocxHtmlConverter:
                 table.PreferredWidth = PreferredWidth(WidthType.Percentage, 100)
 
                 # 配合“根据窗口自动调整”使用，彻底打断 A3 遗留的固定尺寸
-                table.AutoFit(AutoFitBehaviorType.AutoFitToWindow)
+                self._make_tables_responsive_recursive(section.Body)
 
-            # 3. 递归处理图片 (图片可能在段落中，也可能嵌套在表格单元格中)
-            self._scale_pictures_in_element(section.Body, A4_SAFE_WIDTH_PT)
+                # --- 步骤 2: 递归处理所有图片 ---
+                self._scale_pictures_in_element(section.Body, A4_SAFE_WIDTH_PT)
 
     def _scale_pictures_in_element(self, element, max_width_pt):
         """
