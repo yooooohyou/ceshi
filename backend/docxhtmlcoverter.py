@@ -48,34 +48,45 @@ class DocxHtmlConverter:
     #  路径工具                                                             #
     # ------------------------------------------------------------------ #
 
-    def _make_tables_responsive_recursive(self, element):
+    def _make_tables_responsive_recursive(self, element, max_width_pt=450.0):
         """
-        [私有方法] 递归遍历 DOM 节点，将所有层级（含嵌套）的表格设置为自适应 100% 宽度
+        [私有方法] 递归遍历 DOM 节点，在转 HTML 前判断表格宽度。
+        只有当表格宽度超过 A4 阈值时，才强制重新计算列宽。
         """
-        # 如果当前元素是表格，则进行属性覆盖
+        # 如果当前元素是表格
         if element.DocumentObjectType == DocumentObjectType.Table:
             table = element
             try:
-                # 🌟 强行覆盖所有绝对固定宽度，改为 100% 宽度
-                table.PreferredWidth = PreferredWidth(WidthType.Percentage, 100)
-                # 根据窗口自动调整
-                table.AutoFit(AutoFitBehaviorType.AutoFitToWindow)
-            except Exception as e:
-                logger.warning(f"⚠️ 无法调整嵌套表格属性: {e}")
+                # 🌟 核心判断：获取表格当前物理宽度
+                # Spire.Doc 会根据文档原始定义计算出 table.Width
+                current_width = table.Width
 
-            # 表格内部可能嵌套了更深层的表格，必须深入到单元格 (Cell) 级别去检查
+                # 如果表格宽度超过了设定的安全阈值 (A4版心)
+                if current_width > max_width_pt:
+                    logger.debug(
+                        f"📏 发现超宽表格 (宽:{current_width:.1f}pt > {max_width_pt}pt)，触发强制重新计算列宽...")
+
+                    # 使用方案一：强制100% + 根据窗口自适应
+                    table.PreferredWidth = PreferredWidth(WidthType.Percentage, 100)
+                    table.AutoFit(AutoFitBehaviorType.AutoFitToWindow)
+                else:
+                    logger.debug(f"   ✓ 表格宽度正常 ({current_width:.1f}pt)，跳过自适应处理。")
+
+            except Exception as e:
+                logger.warning(f"⚠️ 无法判断或调整表格属性: {e}")
+
+            # 表格内部可能嵌套了更深层的表格，递归检查单元格 (Cell)
             for r in range(table.Rows.Count):
                 row = table.Rows.get_Item(r)
                 for c in range(row.Cells.Count):
                     cell = row.Cells.get_Item(c)
-                    # 递归调用：检查单元格里面有没有表格
-                    self._make_tables_responsive_recursive(cell)
+                    self._make_tables_responsive_recursive(cell, max_width_pt)
 
-        # 如果当前元素包含子对象（例如 Section.Body），则遍历其子节点
+        # 如果当前元素包含子对象（例如 Section.Body），则继续往下找
         elif hasattr(element, 'ChildObjects'):
             for i in range(element.ChildObjects.Count):
                 child = element.ChildObjects.get_Item(i)
-                self._make_tables_responsive_recursive(child)
+                self._make_tables_responsive_recursive(child, max_width_pt)
 
     def _force_a4_and_scale_elements(self, document):
         """
