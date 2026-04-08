@@ -2112,21 +2112,23 @@ async def route_docx2html_marge(
                 conn.commit()
 
         # 调用拆分接口
-        split_result = call_docx_split(
-            file_stream=file_content,
-            file_name=original_filename,
-            file_id=split_file_id,
-            had_title=1,
-            rm_outline_in_doc=1
-        )
-        # 2. 构建 eid-文件路径 映射
-        files__ = split_result.data.get("files", [])
-        logger.info(files__)
-        html_list = []
-        for file__ in files__:
-            html_content, temp_file_docx_ = docx_to_html(file__)
-            html_list.append(html_content)
-        total_html_content = merge_html_texts(html_list)
+        # split_result = call_docx_split(
+        #     file_stream=file_content,
+        #     file_name=original_filename,
+        #     file_id=split_file_id,
+        #     had_title=1,
+        #     rm_outline_in_doc=1
+        # )
+        # # 2. 构建 eid-文件路径 映射
+        # files__ = split_result.data.get("files", [])
+        # logger.info(files__)
+        # html_list = []
+        # for file__ in files__:
+        #     html_content, temp_file_docx_ = docx_to_html(file__)
+        #     html_list.append(html_content)
+        # total_html_content = merge_html_texts(html_list)
+
+        total_html_content, temp_file_docx_ = docx_to_html(static_file_path)
         # html_content, temp_file_docx_ = docx_to_html(result["origin_file_path"])
         # 返回结果（保持原有结构）
         return unified_response(
