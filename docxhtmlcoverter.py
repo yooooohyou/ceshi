@@ -418,6 +418,68 @@ class DocxHtmlConverter:
         logger.debug(f"📐 从 DOCX 提取到 {len(size_map)} 张图片的显示尺寸")
         return size_map
 
+    @staticmethod
+    def _extract_content_width_pt(docx_path: str) -> float:
+        """
+        从 DOCX 的 sectPr 中读取页面宽度和左右边距，计算实际内容区宽度（单位 pt）。
+        单位换算：OOXML 使用 twips（1 twip = 1/20 pt）。
+        失败时返回 451.0 pt（A4 + 2.54cm 双边距的典型值）。
+        """
+        W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+        DEFAULT_PT = 451.0
+        try:
+            with zipfile.ZipFile(docx_path, 'r') as zf:
+                doc_xml = zf.read('word/document.xml').decode('utf-8')
+            root = etree.fromstring(doc_xml.encode('utf-8'))
+            sectPr = root.find(f'.//{{{W_NS}}}sectPr')
+            if sectPr is None:
+                return DEFAULT_PT
+            pgSz  = sectPr.find(f'{{{W_NS}}}pgSz')
+            pgMar = sectPr.find(f'{{{W_NS}}}pgMar')
+            if pgSz is None:
+                return DEFAULT_PT
+            page_w  = int(pgSz.get(f'{{{W_NS}}}w', 11906))
+            left    = int(pgMar.get(f'{{{W_NS}}}left',  1800)) if pgMar is not None else 1800
+            right   = int(pgMar.get(f'{{{W_NS}}}right', 1800)) if pgMar is not None else 1800
+            content = (page_w - left - right) / 20.0
+            logger.debug(f"📐 页面内容宽度：{content:.1f}pt（页宽{page_w/20:.1f}pt - 左{left/20:.1f}pt - 右{right/20:.1f}pt）")
+            return max(content, 200.0)
+        except Exception as e:
+            logger.warning(f"⚠️ 提取页面内容宽度失败：{e}，使用默认值 {DEFAULT_PT}pt")
+            return DEFAULT_PT
+
+    def _make_tables_responsive(self, html_content: str) -> str:
+        """
+        移除 Spire 导出的固定表格和单元格宽度，使表格在 HTML 中自适应 100%
+        """
+        # 1. 修复 <table> 的 style 宽度（使用负向断言，防止误删 border-width）
+        html = re.sub(
+            r'(<table\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+pt;?',
+            r'\1;',
+            html_content,
+            flags=re.IGNORECASE
+        )
+
+        # 2. 将 <table width="..."> 属性改为 100%
+        html = re.sub(
+            r'(<table\b[^>]*?)\s*\bwidth="\d+(?:\.\d+)?"',
+            r'\1',
+            html,
+            flags=re.IGNORECASE
+        )
+
+        # 3. 清理 <td> / <th> 中的死宽度限制 (同样防止误伤 border-width)
+        # 循环两遍是因为 <td> 里可能同时存在 style="..." 和 data-mce-style="..." 两个属性
+        for _ in range(2):
+            html = re.sub(
+                r'(<t[dh]\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+pt;?',
+                r'\1',
+                html,
+                flags=re.IGNORECASE
+            )
+
+        return html
+
     def _fix_html_img_sizes(self, html_content: str, size_map: dict,
                              spire_img_names: list, image_display_order: list) -> str:
         """
@@ -1289,6 +1351,46 @@ class DocxHtmlConverter:
         p.append(r)
         return p
 
+    def _sanitize_html_styles_for_import(self, html: str) -> str:
+        """
+        [针对 64% 缩放问题的专项修复]
+        1. 表格：强制 100% 宽度，消除 440pt 导致的挤压。
+        2. 图片：如果只有单维度，通过 style="width:auto; height:auto" 配合属性清除，
+           强制 Spire 走等比缩放逻辑，不触发 96->72 的二次缩放。
+        """
+        # --- 修复表格：从 439.4pt 固宽改为 100% 自适应 ---
+        html = re.sub(r'(<table[^>]*style="[^"]*)\bwidth\s*:\s*[\d.]+pt;?', r'\1width:100%;', html, flags=re.IGNORECASE)
+        html = re.sub(r'(<table[^>]*)\bwidth="\d+(?:\.\d+)?"', r'\1 width="100%"', html, flags=re.IGNORECASE)
+
+        # --- 修复图片：防止 64% 比例偏移 ---
+        def _fix_img_ratio(m):
+            tag = m.group(0)
+            style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE)
+            if not style_m:
+                return tag
+
+            style_str = style_m.group(1)
+            # 提取 style 中的宽高（pt 或 px）
+            sw_m = re.search(r'\bwidth\s*:\s*([\d.]+)(pt|px)', style_str, re.IGNORECASE)
+            sh_m = re.search(r'\bheight\s*:\s*([\d.]+)(pt|px)', style_str, re.IGNORECASE)
+
+            # 策略：如果只有宽度（如 146pt），必须显式把 height 设为 auto 并移除 HTML 属性
+            # 这样 Spire 才会根据图片原始比例计算，而不会去读那个 height="113" 的旧像素值
+            if sw_m and not sh_m:
+                tag = re.sub(r'\s+height="[^"]*"', '', tag, flags=re.IGNORECASE)  # 移除属性
+                style_str = re.sub(r'\bheight\s*:[^;]+;?', '', style_str, flags=re.IGNORECASE)
+                style_str = style_str.rstrip('; ') + "; height:auto !important;"
+
+            elif sh_m and not sw_m:
+                tag = re.sub(r'\s+width="[^"]*"', '', tag, flags=re.IGNORECASE)  # 移除属性
+                style_str = re.sub(r'\bwidth\s*:[^;]+;?', '', style_str, flags=re.IGNORECASE)
+                style_str = style_str.rstrip('; ') + "; width:auto !important;"
+
+            return re.sub(r'style="([^"]*)"', f'style="{style_str}"', tag, count=1, flags=re.IGNORECASE)
+
+        html = re.sub(r'<img\b[^>]*>', _fix_img_ratio, html, flags=re.IGNORECASE | re.DOTALL)
+        return html
+
     def _needs_chunking(self, docx_path):
         """
         【内部方法】用 python-docx 统计段落/表格数，判断是否需要分片。
@@ -1875,13 +1977,6 @@ class DocxHtmlConverter:
                 with open(html_path, 'w', encoding='utf-8') as f:
                     f.write(html_content)
 
-            logger.debug("📏 修正表格宽度...")
-            with open(html_path, 'r', encoding='utf-8') as f:
-                html_content = f.read()
-            html_content = self._fix_html_table_widths(html_content)
-            with open(html_path, 'w', encoding='utf-8') as f:
-                f.write(html_content)
-
             logger.debug(f"🎉 分片转换完成：{html_path}")
         except Exception as e:
             logger.error(f"❌ 分片转换异常：{e}")
@@ -2000,15 +2095,16 @@ class DocxHtmlConverter:
                 html_content, img_size_map, image_display_order, image_display_order
             )
 
-        # 13. 修正表格宽度（超出 A4 版心时等比缩放）
-        logger.debug("📏 修正表格宽度...")
-        html_content = self._fix_html_table_widths(html_content)
+        # ====== 新增：修正表格固定宽度，使其网页自适应 ======
+        logger.debug("📏 将表格固定宽度改为 100% 自适应...")
+        html_content = self._make_tables_responsive(html_content)
+        # ====================================================
 
-        # 14. 保存最终HTML
+        # 13. 保存最终HTML
         with open(html_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
 
-        # 15. 清理临时文件
+        # 14. 清理临时文件
         for temp_path in [spire_temp_dir, css_file_path]:
             if os.path.exists(temp_path):
                 try:
@@ -2508,6 +2604,39 @@ class DocxHtmlConverter:
     # ------------------------------------------------------------------ #
 
     @staticmethod
+    def _strip_paragraph_spacing_css(html: str) -> str:
+        """
+        HTML→DOCX 方向的段落间距预处理。
+
+        Spire 将 DOCX 导出为 HTML 时，会把段落的 before/after 间距编码为
+        <p> 标签的 margin-top / margin-bottom 内联样式。当该 HTML 被 Spire
+        再次导入为 DOCX 时，这些 CSS 值会被叠加到 Word 段落样式自带的间距上，
+        造成段前/段后间距翻倍（表现为行与行之间出现额外空白）。
+
+        解决方案：在导入前把 <p> 标签 style 属性里的
+        margin-top / margin-bottom / padding-top / padding-bottom
+        全部置零，交由 Word 样式控制间距，避免 CSS 与样式双重叠加。
+        """
+        BLOCK_RE = re.compile(r'<(p|h[1-6])\b([^>]*)>', re.IGNORECASE)
+
+        def _zero_spacing(m):
+            tag_name = m.group(1)
+            attrs    = m.group(2)
+            style_m  = re.search(r'style="([^"]*)"', attrs, re.IGNORECASE)
+            if not style_m:
+                return m.group(0)
+            style = style_m.group(1)
+            for prop in ('margin-top', 'margin-bottom', 'padding-top', 'padding-bottom'):
+                style = re.sub(
+                    rf'\b{prop}\s*:[^;]+;?', f'{prop}:0pt;',
+                    style, flags=re.IGNORECASE
+                )
+            new_attrs = attrs[:style_m.start()] + f'style="{style}"' + attrs[style_m.end():]
+            return f'<{tag_name}{new_attrs}>'
+
+        return BLOCK_RE.sub(_zero_spacing, html)
+
+    @staticmethod
     def _clean_mce_html(html: str) -> str:
         """
         清理 TinyMCE 产生的冗余标记，避免 Spire 转换时因空块级元素报错：
@@ -2544,6 +2673,9 @@ class DocxHtmlConverter:
             logger.error("❌ HTML文本为空，无法转换")
             return False
 
+        # 在处理图片 base64 之前，先修正表格宽度和图片比例意图
+        logger.debug("🧹 正在优化 HTML 表格宽度与图片比例...")
+        html_text = self._sanitize_html_styles_for_import(html_text)
         output_dir   = os.path.dirname(output_docx_path)
         os.makedirs(output_dir, exist_ok=True)
 
@@ -2553,7 +2685,7 @@ class DocxHtmlConverter:
         try:
             html_text, temp_img_dir = self._extract_base64_images(html_text, output_dir)
             html_text = self._fix_centered_images_for_import(html_text)
-            html_text = self._fix_html_img_sizes_for_import(html_text)
+            html_text = self._normalize_img_units_for_import(html_text)
 
             para_count = self._html_count_paragraphs(html_text)
             logger.debug(f"📊 HTML 段落估算：{para_count}，阈值：{self.MAX_PARAGRAPHS}")
@@ -2752,6 +2884,110 @@ class DocxHtmlConverter:
         except Exception:
             pass
         return None, None
+
+    @staticmethod
+    def _normalize_img_units_for_import(html: str) -> str:
+        """
+        HTML→DOCX 方向图片尺寸单位归一化。
+
+        核心规则：
+          CSS style 中显式设置的维度 = 用户意图的显示尺寸（以 pt 为准）。
+          HTML 属性 height/width（无单位=px）只是浏览器预布局提示，当
+          style 未设置对应维度时，不应将其当作显示尺寸强制写入。
+
+        典型问题场景（TinyMCE 生成）：
+          style="width: 146pt;"   ← 用户设定的显示宽度，单位 pt
+          height="113"             ← 原始图片像素高度，非显示高度
+          width="146pt"            ← 非标准 pt 单位属性
+
+        错误处理：把 height="113" 当作显示高度 113px=84.75pt 写入 →
+          最终 width=146pt, height=84.75pt，但图片原始高度是 2.99cm
+          (≈84.75pt)，等于按 100% 高度 + 64% 宽度显示 → 长宽比失真。
+
+        正确处理：
+          - 只处理 CSS style 中明确声明的维度；
+          - style 有 width 无 height → 只设 width，删 height 属性（高度自动等比）；
+          - style 有 height 无 width → 只设 height，删 width 属性；
+          - style 同时有两者 → 都设置，统一换算为 pt；
+          - style 什么都没有 → 不修改。
+          写入时：style 用 pt，属性用无单位整数 px（HTML 规范），两者换算一致。
+        """
+        PT_PER_PX = 72.0 / 96.0
+        PX_PER_PT = 96.0 / 72.0
+
+        def _parse_to_pt(val_str):
+            if not val_str:
+                return None
+            s = val_str.strip().lower()
+            try:
+                if s.endswith('pt'):   return float(s[:-2])
+                if s.endswith('px'):   return float(s[:-2]) * PT_PER_PX
+                if s.endswith('in'):   return float(s[:-2]) * 72.0
+                if s.endswith('cm'):   return float(s[:-2]) / 2.54 * 72.0
+                if s.endswith('mm'):   return float(s[:-2]) / 25.4 * 72.0
+                if s.endswith('%'):    return None
+                return float(s) * PT_PER_PX   # 无单位 → px → pt
+            except ValueError:
+                return None
+
+        def _process_img(m):
+            tag = m.group(0)
+
+            # ── 1. 仅从 CSS style 中提取显示尺寸（属性不参与显示尺寸决策）
+            style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE)
+            style_str = style_m.group(1) if style_m else ''
+
+            sw_m = re.search(r'\bwidth\s*:\s*([^;]+)',  style_str, re.IGNORECASE)
+            sh_m = re.search(r'\bheight\s*:\s*([^;]+)', style_str, re.IGNORECASE)
+            sw_pt = _parse_to_pt(sw_m.group(1).strip() if sw_m else None)
+            sh_pt = _parse_to_pt(sh_m.group(1).strip() if sh_m else None)
+
+            # style 里没有任何尺寸信息 → 不修改
+            if sw_pt is None and sh_pt is None:
+                return tag
+
+            # style 中的单位已全为 pt → 无需处理
+            if (sw_pt is not None and sh_pt is not None
+                    and sw_m and 'pt' in sw_m.group(1).lower()
+                    and sh_m and 'pt' in sh_m.group(1).lower()):
+                return tag
+
+            # ── 2. 重建 CSS style（只保留 style 中本来就有的维度）
+            new_style = style_str
+            new_style = re.sub(r'\bwidth\s*:[^;]+;?\s*',  '', new_style, flags=re.IGNORECASE)
+            new_style = re.sub(r'\bheight\s*:[^;]+;?\s*', '', new_style, flags=re.IGNORECASE)
+            new_style = new_style.strip().rstrip(';').strip()
+
+            size_parts = []
+            if sw_pt is not None:
+                size_parts.append(f'width:{sw_pt:.2f}pt')
+            if sh_pt is not None:
+                size_parts.append(f'height:{sh_pt:.2f}pt')
+            size_css = '; '.join(size_parts)
+            new_style = (size_css + '; ' + new_style).rstrip('; ') if new_style else size_css
+
+            # ── 3. 重建 tag（先替换 style，再删旧属性，最后追加新属性）
+            if style_m:
+                tag = re.sub(r'style="[^"]*"', f'style="{new_style}"',
+                             tag, count=1, flags=re.IGNORECASE)
+            else:
+                tag = re.sub(r'(<img\b)', rf'\1 style="{new_style}"', tag, flags=re.IGNORECASE)
+
+            tag = re.sub(r'\s+width="[^"]*"',  '', tag, flags=re.IGNORECASE)
+            tag = re.sub(r'\s+height="[^"]*"', '', tag, flags=re.IGNORECASE)
+
+            # 属性写为无单位整数 px，且只写 style 中有的维度
+            # （style 没设 height → 不写 height 属性 → Spire 自动等比缩放高度）
+            if sw_pt is not None:
+                tag = re.sub(r'(<img\b)', rf'\1 width="{round(sw_pt * PX_PER_PT)}"',
+                             tag, flags=re.IGNORECASE)
+            if sh_pt is not None:
+                tag = re.sub(r'(<img\b)', rf'\1 height="{round(sh_pt * PX_PER_PT)}"',
+                             tag, flags=re.IGNORECASE)
+
+            return tag
+
+        return re.sub(r'<img\b[^>]*>', _process_img, html, flags=re.IGNORECASE | re.DOTALL)
 
     @staticmethod
     def _fix_exif_orientation(img_bytes: bytes) -> bytes:
@@ -2997,14 +3233,14 @@ if __name__ == "__main__":
     converter = DocxHtmlConverter()
 
     # 示例1：DOCX转单文件HTML（自动判断是否需要分片）
-    input_docx = r"C:\Users\you62\Desktop\企业基本情况表-动态参考素材.docx"
+    input_docx = r"C:\Users\you62\Desktop\动态参考素材模板-9_产品支持及售后服务能力_低压电线.docx"
     output_html = r"C:\Users\you62\Desktop\index.html"
-    # html_content = converter.docx_to_single_html(input_docx, output_html)
+    html_content = converter.docx_to_single_html(input_docx, output_html)
 
-    # 示例2：HTML文本转DOCX
-    if os.path.exists(output_html):
-        with open(output_html, 'r', encoding='utf-8') as f:
-            sample_html = f.read()
-        converter.html_text_to_docx(sample_html, "output.docx")
-    else:
-        logger.debug(f"错误：未找到HTML文件 {output_html}")
+    # # 示例2：HTML文本转DOCX
+    # if os.path.exists(output_html):
+    #     with open(output_html, 'r', encoding='utf-8') as f:
+    #         sample_html = f.read()
+    #     converter.html_text_to_docx(sample_html, "output.docx")
+    # else:
+    #     logger.debug(f"错误：未找到HTML文件 {output_html}")

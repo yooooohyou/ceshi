@@ -212,13 +212,22 @@ def generate_fully_centered_patent_doc(
         set_font(run, RGBColor(255, 255, 255))
         run.bold = True
 
-    def set_border(cell, color='4472C4', sz='2'):
+    def set_border(cell, color='4472C4', sz='6'):  # 建议 sz 改为 6 (0.75磅)，2太细了容易看不清
+        tcPr = cell._element.get_or_add_tcPr()
+
+        # 1. 创建符合标准的 tcBorders 容器节点
+        tcBorders = OxmlElement('w:tcBorders')
+
+        # 2. 将四个方向的边框放进 tcBorders 容器中
         for k in ['top', 'left', 'bottom', 'right']:
             b = OxmlElement(f'w:{k}')
             b.set(qn('w:val'), 'single')
             b.set(qn('w:color'), color)
-            b.set(qn('w:sz'), sz)
-            cell._element.tcPr.append(b)
+            b.set(qn('w:sz'), str(sz))
+            tcBorders.append(b)
+
+        # 3. 最后将 tcBorders 挂载到 tcPr 下
+        tcPr.append(tcBorders)
 
     # 专利表格
     table1 = doc.add_table(rows=len(patent_data) + 1, cols=6)
@@ -368,13 +377,23 @@ def generate_car_info_doc(car_data, save_path='公司车辆信息.docx', table_t
         set_font(run, RGBColor(255, 255, 255))
         run.bold = True
 
-    def set_border(cell, color='4472C4', sz='2'):
+    def set_border(cell, color='4472C4', sz='6'):
+        tcPr = cell._element.get_or_add_tcPr()
+
+        # ✅ 核心修复 1：创建了一个专属的边框容器
+        tcBorders = OxmlElement('w:tcBorders')
+
         for k in ['top', 'left', 'bottom', 'right']:
             b = OxmlElement(f'w:{k}')
             b.set(qn('w:val'), 'single')
             b.set(qn('w:color'), color)
-            b.set(qn('w:sz'), sz)
-            cell._element.tcPr.append(b)
+            b.set(qn('w:sz'), str(sz))
+
+            # ✅ 核心修复 2：把边框塞进容器里
+            tcBorders.append(b)
+
+            # ✅ 核心修复 3：把完整的容器，塞进 tcPr 里
+        tcPr.append(tcBorders)
     # ==========================================================================
 
     # 自定义工具函数（基于指定函数扩展，保证样式统一）

@@ -1,48 +1,46 @@
 import base64
 import pathlib
-import shutil
 import time
 import urllib
-
 import aiohttp
-from fastapi import FastAPI, UploadFile, File, Form, Body, Request, HTTPException, Query
-from fastapi.responses import JSONResponse, StreamingResponse, Response
-from fastapi.exceptions import RequestValidationError
-from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
 import datetime
 import random
 import string
 import psycopg2
 import configparser
-from pathlib import Path
-
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse
 import subprocess
 import shutil
-from psycopg2.extras import RealDictCursor
-from contextlib import contextmanager
-from typing import Optional, Tuple, Union, List, Dict, Any, Literal
 import io
 import uuid
 import asyncio
-from docxautogenerator import generate_fully_centered_patent_doc, generate_report_doc, generate_car_info_doc
-from mergfile import call_docx_split,call_docx_merge, TreeItem,MergeRequest
 import json
 import requests
 import os
 import tempfile
-from urllib.parse import urlparse
 import file_resp
 import platform
 import re
+import logging
+import sys
+
+from fastapi import FastAPI, UploadFile, File, Form, Body, Request, HTTPException, Query, BackgroundTasks
+from fastapi.responses import JSONResponse, StreamingResponse, Response, FileResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from pathlib import Path
+
+from psycopg2.extras import RealDictCursor
+from contextlib import contextmanager
+from typing import Optional, Tuple, Union, List, Dict, Any, Literal
+from docxautogenerator import generate_fully_centered_patent_doc, generate_report_doc, generate_car_info_doc
+from mergfile import call_docx_split,call_docx_merge, TreeItem,MergeRequest
+from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from PIL import Image
 from docxhtmlcoverter import DocxHtmlConverter
-import logging
 from logging.handlers import RotatingFileHandler
-import sys
+
 # ====================== 配置项 ======================
 def setup_logging():
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s"
@@ -720,7 +718,6 @@ def convert_html_to_docx(html_content: str) -> Tuple[bool, Union[io.BytesIO, str
         with open(temp_docx_path, 'rb') as f:
             docx_stream.write(f.read())
         docx_stream.seek(0)
-
 
         # 删除临时文件
         # try:
