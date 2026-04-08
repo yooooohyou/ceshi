@@ -2119,7 +2119,7 @@ async def route_docx2html_marge(
             had_title=1,
             rm_outline_in_doc=1
         )
-        # 2. 构建 eid-文件路径 映射
+        # # 2. 构建 eid-文件路径 映射
         files__ = split_result.data.get("files", [])
         logger.info(files__)
         html_list = []
@@ -2127,6 +2127,8 @@ async def route_docx2html_marge(
             html_content, temp_file_docx_ = docx_to_html(file__)
             html_list.append(html_content)
         total_html_content = merge_html_texts(html_list)
+
+        # total_html_content, temp_file_docx_ = docx_to_html(abs_file_path)
         # html_content, temp_file_docx_ = docx_to_html(result["origin_file_path"])
         # 返回结果（保持原有结构）
         return unified_response(
@@ -3647,7 +3649,7 @@ async def generate_default_patent_doc_vehicle_generator(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.get("/test-use-config", summary="4测试在业务逻辑中使用配置")
+@app.get("/test-use-config", summary="1测试在业务逻辑中使用配置")
 async def test_use_config():
     """
     示例：在实际业务逻辑中读取并使用上传路径配置

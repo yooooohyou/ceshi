@@ -17,6 +17,7 @@ import copy
 from lxml import etree
 
 
+
 class DocxHtmlConverter:
     """
     DOCX与HTML互转工具类
@@ -46,6 +47,116 @@ class DocxHtmlConverter:
     # ------------------------------------------------------------------ #
     #  路径工具                                                             #
     # ------------------------------------------------------------------ #
+
+    def _apply_style_and_preserve_format(self, para, target_builtin_style):
+        """
+        [私有方法] 自定义的“无损 ApplyStyle”函数。
+        将段落设置为标准标题，同时保留原有文字的字体、字号。
+        """
+        # 1. 备份该段落中每个文本块 (TextRange) 的格式
+        format_backup = []
+
+        # 遍历段落里的所有子对象
+        for i in range(para.ChildObjects.Count):
+            obj = para.ChildObjects.get_Item(i)
+            # 如果是文字块，提取它的字体、字号、颜色等
+            if isinstance(obj, TextRange):
+                backup = {
+                    "font_name": obj.CharacterFormat.FontName,
+                    "font_size": obj.CharacterFormat.FontSize,
+                    "text_color": obj.CharacterFormat.TextColor,
+                    "is_bold": obj.CharacterFormat.Bold
+                }
+                format_backup.append((obj, backup))
+
+        # 2. 调用原生的 ApplyStyle
+        para.ApplyStyle(target_builtin_style)
+
+        # 3. 将备份的格式重新应用回每个文本块
+        for obj, backup in format_backup:
+            if backup["font_name"]:
+                obj.CharacterFormat.FontName = backup["font_name"]
+            if backup["font_size"] and backup["font_size"] > 0:
+                obj.CharacterFormat.FontSize = backup["font_size"]
+            # obj.CharacterFormat.TextColor = backup["text_color"]
+            # obj.CharacterFormat.Bold = backup["is_bold"]
+
+    def _fix_underline_span_width(self, html_content: str) -> str:
+        """
+        [私有方法] 修复下划线变长的问题：
+        清理带有固定 width 和 display: inline-block 的下划线 span，
+        让其仅依靠内部的 &nbsp; 或空格自然撑开宽度，避免渲染引擎叠加计算。
+        """
+
+        def replacer(m):
+            span_tag = m.group(1)
+            content = m.group(2)
+            span_close = m.group(3)
+
+            # 特征检查：
+            # 1. 包含下划线
+            # 2. 包含 width 宽度限制
+            # 3. 内部确实有实体内容（如 &nbsp; 或文本），如果是纯空 span 则不能删 width
+            is_underline = 'underline' in span_tag.lower()
+            has_width = 'width' in span_tag.lower()
+            has_content = bool(content.strip().replace('&nbsp;', '')) or '&nbsp;' in content
+
+            if is_underline and has_width and has_content:
+                # 同时处理 style 和 data-mce-style (兼容 TinyMCE)
+                for attr_name in ['style', 'data-mce-style']:
+                    attr_m = re.search(rf'{attr_name}="([^"]*)"', span_tag, re.IGNORECASE)
+                    if attr_m:
+                        s = attr_m.group(1)
+
+                        # 剔除导致变长的物理维度属性
+                        s = re.sub(r'\bwidth\s*:\s*[\d.]+[a-zA-Z%]+\s*;?', '', s, flags=re.IGNORECASE)
+                        s = re.sub(r'\bdisplay\s*:\s*inline-block\s*;?', '', s, flags=re.IGNORECASE)
+                        s = re.sub(r'\btext-indent\s*:\s*[\d.]+[a-zA-Z%]+\s*;?', '', s, flags=re.IGNORECASE)
+
+                        # 拼接回标签中
+                        new_attr = f'{attr_name}="{s.strip()}"'
+                        span_tag = span_tag[:attr_m.start()] + new_attr + span_tag[attr_m.end():]
+
+            return span_tag + content + span_close
+
+        # 使用 DOTALL 匹配 HTML 中的 span 块
+        return re.sub(r'(<span\b[^>]*>)(.*?)(</span\s*>)', replacer, html_content, flags=re.IGNORECASE | re.DOTALL)
+
+    def _clean_docx_headings_before_convert(self, document):
+        """
+        [私有方法] 在导出 HTML 前，遍历 DOCX 文档。
+        将变体样式强制重置为标准内置标题样式（全面支持 1-9 级）。
+        """
+        heading_mapping = [
+            (OutlineLevel.Level1, BuiltinStyle.Heading1, 1),
+            (OutlineLevel.Level2, BuiltinStyle.Heading2, 2),
+            (OutlineLevel.Level3, BuiltinStyle.Heading3, 3),
+            (OutlineLevel.Level4, BuiltinStyle.Heading4, 4),
+            (OutlineLevel.Level5, BuiltinStyle.Heading5, 5),
+            (OutlineLevel.Level6, BuiltinStyle.Heading6, 6),
+            (OutlineLevel.Level7, BuiltinStyle.Heading7, 7),
+            (OutlineLevel.Level8, BuiltinStyle.Heading8, 8),
+            (OutlineLevel.Level9, BuiltinStyle.Heading9, 9),
+        ]
+
+        # 遍历文档的所有节 (Section)
+        for i in range(document.Sections.Count):
+            section = document.Sections.get_Item(i)
+
+            # 遍历节内的所有段落
+            for j in range(section.Body.Paragraphs.Count):
+                para = section.Body.Paragraphs.get_Item(j)
+                style_name = para.StyleName if para.StyleName else ""
+
+                # 检查当前段落是否属于 1-9 级标题
+                for outline_lvl, builtin_style, level_num in heading_mapping:
+                    pattern = fr'(标题|Heading)\s*{level_num}'
+
+                    if (para.Format.OutlineLevel == outline_lvl or
+                            re.search(pattern, style_name, re.IGNORECASE)):
+                        # 调用类内部的私有方法：注意这里加了 self.
+                        self._apply_style_and_preserve_format(para, builtin_style)
+                        break
 
     def _normalize_path(self, path):
         """【内部方法】统一路径格式并转为绝对路径"""
@@ -2047,6 +2158,8 @@ class DocxHtmlConverter:
             document.HtmlExportOptions.ImageEmbedded = False
             document.HtmlExportOptions.ImagesPath = spire_img_dir
             document.HtmlExportOptions.ImageFormat = self.default_image_format
+            # 标题清理格式
+            self._clean_docx_headings_before_convert(document)
             document.SaveToFile(html_path, FileFormat.Html)
         except Exception as e:
             logger.error(f"❌ Spire转换HTML失败：{e}")
@@ -2099,6 +2212,7 @@ class DocxHtmlConverter:
         logger.debug("📏 将表格固定宽度改为 100% 自适应...")
         html_content = self._make_tables_responsive(html_content)
         # ====================================================
+        html_content = self._fix_underline_span_width(html_content)
 
         # 13. 保存最终HTML
         with open(html_path, 'w', encoding='utf-8') as f:
@@ -3233,11 +3347,11 @@ if __name__ == "__main__":
     converter = DocxHtmlConverter()
 
     # 示例1：DOCX转单文件HTML（自动判断是否需要分片）
-    input_docx = r"C:\Users\you62\Desktop\动态参考素材模板-9_产品支持及售后服务能力_低压电线.docx"
+    input_docx = r"C:\Users\you62\Desktop\测试.docx"
     output_html = r"C:\Users\you62\Desktop\index.html"
     html_content = converter.docx_to_single_html(input_docx, output_html)
 
-    # # 示例2：HTML文本转DOCX
+    # 示例2：HTML文本转DOCX
     # if os.path.exists(output_html):
     #     with open(output_html, 'r', encoding='utf-8') as f:
     #         sample_html = f.read()
