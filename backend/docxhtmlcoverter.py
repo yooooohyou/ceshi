@@ -48,107 +48,6 @@ class DocxHtmlConverter:
     #  路径工具                                                             #
     # ------------------------------------------------------------------ #
 
-    def _make_tables_responsive_recursive(self, element, max_width_pt=450.0):
-        """
-        [私有方法] 递归遍历 DOM 节点，在转 HTML 前判断表格宽度。
-        只有当表格宽度超过 A4 阈值时，才强制重新计算列宽。
-        """
-        # 如果当前元素是表格
-        if element.DocumentObjectType == DocumentObjectType.Table:
-            table = element
-            try:
-                # 🌟 核心判断：获取表格当前物理宽度
-                # Spire.Doc 会根据文档原始定义计算出 table.Width
-                current_width = table.Width
-
-                # 如果表格宽度超过了设定的安全阈值 (A4版心)
-                if current_width > max_width_pt:
-                    logger.debug(
-                        f"📏 发现超宽表格 (宽:{current_width:.1f}pt > {max_width_pt}pt)，触发强制重新计算列宽...")
-
-                    # 使用方案一：强制100% + 根据窗口自适应
-                    table.PreferredWidth = PreferredWidth(WidthType.Percentage, 100)
-                    table.AutoFit(AutoFitBehaviorType.AutoFitToWindow)
-                else:
-                    logger.debug(f"   ✓ 表格宽度正常 ({current_width:.1f}pt)，跳过自适应处理。")
-
-            except Exception as e:
-                logger.warning(f"⚠️ 无法判断或调整表格属性: {e}")
-
-            # 表格内部可能嵌套了更深层的表格，递归检查单元格 (Cell)
-            for r in range(table.Rows.Count):
-                row = table.Rows.get_Item(r)
-                for c in range(row.Cells.Count):
-                    cell = row.Cells.get_Item(c)
-                    self._make_tables_responsive_recursive(cell, max_width_pt)
-
-        # 如果当前元素包含子对象（例如 Section.Body），则继续往下找
-        elif hasattr(element, 'ChildObjects'):
-            for i in range(element.ChildObjects.Count):
-                child = element.ChildObjects.get_Item(i)
-                self._make_tables_responsive_recursive(child, max_width_pt)
-
-    def _force_a4_and_scale_elements(self, document):
-        """
-        [私有方法] 在转换为 HTML 之前，强制将整个 DOCX 文档的所有页面设置为 A4，
-        并将超出边界的表格和图片等比缩小，从源头上杜绝撑爆页面的问题。
-        """
-        # A4 纸的安全内容宽度（版心宽度：A4总宽减去左右约 3.18cm 的默认边距）
-        A4_SAFE_WIDTH_PT = 450.0
-
-        # 遍历文档的所有节 (Section，不同节可能设置了不同的纸张大小，比如某一节被设成了 A3)
-        for i in range(document.Sections.Count):
-            section = document.Sections.get_Item(i)
-
-            # 1. 强制将纸张大小设置为标准的 A4
-            try:
-                section.PageSetup.PageSize = PageSize.A4()
-            except Exception as e:
-                logger.warning(f"⚠️ 无法设置 A4 纸张，保留原尺寸进行元素缩放: {e}")
-
-            # 2. 处理直接在节体 (Body) 下的表格
-            for j in range(section.Body.Tables.Count):
-                table = section.Body.Tables.get_Item(j)
-                # 🌟 杀手锏：调用 Word 原生的“根据窗口自动调整”功能
-                # 这会强行清除 A3 遗留的绝对宽度，让表格100%适应当前 A4 的页边距
-                table.PreferredWidth = PreferredWidth(WidthType.Percentage, 100)
-
-                # 配合“根据窗口自动调整”使用，彻底打断 A3 遗留的固定尺寸
-                self._make_tables_responsive_recursive(section.Body)
-
-                # --- 步骤 2: 递归处理所有图片 ---
-                self._scale_pictures_in_element(section.Body, A4_SAFE_WIDTH_PT)
-
-    def _scale_pictures_in_element(self, element, max_width_pt):
-        """
-        [私有方法] 递归遍历 DOCX 节点，将物理尺寸超宽的图片等比例缩小
-        """
-        for i in range(element.ChildObjects.Count):
-            obj = element.ChildObjects.get_Item(i)
-
-            # 如果是段落，检查里面有没有图片
-            if obj.DocumentObjectType == DocumentObjectType.Paragraph:
-                para = obj
-                for j in range(para.ChildObjects.Count):
-                    child = para.ChildObjects.get_Item(j)
-
-                    if child.DocumentObjectType == DocumentObjectType.Picture:
-                        pic = child
-                        # 如果图片宽度超过 A4 版心限制，则进行等比缩小
-                        if pic.Width > max_width_pt:
-                            ratio = max_width_pt / pic.Width
-                            pic.Width = max_width_pt
-                            pic.Height = pic.Height * ratio
-
-            # 如果是表格，需要递归进入每一个单元格 (Cell) 去找图片
-            elif obj.DocumentObjectType == DocumentObjectType.Table:
-                table = obj
-                for r in range(table.Rows.Count):
-                    row = table.Rows.get_Item(r)
-                    for c in range(row.Cells.Count):
-                        cell = row.Cells.get_Item(c)
-                        self._scale_pictures_in_element(cell, max_width_pt)
-
     def _apply_style_and_preserve_format(self, para, target_builtin_style):
         """
         [私有方法] 自定义的“无损 ApplyStyle”函数。
@@ -258,7 +157,6 @@ class DocxHtmlConverter:
                         # 调用类内部的私有方法：注意这里加了 self.
                         self._apply_style_and_preserve_format(para, builtin_style)
                         break
-
 
     def _normalize_path(self, path):
         """【内部方法】统一路径格式并转为绝对路径"""
@@ -1966,8 +1864,6 @@ class DocxHtmlConverter:
             document.HtmlExportOptions.ImageEmbedded = False
             document.HtmlExportOptions.ImagesPath = spire_img_dir
             document.HtmlExportOptions.ImageFormat = self.default_image_format
-            self._clean_docx_headings_before_convert(document)
-            self._force_a4_and_scale_elements(document)
             document.SaveToFile(html_path, FileFormat.Html)
         except Exception as e:
             logger.error(f"❌ Spire转换HTML失败：{e}")
@@ -2264,7 +2160,6 @@ class DocxHtmlConverter:
             document.HtmlExportOptions.ImageFormat = self.default_image_format
             # 标题清理格式
             self._clean_docx_headings_before_convert(document)
-            self._force_a4_and_scale_elements(document)
             document.SaveToFile(html_path, FileFormat.Html)
         except Exception as e:
             logger.error(f"❌ Spire转换HTML失败：{e}")
