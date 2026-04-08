@@ -48,71 +48,6 @@ class DocxHtmlConverter:
     #  路径工具                                                             #
     # ------------------------------------------------------------------ #
 
-    def _scale_oversized_sections(self, document):
-        """
-        [新增私有方法] 在转换 HTML 前，检测并缩放超过 A4 宽度的页面内容
-        """
-        # A4 标准宽度约为 595.3 pt (210mm)
-        A4_WIDTH_LIMIT = 595.3
-
-        for i in range(document.Sections.Count):
-            section = document.Sections.get_Item(i)
-            page_setup = section.PageSetup
-            actual_width = page_setup.PageSize.Width
-
-            # 1. 判断是否超宽
-            if actual_width > A4_WIDTH_LIMIT:
-                # 排除边距后的有效内容宽度
-                content_width = actual_width - page_setup.Margins.Left - page_setup.Margins.Right
-                target_content_width = A4_WIDTH_LIMIT - page_setup.Margins.Left - page_setup.Margins.Right
-                scale_ratio = target_content_width / content_width
-
-                logger.info(f"📏 检测到超宽页面 ({actual_width}pt)，应用缩放比例: {scale_ratio:.2f}")
-
-                # 2. 遍历节内的所有元素
-                for j in range(section.Body.ChildObjects.Count):
-                    obj = section.Body.ChildObjects.get_Item(j)
-
-                    # --- 处理表格 ---
-                    if isinstance(obj, Table):
-                        # 缩放表格整体宽度
-                        if obj.PreferredWidth.Type == WidthType.Percentage:
-                            pass  # 百分比布局通常不需要缩放
-                        else:
-                            current_tbl_w = obj.PreferredWidth.Value
-                            obj.PreferredWidth = PreferredWidth(WidthType.Point, current_tbl_w * scale_ratio)
-
-                        # 缩放每一行每一格
-                        for row_idx in range(obj.Rows.Count):
-                            row = obj.Rows.get_Item(row_idx)
-                            for cell_idx in range(row.Cells.Count):
-                                cell = row.Cells.get_Item(cell_idx)
-                                cell_w = cell.Width
-                                cell.SetWidth(cell_w * scale_ratio, CellWidthType.Point)
-
-                    # --- 处理段落（图片和文字） ---
-                    elif isinstance(obj, Paragraph):
-                        # a. 缩放文字大小 (防止折行过滥)
-                        for k in range(obj.ChildObjects.Count):
-                            child = obj.ChildObjects.get_Item(k)
-                            if isinstance(child, TextRange):
-                                original_size = child.CharacterFormat.FontSize
-                                child.CharacterFormat.FontSize = original_size * scale_ratio
-
-                            # b. 缩放图片
-                            elif isinstance(child, DocPicture):
-                                child.Width = child.Width * scale_ratio
-                                child.Height = child.Height * scale_ratio
-
-                # 3. 页面处理：如果缩放后依然很窄，或者用户需要，将文字设为竖向
-                # 注意：这会改变整个节的排版
-                if scale_ratio < 0.6:  # 如果宽度被压缩了 40% 以上，建议文字竖排
-                    section.TextDirection = TextDirection.RightToLeftVertical
-                    logger.debug("🔄 缩放比例过大，已自动将该页文字设为竖向显示")
-
-                # 最后将页面宽度强行改为 A4 宽度，确保生成的 HTML 容器不溢出
-                page_setup.PageSize = SizeF(A4_WIDTH_LIMIT, page_setup.PageSize.Height)
-
     def _apply_style_and_preserve_format(self, para, target_builtin_style):
         """
         [私有方法] 自定义的“无损 ApplyStyle”函数。
@@ -1929,8 +1864,6 @@ class DocxHtmlConverter:
             document.HtmlExportOptions.ImageEmbedded = False
             document.HtmlExportOptions.ImagesPath = spire_img_dir
             document.HtmlExportOptions.ImageFormat = self.default_image_format
-            self._clean_docx_headings_before_convert(document)
-            self._scale_oversized_sections(document)
             document.SaveToFile(html_path, FileFormat.Html)
         except Exception as e:
             logger.error(f"❌ Spire转换HTML失败：{e}")
@@ -2227,7 +2160,6 @@ class DocxHtmlConverter:
             document.HtmlExportOptions.ImageFormat = self.default_image_format
             # 标题清理格式
             self._clean_docx_headings_before_convert(document)
-            self._scale_oversized_sections(document)
             document.SaveToFile(html_path, FileFormat.Html)
         except Exception as e:
             logger.error(f"❌ Spire转换HTML失败：{e}")
@@ -2579,8 +2511,6 @@ class DocxHtmlConverter:
 
             document = Document()
             document.LoadFromFile(temp_html_path, FileFormat.Html, self.html_validation_type)
-            self._clean_docx_headings_before_convert(document)
-            self._scale_oversized_sections(document)
             document.SaveToFile(output_path, FileFormat.Docx2016)
             return True
 
