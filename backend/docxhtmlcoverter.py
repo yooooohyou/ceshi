@@ -3310,9 +3310,9 @@ if __name__ == "__main__":
     html_content = converter.docx_to_single_html(input_docx, output_html)
 
     # 示例2：HTML文本转DOCX
-    if os.path.exists(output_html):
-        with open(output_html, 'r', encoding='utf-8') as f:
-            sample_html = f.read()
-        converter.html_text_to_docx(sample_html, "output.docx")
-    else:
-        logger.debug(f"错误：未找到HTML文件 {output_html}")
+    # if os.path.exists(output_html):
+    #     with open(output_html, 'r', encoding='utf-8') as f:
+    #         sample_html = f.read()
+    #     converter.html_text_to_docx(sample_html, "output.docx")
+    # else:
+    #     logger.debug(f"错误：未找到HTML文件 {output_html}")
