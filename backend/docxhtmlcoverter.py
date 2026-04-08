@@ -259,6 +259,7 @@ class DocxHtmlConverter:
                         self._apply_style_and_preserve_format(para, builtin_style)
                         break
 
+
     def _normalize_path(self, path):
         """【内部方法】统一路径格式并转为绝对路径"""
         if not path:
