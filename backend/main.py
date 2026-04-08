@@ -3647,7 +3647,7 @@ async def generate_default_patent_doc_vehicle_generator(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.get("/test-use-config", summary="4测试在业务逻辑中使用配置")
+@app.get("/test-use-config", summary="1测试在业务逻辑中使用配置")
 async def test_use_config():
     """
     示例：在实际业务逻辑中读取并使用上传路径配置
