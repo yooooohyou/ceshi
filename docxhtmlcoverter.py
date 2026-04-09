@@ -561,30 +561,46 @@ class DocxHtmlConverter:
 
     def _make_tables_responsive(self, html_content: str) -> str:
         """
-        移除 Spire 导出的固定表格和单元格宽度，使表格在 HTML 中自适应 100%
+        终极表格修正方案：完美适配 TinyMCE 独立列拖拽，互不影响。
+        1. 移除 <table> 总宽度，解除锁定。
+        2. 剔除 colspan 合并单元格的宽度干扰。
+        3. 真实列宽转为绝对像素 px。
         """
-        # 1. 修复 <table> 的 style 宽度（使用负向断言，防止误删 border-width）
+        # 1. 移除 <table> 上的任何 width (包括 style 和 属性)，并注入固定布局
         html = re.sub(
-            r'(<table\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+pt;?',
-            r'\1;',
+            r'(<table\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+[a-zA-Z%]+;?',
+            r'\1 table-layout: fixed; word-break: break-all;',
             html_content,
             flags=re.IGNORECASE
         )
-
-        # 2. 将 <table width="..."> 属性改为 100%
         html = re.sub(
-            r'(<table\b[^>]*?)\s*\bwidth="\d+(?:\.\d+)?"',
+            r'(<table\b[^>]*?)\s*\bwidth="\d+(?:\.\d+)?%?"',
             r'\1',
             html,
             flags=re.IGNORECASE
         )
 
-        # 3. 清理 <td> / <th> 中的死宽度限制 (同样防止误伤 border-width)
-        # 循环两遍是因为 <td> 里可能同时存在 style="..." 和 data-mce-style="..." 两个属性
+        # 2. 剔除所有包含 colspan 的 <td> 的 width 属性
+        # （这是防止 TinyMCE 把带有 colspan 的首行当做计算网格基准导致崩溃重置的核心）
         for _ in range(2):
             html = re.sub(
-                r'(<t[dh]\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+pt;?',
+                r'(<t[dh]\b[^>]*?colspan="\d+"[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+[a-zA-Z%]+;?',
                 r'\1',
+                html,
+                flags=re.IGNORECASE
+            )
+
+        # 3. 将正常的 <td> / <th> 中的 pt 宽度转换为绝对像素 px
+        def pt_to_px(match):
+            prefix = match.group(1)
+            pt_val = float(match.group(2))
+            px_val = round(pt_val * 1.3333) # 1pt = 1.3333px
+            return f"{prefix}width: {px_val}px;"
+
+        for _ in range(2):
+            html = re.sub(
+                r'(<t[dh]\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*([\d.]+)pt;?',
+                pt_to_px,
                 html,
                 flags=re.IGNORECASE
             )
@@ -1897,6 +1913,20 @@ class DocxHtmlConverter:
         if not chunk_html_paths:
             return
 
+        # 预收集 chunk 1+ 的 CSS，合并到第一个 chunk 的 <head> 中
+        extra_css_blocks = []
+        for extra_path in chunk_html_paths[1:]:
+            try:
+                with open(extra_path, 'r', encoding='utf-8') as ef:
+                    extra_content = ef.read()
+                for style_m in re.finditer(r'<style[^>]*>(.*?)</style>', extra_content,
+                                           re.DOTALL | re.IGNORECASE):
+                    css = style_m.group(1).strip()
+                    if css:
+                        extra_css_blocks.append(css)
+            except Exception:
+                pass
+
         marker_re = re.compile(
             r'<p[^>]*>\s*<span[^>]*>TABLE_SPLIT_MARKER::([a-f0-9]{8})</span>\s*</p>',
             re.IGNORECASE | re.DOTALL
@@ -1963,7 +1993,11 @@ class DocxHtmlConverter:
                 if file_idx == 0:
                     head_m = re.search(r'^(.*?<body[^>]*>)', content, re.DOTALL | re.IGNORECASE)
                     if head_m:
-                        out_f.write(head_m.group(1) + '\n')
+                        head_part = head_m.group(1)
+                        if extra_css_blocks:
+                            merged = '<style type="text/css">\n' + '\n'.join(extra_css_blocks) + '\n</style>\n'
+                            head_part = head_part.replace('</head>', merged + '</head>')
+                        out_f.write(head_part + '\n')
 
                 body_m = re.search(r'<body[^>]*>(.*?)</body>', content, re.DOTALL | re.IGNORECASE)
                 if not body_m:
@@ -2076,17 +2110,23 @@ class DocxHtmlConverter:
             logger.debug("🖼️ 开始统一内嵌图片（二进制精确匹配）...")
             self._embed_images_to_html(html_path, image_display_order, original_img_dir)
 
+            with open(html_path, 'r', encoding='utf-8') as f:
+                html_content = f.read()
+
             if img_size_map:
                 logger.debug("📐 修正图片显示尺寸...")
-                with open(html_path, 'r', encoding='utf-8') as f:
-                    html_content = f.read()
                 html_content = self._fix_html_img_sizes(
                     html_content, img_size_map,
                     image_display_order,
                     image_display_order
                 )
-                with open(html_path, 'w', encoding='utf-8') as f:
-                    f.write(html_content)
+
+            logger.debug("📏 将表格固定宽度改为 100% 自适应...")
+            html_content = self._make_tables_responsive(html_content)
+            html_content = self._fix_underline_span_width(html_content)
+
+            with open(html_path, 'w', encoding='utf-8') as f:
+                f.write(html_content)
 
             logger.debug(f"🎉 分片转换完成：{html_path}")
         except Exception as e:
@@ -2194,7 +2234,6 @@ class DocxHtmlConverter:
 
         # 10. 【修复核心】二进制精确匹配内嵌图片
         logger.debug("🖼️ 内嵌图片（二进制精确匹配）...")
-        actual_spire_img_dir = self._find_actual_img_dir(spire_img_dir)
         self._embed_images_to_html(html_path, image_display_order, original_img_dir)
 
         # 11. 重新读取（_embed_images_to_html 已写回文件）
@@ -2789,7 +2828,7 @@ class DocxHtmlConverter:
 
         # 在处理图片 base64 之前，先修正表格宽度和图片比例意图
         logger.debug("🧹 正在优化 HTML 表格宽度与图片比例...")
-        html_text = self._sanitize_html_styles_for_import(html_text)
+        # html_text = self._sanitize_html_styles_for_import(html_text)
         output_dir   = os.path.dirname(output_docx_path)
         os.makedirs(output_dir, exist_ok=True)
 
