@@ -2812,7 +2812,7 @@ class DocxHtmlConverter:
 
         # 在处理图片 base64 之前，先修正表格宽度和图片比例意图
         logger.debug("🧹 正在优化 HTML 表格宽度与图片比例...")
-        html_text = self._sanitize_html_styles_for_import(html_text)
+        # html_text = self._sanitize_html_styles_for_import(html_text)
         output_dir   = os.path.dirname(output_docx_path)
         os.makedirs(output_dir, exist_ok=True)
 
