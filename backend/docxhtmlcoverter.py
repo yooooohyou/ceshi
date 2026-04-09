@@ -1897,6 +1897,20 @@ class DocxHtmlConverter:
         if not chunk_html_paths:
             return
 
+        # 预收集 chunk 1+ 的 CSS，合并到第一个 chunk 的 <head> 中
+        extra_css_blocks = []
+        for extra_path in chunk_html_paths[1:]:
+            try:
+                with open(extra_path, 'r', encoding='utf-8') as ef:
+                    extra_content = ef.read()
+                for style_m in re.finditer(r'<style[^>]*>(.*?)</style>', extra_content,
+                                           re.DOTALL | re.IGNORECASE):
+                    css = style_m.group(1).strip()
+                    if css:
+                        extra_css_blocks.append(css)
+            except Exception:
+                pass
+
         marker_re = re.compile(
             r'<p[^>]*>\s*<span[^>]*>TABLE_SPLIT_MARKER::([a-f0-9]{8})</span>\s*</p>',
             re.IGNORECASE | re.DOTALL
@@ -1963,7 +1977,11 @@ class DocxHtmlConverter:
                 if file_idx == 0:
                     head_m = re.search(r'^(.*?<body[^>]*>)', content, re.DOTALL | re.IGNORECASE)
                     if head_m:
-                        out_f.write(head_m.group(1) + '\n')
+                        head_part = head_m.group(1)
+                        if extra_css_blocks:
+                            merged = '<style type="text/css">\n' + '\n'.join(extra_css_blocks) + '\n</style>\n'
+                            head_part = head_part.replace('</head>', merged + '</head>')
+                        out_f.write(head_part + '\n')
 
                 body_m = re.search(r'<body[^>]*>(.*?)</body>', content, re.DOTALL | re.IGNORECASE)
                 if not body_m:
@@ -2076,17 +2094,23 @@ class DocxHtmlConverter:
             logger.debug("🖼️ 开始统一内嵌图片（二进制精确匹配）...")
             self._embed_images_to_html(html_path, image_display_order, original_img_dir)
 
+            with open(html_path, 'r', encoding='utf-8') as f:
+                html_content = f.read()
+
             if img_size_map:
                 logger.debug("📐 修正图片显示尺寸...")
-                with open(html_path, 'r', encoding='utf-8') as f:
-                    html_content = f.read()
                 html_content = self._fix_html_img_sizes(
                     html_content, img_size_map,
                     image_display_order,
                     image_display_order
                 )
-                with open(html_path, 'w', encoding='utf-8') as f:
-                    f.write(html_content)
+
+            logger.debug("📏 将表格固定宽度改为 100% 自适应...")
+            html_content = self._make_tables_responsive(html_content)
+            html_content = self._fix_underline_span_width(html_content)
+
+            with open(html_path, 'w', encoding='utf-8') as f:
+                f.write(html_content)
 
             logger.debug(f"🎉 分片转换完成：{html_path}")
         except Exception as e:
@@ -2194,7 +2218,6 @@ class DocxHtmlConverter:
 
         # 10. 【修复核心】二进制精确匹配内嵌图片
         logger.debug("🖼️ 内嵌图片（二进制精确匹配）...")
-        actual_spire_img_dir = self._find_actual_img_dir(spire_img_dir)
         self._embed_images_to_html(html_path, image_display_order, original_img_dir)
 
         # 11. 重新读取（_embed_images_to_html 已写回文件）
