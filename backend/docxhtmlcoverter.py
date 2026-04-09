@@ -561,12 +561,13 @@ class DocxHtmlConverter:
 
     def _make_tables_responsive(self, html_content: str) -> str:
         """
-        移除 Spire 导出的固定表格和单元格宽度，使表格在 HTML 中自适应 100%
+        移除固定宽度，将表格和单元格的 pt 宽度等比转换为 % 百分比。
+        完美兼容 TinyMCE 的拖拽缩放，保持原有列宽比例不变。
         """
-        # 1. 修复 <table> 的 style 宽度（使用负向断言，防止误删 border-width）
+        # 1. 修复 <table> 的 style 宽度为 100%
         html = re.sub(
             r'(<table\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+pt;?',
-            r'\1 table-layout:fixed;',
+            r'\1width: 100%;',
             html_content,
             flags=re.IGNORECASE
         )
@@ -574,20 +575,28 @@ class DocxHtmlConverter:
         # 2. 将 <table width="..."> 属性改为 100%
         html = re.sub(
             r'(<table\b[^>]*?)\s*\bwidth="\d+(?:\.\d+)?"',
-            r'\1',
+            r'\1 width="100%"',
             html,
             flags=re.IGNORECASE
         )
 
-        # 3. 清理 <td> / <th> 中的死宽度限制 (同样防止误伤 border-width)
-        # 循环两遍是因为 <td> 里可能同时存在 style="..." 和 data-mce-style="..." 两个属性
-        # for _ in range(2):
-        #     html = re.sub(
-        #         r'(<t[dh]\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+pt;?',
-        #         r'\1',
-        #         html,
-        #         flags=re.IGNORECASE
-        #     )
+        # 3. 将 <td> / <th> 中的固定 pt 宽度转换为 % 百分比
+        def pt_to_percent(match):
+            prefix = match.group(1)  # 匹配到的前缀，比如: <td style="...
+            pt_val = float(match.group(2))  # 提取出的 pt 数值，比如: 26.5
+
+            # 以 A4 版心 440pt 为基准换算为百分比（保留两位小数，最大不超过 100%）
+            percent = min(round((pt_val / 440.0) * 100, 2), 100.0)
+            return f"{prefix}width: {percent}%;"
+
+        # 循环两遍以同时处理 style="..." 和 data-mce-style="..."
+        for _ in range(2):
+            html = re.sub(
+                r'(<t[dh]\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*([\d.]+)pt;?',
+                pt_to_percent,
+                html,
+                flags=re.IGNORECASE
+            )
 
         return html
 
