@@ -561,13 +561,12 @@ class DocxHtmlConverter:
 
     def _make_tables_responsive(self, html_content: str) -> str:
         """
-        移除固定宽度，将表格和单元格的 pt 宽度转换为 px 像素。
-        这是兼容 TinyMCE 拖拽缩放的最稳定方案，避免被 JS 插件强行均分。
+        移除 Spire 导出的固定表格和单元格宽度，使表格在 HTML 中自适应 100%
         """
-        # 1. 修复 <table> 的 style，强制设为 100% 并锁定布局
+        # 1. 修复 <table> 的 style 宽度（使用负向断言，防止误删 border-width）
         html = re.sub(
             r'(<table\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+pt;?',
-            r'\1width: 100%; table-layout: fixed; word-break: break-all;',
+            r'\1;',
             html_content,
             flags=re.IGNORECASE
         )
@@ -575,28 +574,20 @@ class DocxHtmlConverter:
         # 2. 将 <table width="..."> 属性改为 100%
         html = re.sub(
             r'(<table\b[^>]*?)\s*\bwidth="\d+(?:\.\d+)?"',
-            r'\1 width="100%"',
+            r'\1',
             html,
             flags=re.IGNORECASE
         )
 
-        # 3. 将 <td> / <th> 中的固定 pt 宽度换算为标准的 px 像素
-        def pt_to_px(match):
-            prefix = match.group(1)  # 匹配到的前缀，比如: <td style="...
-            pt_val = float(match.group(2))  # 提取出的 pt 数值，比如: 26.5
-
-            # 标准换算：1 pt = 1.3333 px (在 96 DPI 下)
-            px_val = round(pt_val * 1.3333)
-            return f"{prefix}width: {px_val}px;"
-
-        # 循环两遍以同时处理 style="..." 和 data-mce-style="..."
-        for _ in range(2):
-            html = re.sub(
-                r'(<t[dh]\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*([\d.]+)pt;?',
-                pt_to_px,
-                html,
-                flags=re.IGNORECASE
-            )
+        # 3. 清理 <td> / <th> 中的死宽度限制 (同样防止误伤 border-width)
+        # 循环两遍是因为 <td> 里可能同时存在 style="..." 和 data-mce-style="..." 两个属性
+        # for _ in range(2):
+        #     html = re.sub(
+        #         r'(<t[dh]\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+pt;?',
+        #         r'\1',
+        #         html,
+        #         flags=re.IGNORECASE
+        #     )
 
         return html
 
