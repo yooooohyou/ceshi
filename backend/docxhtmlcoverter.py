@@ -566,7 +566,7 @@ class DocxHtmlConverter:
         # 1. 修复 <table> 的 style 宽度（使用负向断言，防止误删 border-width）
         html = re.sub(
             r'(<table\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+pt;?',
-            r'\1;',
+            r'\1width: 100%; table-layout: fixed; word-break: break-all;',
             html_content,
             flags=re.IGNORECASE
         )
