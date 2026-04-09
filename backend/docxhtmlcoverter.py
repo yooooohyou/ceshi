@@ -569,13 +569,13 @@ class DocxHtmlConverter:
         # 1. 移除 <table> 上的任何 width (包括 style 和 属性)，并注入固定布局
         html = re.sub(
             r'(<table\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+[a-zA-Z%]+;?',
-            r'\1 table-layout: fixed; word-break: break-all;',
+            r'\1 width=100%;table-layout: fixed; word-break: break-all;',
             html_content,
             flags=re.IGNORECASE
         )
         html = re.sub(
             r'(<table\b[^>]*?)\s*\bwidth="\d+(?:\.\d+)?%?"',
-            r'\1',
+            r'\1 width=100%;',
             html,
             flags=re.IGNORECASE
         )
