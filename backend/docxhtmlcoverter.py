@@ -574,20 +574,28 @@ class DocxHtmlConverter:
         # 2. 将 <table width="..."> 属性改为 100%
         html = re.sub(
             r'(<table\b[^>]*?)\s*\bwidth="\d+(?:\.\d+)?"',
-            r'\1',
+            r'\1 width="100%"',
             html,
             flags=re.IGNORECASE
         )
 
-        # 3. 清理 <td> / <th> 中的死宽度限制 (同样防止误伤 border-width)
-        # 循环两遍是因为 <td> 里可能同时存在 style="..." 和 data-mce-style="..." 两个属性
-        # for _ in range(2):
-        #     html = re.sub(
-        #         r'(<t[dh]\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+pt;?',
-        #         r'\1',
-        #         html,
-        #         flags=re.IGNORECASE
-        #     )
+        def pt_to_px(match):
+            prefix = match.group(1)
+            pt_val = float(match.group(2))
+
+            # 1 pt = 4/3 px，保留整数
+            px_val = round(pt_val * 1.3333)
+            return f"{prefix}width: {px_val}px;"
+
+        for _ in range(2):
+            html = re.sub(
+                r'(<t[dh]\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*([\d.]+)pt;?',
+                pt_to_px,
+                html,
+                flags=re.IGNORECASE
+            )
+
+        return html
 
         return html
 
