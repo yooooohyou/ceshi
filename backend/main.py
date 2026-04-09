@@ -1676,6 +1676,7 @@ async def upload_and_generate_tree(
                     conn.commit()
 
             # 调用表格宽度设置接口，将文件转换后再拆分
+            logger.debug(f"文件路径：{abs_file_path}")
             new_file_path = call_set_table_width(abs_file_path)
             with open(new_file_path, "rb") as _f:
                 file_content = _f.read()
