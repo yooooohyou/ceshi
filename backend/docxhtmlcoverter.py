@@ -561,33 +561,49 @@ class DocxHtmlConverter:
 
     def _make_tables_responsive(self, html_content: str) -> str:
         """
-        移除 Spire 导出的固定表格和单元格宽度，使表格在 HTML 中自适应 100%
+        终极表格修正方案：完美适配 TinyMCE 独立列拖拽，互不影响。
+        1. 移除 <table> 总宽度，解除锁定。
+        2. 剔除 colspan 合并单元格的宽度干扰。
+        3. 真实列宽转为绝对像素 px。
         """
-        # 1. 修复 <table> 的 style 宽度（使用负向断言，防止误删 border-width）
+        # 1. 移除 <table> 上的任何 width (包括 style 和 属性)，并注入固定布局
         html = re.sub(
-            r'(<table\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+pt;?',
-            r'\1;',
+            r'(<table\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+[a-zA-Z%]+;?',
+            r'\1 table-layout: fixed; word-break: break-all;',
             html_content,
             flags=re.IGNORECASE
         )
-
-        # 2. 将 <table width="..."> 属性改为 100%
         html = re.sub(
-            r'(<table\b[^>]*?)\s*\bwidth="\d+(?:\.\d+)?"',
+            r'(<table\b[^>]*?)\s*\bwidth="\d+(?:\.\d+)?%?"',
             r'\1',
             html,
             flags=re.IGNORECASE
         )
 
-        # 3. 清理 <td> / <th> 中的死宽度限制 (同样防止误伤 border-width)
-        # 循环两遍是因为 <td> 里可能同时存在 style="..." 和 data-mce-style="..." 两个属性
-        # for _ in range(2):
-        #     html = re.sub(
-        #         r'(<t[dh]\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+pt;?',
-        #         r'\1',
-        #         html,
-        #         flags=re.IGNORECASE
-        #     )
+        # 2. 剔除所有包含 colspan 的 <td> 的 width 属性
+        # （这是防止 TinyMCE 把带有 colspan 的首行当做计算网格基准导致崩溃重置的核心）
+        for _ in range(2):
+            html = re.sub(
+                r'(<t[dh]\b[^>]*?colspan="\d+"[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+[a-zA-Z%]+;?',
+                r'\1',
+                html,
+                flags=re.IGNORECASE
+            )
+
+        # 3. 将正常的 <td> / <th> 中的 pt 宽度转换为绝对像素 px
+        def pt_to_px(match):
+            prefix = match.group(1)
+            pt_val = float(match.group(2))
+            px_val = round(pt_val * 1.3333) # 1pt = 1.3333px
+            return f"{prefix}width: {px_val}px;"
+
+        for _ in range(2):
+            html = re.sub(
+                r'(<t[dh]\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*([\d.]+)pt;?',
+                pt_to_px,
+                html,
+                flags=re.IGNORECASE
+            )
 
         return html
 
