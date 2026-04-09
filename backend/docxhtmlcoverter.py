@@ -581,13 +581,13 @@ class DocxHtmlConverter:
 
         # 3. 清理 <td> / <th> 中的死宽度限制 (同样防止误伤 border-width)
         # 循环两遍是因为 <td> 里可能同时存在 style="..." 和 data-mce-style="..." 两个属性
-        for _ in range(2):
-            html = re.sub(
-                r'(<t[dh]\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+pt;?',
-                r'\1',
-                html,
-                flags=re.IGNORECASE
-            )
+        # for _ in range(2):
+        #     html = re.sub(
+        #         r'(<t[dh]\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+pt;?',
+        #         r'\1',
+        #         html,
+        #         flags=re.IGNORECASE
+        #     )
 
         return html
 
@@ -1470,8 +1470,8 @@ class DocxHtmlConverter:
            强制 Spire 走等比缩放逻辑，不触发 96->72 的二次缩放。
         """
         # --- 修复表格：从 439.4pt 固宽改为 100% 自适应 ---
-        # html = re.sub(r'(<table[^>]*style="[^"]*)\bwidth\s*:\s*[\d.]+pt;?', r'\1width:100%;', html, flags=re.IGNORECASE)
-        # html = re.sub(r'(<table[^>]*)\bwidth="\d+(?:\.\d+)?"', r'\1 width="100%"', html, flags=re.IGNORECASE)
+        html = re.sub(r'(<table[^>]*style="[^"]*)\bwidth\s*:\s*[\d.]+pt;?', r'\1width:100%;', html, flags=re.IGNORECASE)
+        html = re.sub(r'(<table[^>]*)\bwidth="\d+(?:\.\d+)?"', r'\1 width="100%"', html, flags=re.IGNORECASE)
 
         # --- 修复图片：防止 64% 比例偏移 ---
         def _fix_img_ratio(m):
@@ -2106,7 +2106,7 @@ class DocxHtmlConverter:
                 )
 
             logger.debug("📏 将表格固定宽度改为 100% 自适应...")
-            # html_content = self._make_tables_responsive(html_content)
+            html_content = self._make_tables_responsive(html_content)
             html_content = self._fix_underline_span_width(html_content)
 
             with open(html_path, 'w', encoding='utf-8') as f:
@@ -2233,7 +2233,7 @@ class DocxHtmlConverter:
 
         # ====== 新增：修正表格固定宽度，使其网页自适应 ======
         logger.debug("📏 将表格固定宽度改为 100% 自适应...")
-        # html_content = self._make_tables_responsive(html_content)
+        html_content = self._make_tables_responsive(html_content)
         # ====================================================
         html_content = self._fix_underline_span_width(html_content)
 
