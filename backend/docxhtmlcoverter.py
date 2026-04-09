@@ -1470,8 +1470,8 @@ class DocxHtmlConverter:
            强制 Spire 走等比缩放逻辑，不触发 96->72 的二次缩放。
         """
         # --- 修复表格：从 439.4pt 固宽改为 100% 自适应 ---
-        html = re.sub(r'(<table[^>]*style="[^"]*)\bwidth\s*:\s*[\d.]+pt;?', r'\1width:100%;', html, flags=re.IGNORECASE)
-        html = re.sub(r'(<table[^>]*)\bwidth="\d+(?:\.\d+)?"', r'\1 width="100%"', html, flags=re.IGNORECASE)
+        # html = re.sub(r'(<table[^>]*style="[^"]*)\bwidth\s*:\s*[\d.]+pt;?', r'\1width:100%;', html, flags=re.IGNORECASE)
+        # html = re.sub(r'(<table[^>]*)\bwidth="\d+(?:\.\d+)?"', r'\1 width="100%"', html, flags=re.IGNORECASE)
 
         # --- 修复图片：防止 64% 比例偏移 ---
         def _fix_img_ratio(m):
