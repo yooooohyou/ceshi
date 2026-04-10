@@ -2446,6 +2446,10 @@ async def update_html_by_node(request: Request,
         logger.error(html_content)
         # html内部img转换base64
         html_content, status_ = html_img_url_to_base64(html_content)
+        # base64转url
+        html_content, _ = html_base64_images_to_urls(
+            html_content, UPLOAD_DIR, STATIC_WEB_FRONT_PREFIX
+        )
         # html转换成docx
         success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
         # 拼接sql
