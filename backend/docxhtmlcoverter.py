@@ -2122,7 +2122,7 @@ class DocxHtmlConverter:
                 )
 
             logger.debug("📏 将表格固定宽度改为 100% 自适应...")
-            html_content = self._make_tables_responsive(html_content)
+            # html_content = self._make_tables_responsive(html_content)
             html_content = self._fix_underline_span_width(html_content)
 
             with open(html_path, 'w', encoding='utf-8') as f:
@@ -2249,7 +2249,7 @@ class DocxHtmlConverter:
 
         # ====== 新增：修正表格固定宽度，使其网页自适应 ======
         logger.debug("📏 将表格固定宽度改为 100% 自适应...")
-        html_content = self._make_tables_responsive(html_content)
+        # html_content = self._make_tables_responsive(html_content)
         # ====================================================
         html_content = self._fix_underline_span_width(html_content)
 
