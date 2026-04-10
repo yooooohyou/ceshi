@@ -1,4 +1,5 @@
 import logging
+import os
 logger = logging.getLogger(__name__)
 
 import configparser
@@ -16,7 +17,8 @@ TARGET_BASE_URL = _conf.get("docx_service", "base_url")
 TIMEOUT_CONFIG = {
     "split": 600,
     "merge": 600,
-    "delete": 600
+    "delete": 600,
+    "set_table_width": 600
 }
 
 
@@ -170,6 +172,49 @@ def call_docx_merge(merge_request: MergeRequest, add_title=0, add_heading_num=1)
         raise HTTPException(
             status_code=500,
             detail=f"合并接口调用异常: {str(e)}"
+        )
+
+
+def call_set_table_width(filepath: str) -> str:
+    """
+    调用表格宽度设置接口（同步），将文件转换后返回新文件路径
+    :param filepath: 原始文件绝对路径
+    :return: 处理后的新文件绝对路径
+    """
+    # 规范化路径：解析符号链接、消除 .. / // 等不规范组合
+    normalized = os.path.normpath(os.path.realpath(filepath))
+    logger.info(f"call_set_table_width 发送路径: {normalized}")
+    url = f"{TARGET_BASE_URL}/api/tool_api/docx/set_table_width"
+    try:
+        response = requests.post(
+            url,
+            json={"filepath": normalized},
+            timeout=TIMEOUT_CONFIG["set_table_width"]
+        )
+        response.raise_for_status()
+        result = response.json()
+        if result.get("status") != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"表格宽度设置接口返回错误: {result.get('msg', '未知错误')}"
+            )
+        return result["data"]["filepath"]
+    except requests.exceptions.HTTPError as e:
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail=f"表格宽度设置接口调用失败: {e.response.text}"
+        )
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"表格宽度设置接口网络异常: {str(e)}"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"表格宽度设置接口调用异常: {str(e)}"
         )
 
 

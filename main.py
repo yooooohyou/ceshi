@@ -34,7 +34,7 @@ from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 from typing import Optional, Tuple, Union, List, Dict, Any, Literal
 from docxautogenerator import generate_fully_centered_patent_doc, generate_report_doc, generate_car_info_doc
-from mergfile import call_docx_split,call_docx_merge, TreeItem,MergeRequest
+from mergfile import call_docx_split, call_docx_merge, call_set_table_width, TreeItem, MergeRequest
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from PIL import Image
@@ -427,9 +427,11 @@ def generate_and_convert_to_html(generate_func, *args, **kwargs):
         converter = DocxHtmlConverter()
         html_content = converter.docx_to_single_html(docx_path, html_path)
 
-        # # 5. 读取HTML内容（确保内容完整）
-        # with open(html_path, 'r', encoding='utf-8') as f:
-        #     final_html = f.read()
+        # 5. 将 base64 内嵌图片替换为网络 URL
+        if html_content:
+            html_content, _ = html_base64_images_to_urls(
+                html_content, UPLOAD_DIR, STATIC_WEB_FRONT_PREFIX
+            )
 
         return html_content
 
@@ -639,6 +641,82 @@ def generate_unique_file_id() -> str:
     return f"docx_{timestamp}_{random_str}"
 
 
+def html_base64_images_to_urls(html_text: str,
+                               serve_dir: str,
+                               base_url: str,
+                               cleanup_delay: int = 1800) -> tuple:
+    """将 HTML 中内嵌的 base64 图片替换为可访问的网络 URL。
+
+    每张 base64 图片保存为 serve_dir/{session_id}/{uuid}.{ext}，
+    src 属性改写为 {base_url}/{session_id}/{uuid}.{ext}。
+    cleanup_delay 秒后在后台线程中删除该 session 目录（默认 30 分钟）。
+
+    Returns:
+        (new_html, session_img_dir)
+        session_img_dir 是本次保存图片的目录路径，供调用方提前清理；
+        无图片时 session_img_dir 为 None。
+    """
+    import threading
+
+    # 匹配 src="data:image/TYPE;base64,DATA" 中的 TYPE 和 DATA
+    _b64_src_re = re.compile(
+        r'src="data:(image/[^;]+);base64,([^"]+)"',
+        re.IGNORECASE
+    )
+
+    _mime_to_ext = {
+        'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif',
+        'image/webp': 'webp', 'image/bmp': 'bmp', 'image/svg+xml': 'svg',
+        'image/tiff': 'tif',
+    }
+
+    # 无 base64 图片时快速返回
+    if not _b64_src_re.search(html_text):
+        return html_text, None
+
+    session_id = uuid.uuid4().hex
+    session_img_dir = os.path.join(serve_dir, f"docximg_{session_id}")
+    os.makedirs(session_img_dir, exist_ok=True)
+
+    def _replace(m):
+        mime = m.group(1).lower()
+        b64data = m.group(2)
+        try:
+            img_bytes = base64.b64decode(b64data)
+        except Exception:
+            return m.group(0)  # 解码失败，保留原样
+
+        ext = _mime_to_ext.get(mime, 'png')
+        filename = f"{uuid.uuid4().hex}.{ext}"
+        filepath = os.path.join(session_img_dir, filename)
+        try:
+            with open(filepath, 'wb') as f:
+                f.write(img_bytes)
+        except Exception as e:
+            logger.warning(f"保存图片失败 {filepath}: {e}")
+            return m.group(0)
+
+        url = f"{base_url.rstrip('/')}/docximg_{session_id}/{filename}"
+        return f'src="{url}"'
+
+    new_html = _b64_src_re.sub(_replace, html_text)
+
+    # 延迟清理：cleanup_delay 秒后删除 session 图片目录
+    def _cleanup():
+        time.sleep(cleanup_delay)
+        try:
+            if os.path.exists(session_img_dir):
+                shutil.rmtree(session_img_dir, ignore_errors=True)
+                logger.debug(f"🗑️ 已清理图片目录：{session_img_dir}")
+        except Exception as e:
+            logger.debug(f"清理图片目录失败 {session_img_dir}: {e}")
+
+    # t = threading.Thread(target=_cleanup, daemon=True)
+    # t.start()
+
+    return new_html, session_img_dir
+
+
 def docx_to_html(file_path: str):
     """Word转HTML的实现函数"""
 
@@ -691,6 +769,12 @@ def docx_to_html(file_path: str):
                     pass
                 except Exception as e:
                     logger.warning(f"警告：无法删除临时文件 {temp_html_path} - {e}")
+        # 将 base64 内嵌图片替换为网络 URL，减少 HTML 传输体积
+        if html_content:
+            html_content, _ = html_base64_images_to_urls(
+                html_content, UPLOAD_DIR, STATIC_WEB_FRONT_PREFIX
+            )
+
         result_html = html_content or ""
         return result_html, abs_file_path
     except Exception as e:
@@ -1675,6 +1759,12 @@ async def upload_and_generate_tree(
                     cursor.execute(update_file_sql, (split_file_id, current_time, record_id))
                     conn.commit()
 
+            # 调用表格宽度设置接口，将文件转换后再拆分
+            logger.debug(f"文件路径：{abs_file_path}")
+            new_file_path = call_set_table_width(abs_file_path)
+            with open(new_file_path, "rb") as _f:
+                file_content = _f.read()
+
             # 调用拆分接口
             split_result = call_docx_split(
                 file_stream=file_content,
@@ -1897,6 +1987,11 @@ async def route_generate_tree(
                     cursor.execute(update_file_sql, (split_file_id, current_time, record_id))
                     conn.commit()
 
+            # 调用表格宽度设置接口，将文件转换后再拆分
+            new_file_path = call_set_table_width(abs_file_path)
+            with open(new_file_path, "rb") as _f:
+                file_content = _f.read()
+
             # 调用拆分接口
             split_result = call_docx_split(
                 file_stream=file_content,
@@ -2110,6 +2205,11 @@ async def route_docx2html_marge(
             with conn.cursor() as cursor:
                 cursor.execute(update_file_sql, (split_file_id, current_time, record_id))
                 conn.commit()
+
+        # 调用表格宽度设置接口，将文件转换后再拆分
+        new_file_path = call_set_table_width(abs_file_path)
+        with open(new_file_path, "rb") as _f:
+            file_content = _f.read()
 
         # 调用拆分接口
         split_result = call_docx_split(
@@ -2346,6 +2446,10 @@ async def update_html_by_node(request: Request,
         logger.error(html_content)
         # html内部img转换base64
         html_content, status_ = html_img_url_to_base64(html_content)
+        # base64转url
+        html_content, _ = html_base64_images_to_urls(
+            html_content, UPLOAD_DIR, STATIC_WEB_FRONT_PREFIX
+        )
         # html转换成docx
         success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
         # 拼接sql
@@ -2640,6 +2744,10 @@ async def update_html_by_node_new(
         #     f.write(html_content)
         #
         # print("HTML 文件已成功保存！")
+        # base64转url
+        html_content, _ = html_base64_images_to_urls(
+            html_content, UPLOAD_DIR, STATIC_WEB_FRONT_PREFIX
+        )
 
         existing_levels, max_level = get_html_heading_levels(html_content)
         max_now_level = MAX_LEVEL_NODE - int(now_level)
@@ -2793,9 +2901,10 @@ async def update_html_by_node_new(
                     new_record_id = cursor.fetchone()[0]
                     conn.commit()
 
-            # result 是 BytesIO，拆分接口需要 bytes，seek(0) 后读出
-            result.seek(0)
-            file_bytes = result.read()
+            # 调用表格宽度设置接口，将文件转换后再拆分
+            new_file_path = call_set_table_width(temp_docx_path_)
+            with open(new_file_path, "rb") as _f:
+                file_bytes = _f.read()
 
             # 调用拆分接口
             split_result = call_docx_split(
@@ -3342,6 +3451,11 @@ async def merge_docx_office_server(
     try:
         merge_request = MergeRequest(tree=tree_, files=files_, format_args=format_args)
         merged_file_message = call_docx_merge(merge_request, add_title=0, add_heading_num=1)
+        # 调用表格宽度设置接口，将合并后的文件转换为处理过的新文件
+        old_filepath = merged_file_message.data.get("filepath", "")
+        if old_filepath:
+            new_filepath = call_set_table_width(old_filepath)
+            merged_file_message.data["filepath"] = new_filepath
         return merged_file_message
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件合并失败：{str(e)}")

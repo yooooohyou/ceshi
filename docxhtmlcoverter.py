@@ -569,13 +569,13 @@ class DocxHtmlConverter:
         # 1. 移除 <table> 上的任何 width (包括 style 和 属性)，并注入固定布局
         html = re.sub(
             r'(<table\b[^>]*?(?:style|data-mce-style)="[^"]*?)(?<![-a-zA-Z])width\s*:\s*[\d.]+[a-zA-Z%]+;?',
-            r'\1 table-layout: fixed; word-break: break-all;',
+            r'\1 width=100%;table-layout: fixed; word-break: break-all;',
             html_content,
             flags=re.IGNORECASE
         )
         html = re.sub(
             r'(<table\b[^>]*?)\s*\bwidth="\d+(?:\.\d+)?%?"',
-            r'\1',
+            r'\1 width=100%;',
             html,
             flags=re.IGNORECASE
         )
@@ -1486,7 +1486,7 @@ class DocxHtmlConverter:
            强制 Spire 走等比缩放逻辑，不触发 96->72 的二次缩放。
         """
         # --- 修复表格：从 439.4pt 固宽改为 100% 自适应 ---
-        html = re.sub(r'(<table[^>]*style="[^"]*)\bwidth\s*:\s*[\d.]+pt;?', r'\1width:100%;', html, flags=re.IGNORECASE)
+        html = re.sub(r'(<table[^>]*style="[^"]*)\bwidth\s*:\s*[\d.]+pt;?', r'\1 width:100%;', html, flags=re.IGNORECASE)
         html = re.sub(r'(<table[^>]*)\bwidth="\d+(?:\.\d+)?"', r'\1 width="100%"', html, flags=re.IGNORECASE)
 
         # --- 修复图片：防止 64% 比例偏移 ---
