@@ -2744,6 +2744,10 @@ async def update_html_by_node_new(
         #     f.write(html_content)
         #
         # print("HTML 文件已成功保存！")
+        # base64转url
+        html_content, _ = html_base64_images_to_urls(
+            html_content, UPLOAD_DIR, STATIC_WEB_FRONT_PREFIX
+        )
 
         existing_levels, max_level = get_html_heading_levels(html_content)
         max_now_level = MAX_LEVEL_NODE - int(now_level)
