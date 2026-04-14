@@ -2307,8 +2307,12 @@ class DocxHtmlConverter:
 
     def _inject_break_placeholders(self, docx_path: str, work_dir: str):
         """
-        读取 DOCX，将段落级分页符和分节符替换为唯一文本占位符，
+        读取 DOCX，将分页符和分节符替换为唯一文本占位符，
         保存为临时文件供 Spire 转换，并返回占位符元数据映射。
+
+        分页符处理两种情形：
+          ① 段落内容仅为分页符（正文为空或只有 \\xa0）→ 整段替换为占位符
+          ② 分页符与正文在同一段落 → 在该段落前插入新的占位符段落，并从原段落移除 w:br
 
         Returns:
             (docx_path_for_spire, breaks_map)
@@ -2317,7 +2321,10 @@ class DocxHtmlConverter:
                 'SB_MARKER_XXXXXXXX': {'type': 'section', 'meta': {data-*: value, ...}},
             }
         """
-        W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+
+        def _is_real_text(t: str) -> bool:
+            """判断是否为实质性文字（\xa0 / 普通空白 不算）"""
+            return bool(t.replace('\xa0', '').strip())
 
         try:
             doc = PythonDocx(docx_path)
@@ -2328,10 +2335,13 @@ class DocxHtmlConverter:
         breaks_map = {}
         modified = False
 
-        for para in doc.paragraphs:
+        # 用列表收集（避免在迭代中修改 body 导致跳项）
+        paragraphs = list(doc.paragraphs)
+
+        for para in paragraphs:
             p_elem = para._p
 
-            # 优先检测段落级分节符（pPr/sectPr）
+            # ── 优先检测段落级分节符（pPr/sectPr）────────────────────────
             pPr = p_elem.find(qn('w:pPr'))
             if pPr is not None:
                 sectPr = pPr.find(qn('w:sectPr'))
@@ -2339,7 +2349,6 @@ class DocxHtmlConverter:
                     marker_id = uuid.uuid4().hex[:8].upper()
                     marker = f'SB_MARKER_{marker_id}'
 
-                    # 提取 sectPr 元数据
                     meta = {}
                     type_el = sectPr.find(qn('w:type'))
                     if type_el is not None:
@@ -2363,7 +2372,6 @@ class DocxHtmlConverter:
 
                     breaks_map[marker] = {'type': 'section', 'meta': meta}
 
-                    # 清空段落内容，写入占位符文本
                     for r in p_elem.findall(qn('w:r')):
                         p_elem.remove(r)
                     r_el = OxmlElement('w:r')
@@ -2371,26 +2379,35 @@ class DocxHtmlConverter:
                     t_el.text = marker
                     r_el.append(t_el)
                     p_elem.append(r_el)
-                    # 移除 sectPr，避免 Spire 产生额外分节
                     pPr.remove(sectPr)
                     modified = True
                     continue
 
-            # 检测纯分页符段落（仅含 w:br type="page" 的段落）
-            has_page_break = False
+            # ── 检测分页符 ────────────────────────────────────────────────
+            # 收集含 w:br type=page 的 run，以及有实质文字的 run
+            br_runs = []    # [(run_elem, [br_child, ...])]
             has_real_text = False
+
             for r in p_elem.findall(qn('w:r')):
+                brs_in_run = [
+                    child for child in r
+                    if child.tag == qn('w:br') and child.get(qn('w:type')) == 'page'
+                ]
+                if brs_in_run:
+                    br_runs.append((r, brs_in_run))
                 for child in r:
-                    if child.tag == qn('w:br') and child.get(qn('w:type')) == 'page':
-                        has_page_break = True
-                    elif child.tag == qn('w:t') and child.text and child.text.strip():
+                    if child.tag == qn('w:t') and _is_real_text(child.text or ''):
                         has_real_text = True
 
-            if has_page_break and not has_real_text:
-                marker_id = uuid.uuid4().hex[:8].upper()
-                marker = f'PB_MARKER_{marker_id}'
-                breaks_map[marker] = {'type': 'page'}
+            if not br_runs:
+                continue
 
+            marker_id = uuid.uuid4().hex[:8].upper()
+            marker = f'PB_MARKER_{marker_id}'
+            breaks_map[marker] = {'type': 'page'}
+
+            if not has_real_text:
+                # ① 纯分页符段落：整段替换为占位符
                 for r in p_elem.findall(qn('w:r')):
                     p_elem.remove(r)
                 r_el = OxmlElement('w:r')
@@ -2398,7 +2415,29 @@ class DocxHtmlConverter:
                 t_el.text = marker
                 r_el.append(t_el)
                 p_elem.append(r_el)
-                modified = True
+            else:
+                # ② 分页符与正文共存：在本段前插入占位符段落，然后从 run 中移除 w:br
+                marker_p = OxmlElement('w:p')
+                marker_r = OxmlElement('w:r')
+                marker_t = OxmlElement('w:t')
+                marker_t.text = marker
+                marker_r.append(marker_t)
+                marker_p.append(marker_r)
+                p_elem.addprevious(marker_p)
+
+                for r, brs in br_runs:
+                    for br in brs:
+                        r.remove(br)
+                    # 若 run 除 rPr 外已无实质内容，则整个 run 删除
+                    remaining = [c for c in r if c.tag != qn('w:rPr')]
+                    all_empty = all(
+                        c.tag == qn('w:t') and not _is_real_text(c.text or '')
+                        for c in remaining
+                    )
+                    if not remaining or all_empty:
+                        p_elem.remove(r)
+
+            modified = True
 
         if not modified:
             return docx_path, {}
@@ -2408,6 +2447,7 @@ class DocxHtmlConverter:
         doc.save(temp_docx_path)
         logger.debug(f"📄 分隔符占位符已注入，临时文件：{temp_docx_path}，标记数：{len(breaks_map)}")
         return temp_docx_path, breaks_map
+
 
     def _restore_break_markers_in_html(self, html_content: str, breaks_map: dict) -> str:
         """
