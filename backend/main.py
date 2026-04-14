@@ -15,7 +15,7 @@ from app.middleware.http_logging import http_log_middleware
 from app.models.schemas import unified_response
 
 # ─── FastAPI 应用实例 ─────────────────────────────────────────────────────────
-app = FastAPI(title="DOCX文件上传&HTML转换接口", version="1.0")
+app = FastAPI(title="DOCX文件上传&HTML转换接口", version="1.2.0")
 
 # ─── CORS ────────────────────────────────────────────────────────────────────
 app.add_middleware(
