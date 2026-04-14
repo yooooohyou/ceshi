@@ -2174,27 +2174,45 @@ class DocxHtmlConverter:
 
         temp_dir_prefix = self._make_temp_dir_prefix()
 
-        # 2. 检测文档规模，超限走分片流程
-        if self._needs_chunking(docx_path):
-            return self._chunked_docx_to_html(docx_path, html_path, temp_dir_prefix)
+        # 2. 提取分页符/分节符，注入占位符（生成临时DOCX供Spire使用）
+        breaks_map = {}
+        docx_path_for_spire = docx_path
+        try:
+            docx_path_for_spire, breaks_map = self._inject_break_placeholders(docx_path, html_dir)
+        except Exception as _be:
+            logger.warning(f"⚠️ 分隔符预处理失败，跳过：{_be}")
 
-        # 3. 创建唯一临时目录
+        # 3. 检测文档规模，超限走分片流程
+        if self._needs_chunking(docx_path_for_spire):
+            html_result = self._chunked_docx_to_html(docx_path_for_spire, html_path, temp_dir_prefix)
+            if breaks_map:
+                html_result = self._restore_break_markers_in_html(html_result, breaks_map)
+                with open(html_path, 'w', encoding='utf-8') as _f:
+                    _f.write(html_result)
+            if docx_path_for_spire != docx_path and os.path.exists(docx_path_for_spire):
+                try:
+                    os.remove(docx_path_for_spire)
+                except Exception:
+                    pass
+            return html_result
+
+        # 4. 创建唯一临时目录
         spire_temp_dir   = self._normalize_path(os.path.join(html_dir, temp_dir_prefix))
         original_img_dir = self._normalize_path(os.path.join(spire_temp_dir, "original_images"))
         spire_img_dir    = self._normalize_path(os.path.join(spire_temp_dir, "images"))
 
-        # 4. 解析图片顺序 + 提取原始图片 + 提取显示尺寸
-        image_display_order = self._get_image_order_from_docx(docx_path)
-        extracted_imgs = self._extract_original_images(docx_path, original_img_dir)
-        img_size_map   = self._extract_image_display_sizes(docx_path)
+        # 5. 解析图片顺序 + 提取原始图片 + 提取显示尺寸
+        image_display_order = self._get_image_order_from_docx(docx_path_for_spire)
+        extracted_imgs = self._extract_original_images(docx_path_for_spire, original_img_dir)
+        img_size_map   = self._extract_image_display_sizes(docx_path_for_spire)
 
         if not image_display_order and extracted_imgs:
             image_display_order = sorted(extracted_imgs)
             logger.warning(f"⚠️ 顺序解析为空，兜底使用：{image_display_order}")
-        # 5. Spire转换生成临时HTML（图片不内嵌，保留文件引用）
+        # 6. Spire转换生成临时HTML（图片不内嵌，保留文件引用）
         document = Document()
         try:
-            document.LoadFromFile(docx_path)
+            document.LoadFromFile(docx_path_for_spire)
             document.HtmlExportOptions.ImageEmbedded = False
             document.HtmlExportOptions.ImagesPath = spire_img_dir
             document.HtmlExportOptions.ImageFormat = self.default_image_format
@@ -2253,12 +2271,20 @@ class DocxHtmlConverter:
         # ====================================================
         html_content = self._fix_underline_span_width(html_content)
 
-        # 13. 保存最终HTML
+        # 13. 恢复分页符/分节符自定义标记
+        if breaks_map:
+            logger.debug("📄 恢复分页符/分节符标记...")
+            html_content = self._restore_break_markers_in_html(html_content, breaks_map)
+
+        # 14. 保存最终HTML
         with open(html_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
 
-        # 14. 清理临时文件
-        for temp_path in [spire_temp_dir, css_file_path]:
+        # 15. 清理临时文件
+        cleanup_paths = [spire_temp_dir, css_file_path]
+        if docx_path_for_spire != docx_path:
+            cleanup_paths.append(docx_path_for_spire)
+        for temp_path in cleanup_paths:
             if os.path.exists(temp_path):
                 try:
                     if os.path.isdir(temp_path):
@@ -2272,6 +2298,306 @@ class DocxHtmlConverter:
         logger.debug(f"📄 最终文件绝对路径：{html_path}")
         logger.debug(f"✅ 特性：图片Base64内嵌 | CSS内嵌 | 图片无压缩 | 顺序对齐 | 页眉页脚已清理")
         return html_content
+
+    # ------------------------------------------------------------------ #
+    #  分页符 / 分节符 处理工具                                              #
+    # ------------------------------------------------------------------ #
+
+    # ---------- DOCX → HTML 方向 ----------
+
+    def _inject_break_placeholders(self, docx_path: str, work_dir: str):
+        """
+        读取 DOCX，将段落级分页符和分节符替换为唯一文本占位符，
+        保存为临时文件供 Spire 转换，并返回占位符元数据映射。
+
+        Returns:
+            (docx_path_for_spire, breaks_map)
+            breaks_map = {
+                'PB_MARKER_XXXXXXXX': {'type': 'page'},
+                'SB_MARKER_XXXXXXXX': {'type': 'section', 'meta': {data-*: value, ...}},
+            }
+        """
+        W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+
+        try:
+            doc = PythonDocx(docx_path)
+        except Exception as e:
+            logger.warning(f"⚠️ 无法读取DOCX提取分隔符：{e}")
+            return docx_path, {}
+
+        breaks_map = {}
+        modified = False
+
+        for para in doc.paragraphs:
+            p_elem = para._p
+
+            # 优先检测段落级分节符（pPr/sectPr）
+            pPr = p_elem.find(qn('w:pPr'))
+            if pPr is not None:
+                sectPr = pPr.find(qn('w:sectPr'))
+                if sectPr is not None:
+                    marker_id = uuid.uuid4().hex[:8].upper()
+                    marker = f'SB_MARKER_{marker_id}'
+
+                    # 提取 sectPr 元数据
+                    meta = {}
+                    type_el = sectPr.find(qn('w:type'))
+                    if type_el is not None:
+                        meta['data-section-type'] = type_el.get(qn('w:val'), 'nextPage')
+
+                    pgSz = sectPr.find(qn('w:pgSz'))
+                    if pgSz is not None:
+                        for attr, key in [(qn('w:w'), 'data-page-width'),
+                                          (qn('w:h'), 'data-page-height'),
+                                          (qn('w:orient'), 'data-orientation')]:
+                            val = pgSz.get(attr)
+                            if val:
+                                meta[key] = val
+
+                    pgMar = sectPr.find(qn('w:pgMar'))
+                    if pgMar is not None:
+                        for side in ['top', 'bottom', 'left', 'right']:
+                            val = pgMar.get(qn(f'w:{side}'))
+                            if val:
+                                meta[f'data-margin-{side}'] = val
+
+                    breaks_map[marker] = {'type': 'section', 'meta': meta}
+
+                    # 清空段落内容，写入占位符文本
+                    for r in p_elem.findall(qn('w:r')):
+                        p_elem.remove(r)
+                    r_el = OxmlElement('w:r')
+                    t_el = OxmlElement('w:t')
+                    t_el.text = marker
+                    r_el.append(t_el)
+                    p_elem.append(r_el)
+                    # 移除 sectPr，避免 Spire 产生额外分节
+                    pPr.remove(sectPr)
+                    modified = True
+                    continue
+
+            # 检测纯分页符段落（仅含 w:br type="page" 的段落）
+            has_page_break = False
+            has_real_text = False
+            for r in p_elem.findall(qn('w:r')):
+                for child in r:
+                    if child.tag == qn('w:br') and child.get(qn('w:type')) == 'page':
+                        has_page_break = True
+                    elif child.tag == qn('w:t') and child.text and child.text.strip():
+                        has_real_text = True
+
+            if has_page_break and not has_real_text:
+                marker_id = uuid.uuid4().hex[:8].upper()
+                marker = f'PB_MARKER_{marker_id}'
+                breaks_map[marker] = {'type': 'page'}
+
+                for r in p_elem.findall(qn('w:r')):
+                    p_elem.remove(r)
+                r_el = OxmlElement('w:r')
+                t_el = OxmlElement('w:t')
+                t_el.text = marker
+                r_el.append(t_el)
+                p_elem.append(r_el)
+                modified = True
+
+        if not modified:
+            return docx_path, {}
+
+        temp_docx_name = f"_breaks_{uuid.uuid4().hex[:8]}.docx"
+        temp_docx_path = self._normalize_path(os.path.join(work_dir, temp_docx_name))
+        doc.save(temp_docx_path)
+        logger.debug(f"📄 分隔符占位符已注入，临时文件：{temp_docx_path}，标记数：{len(breaks_map)}")
+        return temp_docx_path, breaks_map
+
+    def _restore_break_markers_in_html(self, html_content: str, breaks_map: dict) -> str:
+        """
+        将 Spire 生成的 HTML 中的占位符段落替换为自定义分页符/分节符 HTML。
+        占位符文本可能被 Spire 包裹在 span 等子标签中。
+        """
+        if not breaks_map:
+            return html_content
+
+        PAGE_BREAK_HTML = (
+            '<p contenteditable="false" class="page-break"'
+            ' style="page-break-after: always; height: 3px; border-top: 3px dashed #169179;'
+            ' text-align: center; margin:10px 0; clear: both; cursor: default; user-select: none;">'
+            '<span style="position: relative; top: -12px; background: #fff;'
+            ' padding: 0 10px; color: #169179; font-size: 14px;">此处为分页符</span>'
+            '</p><p>&nbsp;</p>'
+        )
+
+        # data-* 属性的输出顺序（与前端保持一致）
+        DATA_ATTR_ORDER = [
+            'data-section-type', 'data-page-width', 'data-page-height',
+            'data-orientation', 'data-margin-top', 'data-margin-bottom',
+            'data-margin-left', 'data-margin-right',
+        ]
+
+        def make_section_break_html(meta: dict) -> str:
+            # 按约定顺序拼接 data-* 属性，未知属性追加到末尾
+            ordered = {k: meta[k] for k in DATA_ATTR_ORDER if k in meta}
+            ordered.update({k: v for k, v in meta.items() if k not in ordered})
+            data_attrs = ' '.join(f'{k}="{v}"' for k, v in ordered.items())
+
+            orientation = meta.get('data-orientation', '')
+            if orientation == 'landscape':
+                label = '此处以下为分节符(横板)'
+            elif orientation == 'portrait':
+                label = '此处以下为分节符(竖版)'
+            else:
+                label = '此处为分节符'
+
+            return (
+                f'<p contenteditable="false" {data_attrs} class="section-break"'
+                f' style="border-top: 3px dashed #ff4040; text-align: center; height: 3px;'
+                f' margin:10px 0; clear: both; cursor: default; user-select: none;">'
+                f'<span style="position: relative; top: -12px; background: #fff;'
+                f' padding: 0 10px; color: #ff4040; font-size: 14px;">{label}</span>'
+                f'</p>'
+            )
+
+        for marker, info in breaks_map.items():
+            replacement = PAGE_BREAK_HTML if info['type'] == 'page' \
+                else make_section_break_html(info.get('meta', {}))
+
+            idx = html_content.find(marker)
+            if idx == -1:
+                logger.debug(f"⚠️ 未在HTML中找到占位符：{marker}")
+                continue
+
+            # 向前找最近的 <p 开始标签
+            p_start = html_content.rfind('<p', 0, idx)
+            # 向后找 </p> 结束标签
+            p_end_tag = html_content.find('</p>', idx)
+            if p_start == -1 or p_end_tag == -1:
+                continue
+            p_end = p_end_tag + len('</p>')
+            html_content = html_content[:p_start] + replacement + html_content[p_end:]
+            logger.debug(f"✅ 已恢复分隔符：{marker} → {info['type']}")
+
+        return html_content
+
+    # ---------- HTML → DOCX 方向 ----------
+
+    def _extract_break_markers_from_html(self, html_text: str):
+        """
+        从 HTML 中提取自定义分页符/分节符 <p> 标签，
+        替换为唯一文本占位符（Spire 可识别的普通段落）。
+
+        Returns:
+            (processed_html, breaks_info)
+            breaks_info: [{'marker': str, 'type': 'page'|'section', 'meta': {...}}, ...]
+        """
+        breaks_info = []
+
+        # 匹配 class 含 page-break 或 section-break 的 <p>，以及紧随的 &nbsp; 段落
+        BREAK_RE = re.compile(
+            r'<p\b([^>]*\bclass="[^"]*\b(?:page-break|section-break)\b[^"]*"[^>]*)>'
+            r'.*?</p\s*>'
+            r'(?:\s*<p[^>]*>\s*&nbsp;\s*</p\s*>)?',
+            re.IGNORECASE | re.DOTALL
+        )
+
+        def replacer(m):
+            attrs_str = m.group(1)
+            class_m = re.search(r'\bclass="([^"]*)"', attrs_str, re.IGNORECASE)
+            class_val = class_m.group(1) if class_m else ''
+            is_section = 'section-break' in class_val
+
+            marker_id = uuid.uuid4().hex[:8].upper()
+
+            if is_section:
+                meta = {}
+                for data_m in re.finditer(r'\b(data-[\w-]+)="([^"]*)"', attrs_str):
+                    meta[data_m.group(1)] = data_m.group(2)
+                marker = f'SB_MARKER_{marker_id}'
+                breaks_info.append({'marker': marker, 'type': 'section', 'meta': meta})
+            else:
+                marker = f'PB_MARKER_{marker_id}'
+                breaks_info.append({'marker': marker, 'type': 'page'})
+
+            return f'<p>{marker}</p>'
+
+        processed_html = BREAK_RE.sub(replacer, html_text)
+        logger.debug(f"📄 从HTML提取分隔符：{len(breaks_info)} 个")
+        return processed_html, breaks_info
+
+    def _apply_break_markers_to_docx(self, docx_path: str, breaks_info: list):
+        """
+        在 Spire 生成的 DOCX 中找到占位符段落，替换为真实的分页符/分节符 XML。
+        """
+        if not breaks_info:
+            return
+
+        marker_map = {item['marker']: item for item in breaks_info}
+        doc = PythonDocx(docx_path)
+        modified = False
+
+        for para in doc.paragraphs:
+            text = para.text.strip()
+            if text not in marker_map:
+                continue
+
+            info = marker_map[text]
+            p_elem = para._p
+
+            # 清空段落所有 run
+            for r in p_elem.findall(qn('w:r')):
+                p_elem.remove(r)
+
+            if info['type'] == 'page':
+                r_el = OxmlElement('w:r')
+                br_el = OxmlElement('w:br')
+                br_el.set(qn('w:type'), 'page')
+                r_el.append(br_el)
+                p_elem.append(r_el)
+                logger.debug(f"✅ 写入分页符：{text}")
+
+            elif info['type'] == 'section':
+                meta = info.get('meta', {})
+
+                pPr = p_elem.find(qn('w:pPr'))
+                if pPr is None:
+                    pPr = OxmlElement('w:pPr')
+                    p_elem.insert(0, pPr)
+
+                # 移除旧的 sectPr（若有）
+                old = pPr.find(qn('w:sectPr'))
+                if old is not None:
+                    pPr.remove(old)
+
+                sectPr = OxmlElement('w:sectPr')
+
+                section_type = meta.get('data-section-type', 'nextPage')
+                type_el = OxmlElement('w:type')
+                type_el.set(qn('w:val'), section_type)
+                sectPr.append(type_el)
+
+                if 'data-page-width' in meta or 'data-page-height' in meta:
+                    pgSz = OxmlElement('w:pgSz')
+                    pgSz.set(qn('w:w'), meta.get('data-page-width', '12240'))
+                    pgSz.set(qn('w:h'), meta.get('data-page-height', '15840'))
+                    if meta.get('data-orientation') == 'landscape':
+                        pgSz.set(qn('w:orient'), 'landscape')
+                    sectPr.append(pgSz)
+
+                margin_keys = [f'data-margin-{s}' for s in ['top', 'bottom', 'left', 'right']]
+                if any(k in meta for k in margin_keys):
+                    pgMar = OxmlElement('w:pgMar')
+                    for side in ['top', 'bottom', 'left', 'right']:
+                        val = meta.get(f'data-margin-{side}')
+                        if val:
+                            pgMar.set(qn(f'w:{side}'), val)
+                    sectPr.append(pgMar)
+
+                pPr.append(sectPr)
+                logger.debug(f"✅ 写入分节符：{text}，类型={section_type}")
+
+            modified = True
+
+        if modified:
+            doc.save(docx_path)
+            logger.debug(f"💾 分隔符已写入DOCX：{docx_path}")
 
     # ------------------------------------------------------------------ #
     #  HTML → DOCX 分片工具                                                #
@@ -2840,11 +3166,24 @@ class DocxHtmlConverter:
             html_text = self._fix_centered_images_for_import(html_text)
             html_text = self._normalize_img_units_for_import(html_text)
 
+            # 提取分页符/分节符，替换为唯一占位符
+            breaks_info = []
+            try:
+                html_text, breaks_info = self._extract_break_markers_from_html(html_text)
+            except Exception as _be:
+                logger.warning(f"⚠️ 分隔符预处理失败，跳过：{_be}")
+
             para_count = self._html_count_paragraphs(html_text)
             logger.debug(f"📊 HTML 段落估算：{para_count}，阈值：{self.MAX_PARAGRAPHS}")
             if para_count <= self.MAX_PARAGRAPHS:
                 logger.debug("✅ 无需分片，直接转换")
-                return self._html_chunk_to_docx(html_text, output_docx_path, temp_img_dir)
+                ok = self._html_chunk_to_docx(html_text, output_docx_path, temp_img_dir)
+                if ok and breaks_info:
+                    try:
+                        self._apply_break_markers_to_docx(output_docx_path, breaks_info)
+                    except Exception as _be:
+                        logger.warning(f"⚠️ 分隔符写入DOCX失败：{_be}")
+                return ok
 
             logger.debug(f"⚡ 触发 HTML 分片转换（段落估算 {para_count} > {self.MAX_PARAGRAPHS}）")
             chunk_dir = self._normalize_path(
@@ -2870,7 +3209,13 @@ class DocxHtmlConverter:
                 return False
 
             logger.debug(f"🔗 开始合并 {len(chunk_docx_paths)} 个 chunk DOCX...")
-            return self._merge_docx_chunks(chunk_docx_paths, output_docx_path)
+            ok = self._merge_docx_chunks(chunk_docx_paths, output_docx_path)
+            if ok and breaks_info:
+                try:
+                    self._apply_break_markers_to_docx(output_docx_path, breaks_info)
+                except Exception as _be:
+                    logger.warning(f"⚠️ 分隔符写入DOCX失败（分片路径）：{_be}")
+            return ok
 
         except Exception as e:
             logger.error(f"❌ HTML转DOCX失败：{str(e)}")

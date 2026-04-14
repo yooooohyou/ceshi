@@ -273,7 +273,8 @@ async def update_html_by_node_new(
                 ))
                 new_record_id = cursor.fetchone()[0]
                 conn.commit()
-
+        
+        # 调用表格宽度适配接口
         new_file_path = call_set_table_width(temp_docx_path_1)
         with open(new_file_path, "rb") as _f:
             file_bytes = _f.read()
