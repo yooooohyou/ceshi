@@ -2419,22 +2419,41 @@ class DocxHtmlConverter:
 
         PAGE_BREAK_HTML = (
             '<p contenteditable="false" class="page-break"'
-            ' style="page-break-after: always;height: 3px; border-top: 3px dashed #facc14;'
-            ' text-align: center; margin: 0; clear: both; cursor: default; user-select: none;">'
+            ' style="page-break-after: always; height: 3px; border-top: 3px dashed #169179;'
+            ' text-align: center; margin:10px 0; clear: both; cursor: default; user-select: none;">'
             '<span style="position: relative; top: -12px; background: #fff;'
-            ' padding: 0 10px; color: #facc14; font-size: 14px;">此处为分页符</span>'
+            ' padding: 0 10px; color: #169179; font-size: 14px;">此处为分页符</span>'
             '</p><p>&nbsp;</p>'
         )
 
+        # data-* 属性的输出顺序（与前端保持一致）
+        DATA_ATTR_ORDER = [
+            'data-section-type', 'data-page-width', 'data-page-height',
+            'data-orientation', 'data-margin-top', 'data-margin-bottom',
+            'data-margin-left', 'data-margin-right',
+        ]
+
         def make_section_break_html(meta: dict) -> str:
-            data_attrs = ' '.join(f'{k}="{v}"' for k, v in sorted(meta.items()))
+            # 按约定顺序拼接 data-* 属性，未知属性追加到末尾
+            ordered = {k: meta[k] for k in DATA_ATTR_ORDER if k in meta}
+            ordered.update({k: v for k, v in meta.items() if k not in ordered})
+            data_attrs = ' '.join(f'{k}="{v}"' for k, v in ordered.items())
+
+            orientation = meta.get('data-orientation', '')
+            if orientation == 'landscape':
+                label = '此处以下为分节符(横板)'
+            elif orientation == 'portrait':
+                label = '此处以下为分节符(竖版)'
+            else:
+                label = '此处为分节符'
+
             return (
-                f'<p contenteditable="false" class="section-break" {data_attrs}'
-                f' style="page-break-after: always;height: 3px; border-top: 3px dashed #facc14;'
-                f' text-align: center; margin: 0; clear: both; cursor: default; user-select: none;">'
+                f'<p contenteditable="false" {data_attrs} class="section-break"'
+                f' style="border-top: 3px dashed #ff4040; text-align: center; height: 3px;'
+                f' margin:10px 0; clear: both; cursor: default; user-select: none;">'
                 f'<span style="position: relative; top: -12px; background: #fff;'
-                f' padding: 0 10px; color: #facc14; font-size: 14px;">此处为分节符</span>'
-                f'</p><p>&nbsp;</p>'
+                f' padding: 0 10px; color: #ff4040; font-size: 14px;">{label}</span>'
+                f'</p>'
             )
 
         for marker, info in breaks_map.items():
