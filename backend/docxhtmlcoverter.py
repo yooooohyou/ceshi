@@ -2272,8 +2272,8 @@ class DocxHtmlConverter:
         html_content = self._fix_underline_span_width(html_content)
 
         # 13. 恢复分页符/分节符自定义标记
+        logger.warning(f"📄 准备恢复分隔符，breaks_map={len(breaks_map)} 个")
         if breaks_map:
-            logger.debug("📄 恢复分页符/分节符标记...")
             html_content = self._restore_break_markers_in_html(html_content, breaks_map)
 
         # 14. 保存最终HTML
@@ -2408,6 +2408,7 @@ class DocxHtmlConverter:
 
             if not has_real_text:
                 # ① 纯分页符段落：整段替换为占位符
+                logger.warning(f"[分页符①] 纯分页符段落，注入标记：{marker}")
                 for r in p_elem.findall(qn('w:r')):
                     p_elem.remove(r)
                 r_el = OxmlElement('w:r')
@@ -2417,6 +2418,7 @@ class DocxHtmlConverter:
                 p_elem.append(r_el)
             else:
                 # ② 分页符与正文共存：在本段前插入占位符段落，然后从 run 中移除 w:br
+                logger.warning(f"[分页符②] 混合段落，插入标记：{marker}，正文={repr(para.text[:30])}")
                 marker_p = OxmlElement('w:p')
                 marker_r = OxmlElement('w:r')
                 marker_t = OxmlElement('w:t')
@@ -2445,7 +2447,9 @@ class DocxHtmlConverter:
         temp_docx_name = f"_breaks_{uuid.uuid4().hex[:8]}.docx"
         temp_docx_path = self._normalize_path(os.path.join(work_dir, temp_docx_name))
         doc.save(temp_docx_path)
-        logger.debug(f"📄 分隔符占位符已注入，临时文件：{temp_docx_path}，标记数：{len(breaks_map)}")
+        logger.warning(f"📄 分隔符占位符已注入，临时文件：{temp_docx_path}，"
+                       f"分页符：{sum(1 for v in breaks_map.values() if v['type']=='page')}，"
+                       f"分节符：{sum(1 for v in breaks_map.values() if v['type']=='section')}")
         return temp_docx_path, breaks_map
 
 
@@ -2496,24 +2500,39 @@ class DocxHtmlConverter:
                 f'</p>'
             )
 
+        # 支持 Spire 将标记段落渲染为 <p> 或 <h1>~<h6> 的情况
+        BLOCK_OPEN_RE = re.compile(r'<(p|h[1-6])\b', re.IGNORECASE)
+
         for marker, info in breaks_map.items():
             replacement = PAGE_BREAK_HTML if info['type'] == 'page' \
                 else make_section_break_html(info.get('meta', {}))
 
             idx = html_content.find(marker)
             if idx == -1:
-                logger.debug(f"⚠️ 未在HTML中找到占位符：{marker}")
+                logger.warning(f"⚠️ 未在HTML中找到占位符：{marker}（类型={info['type']}）")
                 continue
 
-            # 向前找最近的 <p 开始标签
-            p_start = html_content.rfind('<p', 0, idx)
-            # 向后找 </p> 结束标签
-            p_end_tag = html_content.find('</p>', idx)
-            if p_start == -1 or p_end_tag == -1:
+            # 向前找最近的块级开始标签（<p 或 <h1>~<h6>）
+            p_start = -1
+            matched_tag = 'p'
+            for m in BLOCK_OPEN_RE.finditer(html_content[:idx]):
+                p_start = m.start()
+                matched_tag = m.group(1).lower()
+
+            if p_start == -1:
+                logger.warning(f"⚠️ 找不到占位符 {marker} 的开始标签")
                 continue
-            p_end = p_end_tag + len('</p>')
+
+            # 向后找对应的关闭标签
+            close_tag = f'</{matched_tag}>'
+            p_end_tag = html_content.find(close_tag, idx)
+            if p_end_tag == -1:
+                logger.warning(f"⚠️ 找不到占位符 {marker} 的关闭标签 {close_tag}")
+                continue
+
+            p_end = p_end_tag + len(close_tag)
             html_content = html_content[:p_start] + replacement + html_content[p_end:]
-            logger.debug(f"✅ 已恢复分隔符：{marker} → {info['type']}")
+            logger.warning(f"✅ 已恢复分隔符：{marker} → {info['type']}（原标签 <{matched_tag}>）")
 
         return html_content
 
