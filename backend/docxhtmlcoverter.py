@@ -2453,6 +2453,33 @@ class DocxHtmlConverter:
         if not modified:
             return docx_path, {}
 
+        # 为每个分节符填入"下一节"的方向，供标签"此处以下"显示。
+        # OOXML 规则：pPr/sectPr 描述当前（结束于此）节；分节符之后那节的属性
+        # 来自下一个 pPr/sectPr，最后一节来自 body 级 sectPr。
+        body_orient = ''
+        body_sectPr_el = doc.element.body.find(qn('w:sectPr'))
+        if body_sectPr_el is not None:
+            _pg = body_sectPr_el.find(qn('w:pgSz'))
+            if _pg is not None:
+                body_orient = _pg.get(qn('w:orient'), '')
+                if not body_orient:
+                    try:
+                        _bw = int(_pg.get(qn('w:w')) or 0)
+                        _bh = int(_pg.get(qn('w:h')) or 0)
+                        if _bw and _bh:
+                            body_orient = 'landscape' if _bw > _bh else 'portrait'
+                    except (ValueError, TypeError):
+                        pass
+        sb_markers = [m for m, v in breaks_map.items() if v['type'] == 'section']
+        for _i, _marker in enumerate(sb_markers):
+            _next_orient = (
+                breaks_map[sb_markers[_i + 1]]['meta'].get('data-orientation', '')
+                if _i + 1 < len(sb_markers)
+                else body_orient
+            )
+            if _next_orient:
+                breaks_map[_marker]['meta']['data-next-orientation'] = _next_orient
+
         temp_docx_name = f"_breaks_{uuid.uuid4().hex[:8]}.docx"
         temp_docx_path = self._normalize_path(os.path.join(work_dir, temp_docx_name))
         doc.save(temp_docx_path)
@@ -2487,15 +2514,17 @@ class DocxHtmlConverter:
         ]
 
         def make_section_break_html(meta: dict) -> str:
-            # 按约定顺序拼接 data-* 属性，未知属性追加到末尾
-            ordered = {k: meta[k] for k in DATA_ATTR_ORDER if k in meta}
-            ordered.update({k: v for k, v in meta.items() if k not in ordered})
+            # 按约定顺序拼接 data-* 属性，排除内部字段 data-next-orientation
+            display_meta = {k: v for k, v in meta.items() if k != 'data-next-orientation'}
+            ordered = {k: display_meta[k] for k in DATA_ATTR_ORDER if k in display_meta}
+            ordered.update({k: v for k, v in display_meta.items() if k not in ordered})
             data_attrs = ' '.join(f'{k}="{v}"' for k, v in ordered.items())
 
-            orientation = meta.get('data-orientation', '')
-            if orientation == 'landscape':
-                label = '此处以下为分节符(横板)'
-            elif orientation == 'portrait':
+            # 标签优先用"下一节"方向（data-next-orientation），表示分节符以下那节的版式
+            label_orient = meta.get('data-next-orientation') or meta.get('data-orientation', '')
+            if label_orient == 'landscape':
+                label = '此处以下为分节符(横版)'
+            elif label_orient == 'portrait':
                 label = '此处以下为分节符(竖版)'
             else:
                 label = '此处为分节符'
