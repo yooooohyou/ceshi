@@ -2362,6 +2362,15 @@ class DocxHtmlConverter:
                             val = pgSz.get(attr)
                             if val:
                                 meta[key] = val
+                        # 部分 Word 不写 w:orient，仅靠宽>高表示横版，需补充推断
+                        if 'data-orientation' not in meta:
+                            try:
+                                w = int(meta.get('data-page-width', 0))
+                                h = int(meta.get('data-page-height', 0))
+                                if w and h:
+                                    meta['data-orientation'] = 'landscape' if w > h else 'portrait'
+                            except ValueError:
+                                pass
 
                     pgMar = sectPr.find(qn('w:pgMar'))
                     if pgMar is not None:
