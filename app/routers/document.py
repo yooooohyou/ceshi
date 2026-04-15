@@ -20,7 +20,7 @@ from app.db.database import (
     process_split_tree_nodes_with_select,
     query_and_build_tree,
 )
-from app.models.schemas import unified_response
+from app.models.schemas import unified_response, UpdateTreeStructureRequest, TreeNodeUpdate
 from app.utils.file_utils import generate_unique_file_id
 from app.utils.html_utils import (
     get_html_heading_levels,
@@ -510,3 +510,85 @@ async def query_format_storage_by_type(
         raise HTTPException(status_code=500, detail=f"数据库查询失败：{str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"查询失败：{str(e)}")
+
+
+@router.post("/update_tree_structure_based_on_record_id", summary="根据record_id更新树结构层级")
+async def update_tree_structure_based_on_record_id(body: UpdateTreeStructureRequest):
+    """
+    根据前端传入的树形结构更新 yxdl_docx_title_trees 中节点的
+    level、parent_id、idx 字段。
+
+    - idx 按 DFS 顺序全局递增（与现有逻辑保持一致）
+    - 根节点的 parent_id 置为 NULL
+    """
+    record_id = body.record_id
+
+    # ── 1. 校验 record_id 存在 ─────────────────────────────────────────────
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    'SELECT id FROM "yxdl_docx_upload_records" WHERE id = %s',
+                    (record_id,),
+                )
+                if not cursor.fetchone():
+                    return unified_response(404, f"未找到record_id={record_id}的上传记录")
+    except Exception as e:
+        return unified_response(500, f"数据库查询失败：{str(e)}")
+
+    # ── 2. DFS 展开树，收集 (node_id, level, parent_id, idx) ──────────────
+    updates: list[tuple] = []   # (level, parent_id, idx, node_id)
+    counter = [0]
+
+    def _dfs(nodes: list[TreeNodeUpdate], parent_id: int | None):
+        for node in nodes:
+            idx = counter[0]
+            counter[0] += 1
+            updates.append((node.level, parent_id, idx, node.node_id))
+            if node.children:
+                _dfs(node.children, node.node_id)
+
+    _dfs(body.node_ids, None)
+
+    if not updates:
+        return unified_response(400, "node_ids 为空，无需更新")
+
+    # ── 3. 校验所有 node_id 均属于该 record_id ────────────────────────────
+    node_id_list = [u[3] for u in updates]
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f'SELECT id FROM "yxdl_docx_title_trees" '
+                    f'WHERE record_id = %s AND id = ANY(%s)',
+                    (record_id, node_id_list),
+                )
+                valid_ids = {row[0] for row in cursor.fetchall()}
+    except Exception as e:
+        return unified_response(500, f"校验节点归属失败：{str(e)}")
+
+    invalid = [nid for nid in node_id_list if nid not in valid_ids]
+    if invalid:
+        return unified_response(400, f"以下节点不属于 record_id={record_id}：{invalid}")
+
+    # ── 4. 批量更新 ────────────────────────────────────────────────────────
+    current_time = datetime.datetime.now()
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.executemany(
+                    """UPDATE "yxdl_docx_title_trees"
+                       SET level = %s, parent_id = %s, idx = %s, update_time = %s
+                       WHERE id = %s""",
+                    [(level, parent_id, idx, current_time, node_id)
+                     for level, parent_id, idx, node_id in updates],
+                )
+                conn.commit()
+    except Exception as e:
+        return unified_response(500, f"更新树结构失败：{str(e)}")
+
+    return unified_response(200, "树结构更新成功", {
+        "record_id": record_id,
+        "updated_count": len(updates),
+        "update_time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
+    })
