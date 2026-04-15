@@ -1,5 +1,7 @@
 import json
+from typing import List
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 
 class UnescapedJSONResponse(JSONResponse):
@@ -14,6 +16,19 @@ class UnescapedJSONResponse(JSONResponse):
             separators=(",", ":"),
             default=str,
         ).encode("utf-8")
+
+
+class TreeNodeUpdate(BaseModel):
+    node_id: int
+    level: int
+    children: List["TreeNodeUpdate"] = []
+
+TreeNodeUpdate.model_rebuild()
+
+
+class UpdateTreeStructureRequest(BaseModel):
+    record_id: int
+    node_ids: List[TreeNodeUpdate]
 
 
 def unified_response(code: int, message: str, data: dict = None) -> JSONResponse:
