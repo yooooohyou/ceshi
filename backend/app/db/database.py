@@ -65,11 +65,34 @@ def init_db_tables():
     );
     """
 
+    # 嵌入组件表：增量创建，不覆盖已有数据
+    create_embed_components_sql = """
+    CREATE TABLE IF NOT EXISTS "yxdl_embed_components" (
+      "id"          SERIAL PRIMARY KEY,
+      "embed_id"    varchar(64) UNIQUE NOT NULL,
+      "embed_type"  varchar(32) NOT NULL,
+      "version"     int4 NOT NULL DEFAULT 1,
+      "title"       varchar(512) DEFAULT '',
+      "display"     varchar(16) DEFAULT 'inline',
+      "url"         varchar(1024),
+      "payload"     jsonb NOT NULL DEFAULT '{}'::jsonb,
+      "record_id"   int4,
+      "node_id"     int4,
+      "status"      int2 DEFAULT 1,
+      "create_time" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "update_time" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_embed_record ON "yxdl_embed_components" ("record_id");
+    CREATE INDEX IF NOT EXISTS idx_embed_node   ON "yxdl_embed_components" ("node_id");
+    CREATE INDEX IF NOT EXISTS idx_embed_type   ON "yxdl_embed_components" ("embed_type");
+    """
+
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(create_file_table_sql)
                 cursor.execute(create_title_tree_table_sql)
+                cursor.execute(create_embed_components_sql)
                 conn.commit()
         logger.debug("PostgreSQL数据表初始化成功")
     except Exception as e:
@@ -568,3 +591,105 @@ def query_and_build_tree(rec_id: int, cur_time: datetime.datetime) -> List[Dict[
         current_time=cur_time,
         file_base_path="",
     )
+
+
+# ─── 嵌入组件（yxdl_embed_components）CRUD ────────────────────────────────────
+
+def insert_embed_component(row: Dict[str, Any]) -> int:
+    """插入一条嵌入组件记录，返回自增 id。row 由 spec_to_db_row() 产出。"""
+    sql = """
+        INSERT INTO "yxdl_embed_components"
+            (embed_id, embed_type, version, title, display, url,
+             payload, record_id, node_id)
+        VALUES (%(embed_id)s, %(embed_type)s, %(version)s, %(title)s, %(display)s,
+                %(url)s, %(payload)s::jsonb, %(record_id)s, %(node_id)s)
+        RETURNING id
+    """
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, row)
+            new_id = cursor.fetchone()[0]
+            conn.commit()
+    logger.info(f"insert_embed_component: embed_id={row['embed_id']} db_id={new_id}")
+    return new_id
+
+
+def get_embed_component(embed_id: str) -> Optional[Dict[str, Any]]:
+    """按 embed_id 查询组件，不存在返回 None。"""
+    sql = """
+        SELECT id, embed_id, embed_type, version, title, display, url, payload,
+               record_id, node_id, status, create_time, update_time
+        FROM "yxdl_embed_components"
+        WHERE embed_id = %s AND status = 1
+    """
+    with get_db_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(sql, (embed_id,))
+            row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def update_embed_component(embed_id: str, row: Dict[str, Any]) -> bool:
+    """按 embed_id 更新组件；payload/title/url/version 可改，类型不可改。"""
+    sql = """
+        UPDATE "yxdl_embed_components"
+        SET title = %(title)s,
+            url = %(url)s,
+            version = %(version)s,
+            display = %(display)s,
+            payload = %(payload)s::jsonb,
+            update_time = CURRENT_TIMESTAMP
+        WHERE embed_id = %(embed_id)s AND status = 1
+    """
+    params = {**row, "embed_id": embed_id}
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, params)
+            affected = cursor.rowcount
+            conn.commit()
+    return affected > 0
+
+
+def delete_embed_component(embed_id: str) -> bool:
+    """软删除（status=0）。"""
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                'UPDATE "yxdl_embed_components" SET status = 0, update_time = CURRENT_TIMESTAMP '
+                'WHERE embed_id = %s AND status = 1',
+                (embed_id,),
+            )
+            affected = cursor.rowcount
+            conn.commit()
+    return affected > 0
+
+
+def list_embed_components_by_record(record_id: int) -> List[Dict[str, Any]]:
+    """列出某个文档下所有组件。"""
+    sql = """
+        SELECT embed_id, embed_type, version, title, display, url, payload,
+               record_id, node_id, create_time, update_time
+        FROM "yxdl_embed_components"
+        WHERE record_id = %s AND status = 1
+        ORDER BY create_time ASC
+    """
+    with get_db_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(sql, (record_id,))
+            return [dict(r) for r in cursor.fetchall()]
+
+
+def get_embed_components_by_ids(embed_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """批量按 embed_id 取组件，返回 {embed_id: row}。"""
+    if not embed_ids:
+        return {}
+    sql = """
+        SELECT embed_id, embed_type, version, title, display, url, payload,
+               record_id, node_id
+        FROM "yxdl_embed_components"
+        WHERE embed_id = ANY(%s) AND status = 1
+    """
+    with get_db_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(sql, (embed_ids,))
+            return {row["embed_id"]: dict(row) for row in cursor.fetchall()}

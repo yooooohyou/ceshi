@@ -285,6 +285,7 @@ async def update_html_by_node_new(
             file_id=str(node_id),
             had_title=1,
             rm_outline_in_doc=1,
+            del_page_break=0,
         )
         if split_result.status == 1:
             return unified_response(500, split_result.msg)
@@ -466,7 +467,7 @@ async def merge_docx_office_server(
 
     try:
         merge_request = MergeRequest(tree=nested_tree_items, files=files_, format_args=_MERGE_FORMAT_ARGS)
-        merged_file_message = call_docx_merge(merge_request, add_title=0, add_heading_num=1)
+        merged_file_message = call_docx_merge(merge_request, add_title=0, add_heading_num=1, update_title=1)
         old_filepath = merged_file_message.data.get("filepath", "")
         if old_filepath:
             new_filepath = call_set_table_width(old_filepath)

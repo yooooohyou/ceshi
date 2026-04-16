@@ -48,12 +48,13 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # ─── 路由注册 ─────────────────────────────────────────────────────────────────
-from app.routers import conversion, document, generation, logs, misc, upload  # noqa: E402
+from app.routers import conversion, document, embeds, generation, logs, misc, upload  # noqa: E402
 
 app.include_router(upload.router,     prefix="/doc_editor", tags=["上传"])
 app.include_router(document.router,   prefix="/doc_editor", tags=["文档管理"])
 app.include_router(conversion.router, prefix="/doc_editor", tags=["转换"])
 app.include_router(generation.router, prefix="/doc_editor", tags=["生成器"])
+app.include_router(embeds.router,     prefix="/doc_editor", tags=["嵌入组件"])
 app.include_router(logs.router,       tags=["日志"])
 app.include_router(misc.router,       tags=["其他"])
 

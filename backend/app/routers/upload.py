@@ -112,6 +112,7 @@ async def _split_mode(
         file_id=split_file_id,
         had_title=1,
         rm_outline_in_doc=1,
+        del_page_break=0,
     )
 
     tree_nodes = [TreeItem(**item) for item in split_result.data.get("tree", [])]
@@ -302,6 +303,7 @@ async def route_docx2html_marge(
             file_id=split_file_id,
             had_title=1,
             rm_outline_in_doc=1,
+            del_page_break=0,
         )
 
         html_list = []

@@ -90,7 +90,7 @@ class DeleteResponse(BaseModel):
 
 
 # -------------------------- 核心接口调用函数 --------------------------
-def call_docx_split(file_stream: bytes, file_name: str, file_id: str, had_title:int, rm_outline_in_doc:int) -> SplitResponse:
+def call_docx_split(file_stream: bytes, file_name: str, file_id: str, had_title:int, rm_outline_in_doc:int, del_page_break=0) -> SplitResponse:
     """
     调用文件拆分接口（同步）
     :param file_stream: 文件字节流
@@ -98,6 +98,7 @@ def call_docx_split(file_stream: bytes, file_name: str, file_id: str, had_title:
     :param file_id: 唯一标识id
     :param had_title: 是否含有标题
     :param rm_outline_in_doc: 是否去掉html内部outline9
+    :param del_page_break: 是否删除分页符 1：是 0：否
     :return: 拆分接口返回结果
     """
     url = f"{TARGET_BASE_URL}/api/tool_api/docx/split"
@@ -106,7 +107,7 @@ def call_docx_split(file_stream: bytes, file_name: str, file_id: str, had_title:
         files = {
             "file": (file_name, file_stream, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         }
-        data = {"id": file_id, "user_key": "DC4096F87722AD140F01AF8C3315B9A6", "had_title":had_title, "rm_outline_in_doc":rm_outline_in_doc}
+        data = {"id": file_id, "user_key": "DC4096F87722AD140F01AF8C3315B9A6", "had_title":had_title, "rm_outline_in_doc":rm_outline_in_doc, "del_page_break":del_page_break}
 
         response = requests.post(
             url,
@@ -135,12 +136,13 @@ def call_docx_split(file_stream: bytes, file_name: str, file_id: str, had_title:
         )
 
 
-def call_docx_merge(merge_request: MergeRequest, add_title=0, add_heading_num=1):
+def call_docx_merge(merge_request: MergeRequest, add_title=0, add_heading_num=1, update_title=1):
     """
     调用文件合并接口（同步）
     :param merge_request: 合并请求参数（tree+files）
     :param add_title: 是否添加标题 1：是，0：否
     :param add_heading_num: 是否添加自动标号 1：是，0：否
+    :param update_title:  是否使用树中的标题替换文中的标题 1:是 0:否
     :return: 合并后的文件字节流
     """
     url = f"{TARGET_BASE_URL}/api/tool_api/docx/megre"  # 文档中拼写为 megre（merge笔误）
@@ -149,6 +151,7 @@ def call_docx_merge(merge_request: MergeRequest, add_title=0, add_heading_num=1)
         logger.debug(data_)
         data_["add_title"] = add_title
         data_["add_heading_num"] = add_heading_num
+        data_["update_title"] = update_title
         data_["user_key"] = "DC4096F87722AD140F01AF8C3315B9A6"
         response = requests.post(
             url,
