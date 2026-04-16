@@ -475,14 +475,10 @@ async def merge_docx_office_server(
 
     # ── 表格宽度适配（独立 try，失败时降级使用原路径，不影响后续 embed 替换） ────
     old_filepath = merged_file_message.data.get("out_path", "")
-    logging.info(11111111111111)
-    logging.info(old_filepath)
     new_filepath = ""
     if old_filepath:
         try:
             widened = call_set_table_width(old_filepath)
-            logging.info(333333333333333)
-            logging.info(widened)
             if widened:
                 merged_file_message.data["filepath"] = widened
                 new_filepath = widened
@@ -493,8 +489,6 @@ async def merge_docx_office_server(
 
     # embed 替换使用的有效路径：优先 new_filepath，兜底 old_filepath
     effective_filepath = new_filepath or old_filepath
-    logging.info(2222222222222)
-    logging.info(effective_filepath)
 
     # ── 替换合并后 DOCX 中的 embed 占位符为真实表格 ──────────────────────────
     # 处理逻辑：
@@ -622,6 +616,24 @@ async def merge_docx_office_server(
                     )
         except Exception as e:
             logger.error(f"merge_docx_office_server: embed 替换失败 err={e}")
+
+    # ── 修正 out_map_path：使其指向最终文件（filepath），而非原始合并文件（out_path） ──
+    # 背景：call_set_table_width 会生成带 settable- 前缀的新文件并写入 data["filepath"]，
+    # 但外部合并服务只返回了 out_path 对应的 out_map_path URL，
+    # 此处将 URL 里的文件名替换为 filepath 的文件名，使前端拿到的下载链接指向正确文件。
+    if effective_filepath:
+        old_out_path = merged_file_message.data.get("out_path", "")
+        old_map_url  = merged_file_message.data.get("out_map_path", "")
+        if old_out_path and old_map_url:
+            old_basename = os.path.basename(old_out_path)
+            new_basename = os.path.basename(effective_filepath)
+            if old_basename and old_basename != new_basename and old_basename in old_map_url:
+                new_map_url = old_map_url.replace(old_basename, new_basename, 1)
+                merged_file_message.data["out_map_path"] = new_map_url
+                logger.info(
+                    f"merge_docx_office_server: out_map_path 已更新"
+                    f" {old_map_url} -> {new_map_url}"
+                )
 
     return merged_file_message
 
