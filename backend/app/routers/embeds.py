@@ -335,7 +335,7 @@ def _render_preview_page(spec: EmbedSpec, preview_rows: int = 10) -> str:
   <p class="tip">
     仅显示前 {preview_rows} 行数据。
     <a href="{full_url}" target="_blank">点击查看全部 {total} 行数据</a>
-    <span class="badge" style="display:none">embed_id: {html_lib.escape(spec.embed_id)}</span>
+    <span class="badge">embed_id: {html_lib.escape(spec.embed_id)}</span>
   </p>
 </body>
 </html>"""
@@ -386,7 +386,7 @@ async def test_html_full(
 </head>
 <body>
   <h3>{caption}（全部 {total} 行）</h3>
-  <p class="info" style="display:none">embed_id: {html_lib.escape(spec.embed_id)}</p >
+  <p class="info">embed_id: {html_lib.escape(spec.embed_id)}</p >
   {table_html}
 </body>
 </html>"""

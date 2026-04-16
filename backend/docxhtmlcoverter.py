@@ -2125,6 +2125,9 @@ class DocxHtmlConverter:
             html_content = self._make_tables_responsive(html_content)
             html_content = self._fix_underline_span_width(html_content)
 
+            # 还原内部路径 href（去除占位域名 / 清理 file:// 前缀）
+            html_content = self._decode_internal_hrefs(html_content)
+
             with open(html_path, 'w', encoding='utf-8') as f:
                 f.write(html_content)
 
@@ -2270,6 +2273,9 @@ class DocxHtmlConverter:
         html_content = self._make_tables_responsive(html_content)
         # ====================================================
         html_content = self._fix_underline_span_width(html_content)
+
+        # 还原内部路径 href（去除占位域名 / 清理 file:// 前缀）
+        html_content = self._decode_internal_hrefs(html_content)
 
         # 13. 恢复分页符/分节符自定义标记
         logger.warning(f"📄 准备恢复分隔符，breaks_map={len(breaks_map)} 个")
@@ -2968,6 +2974,9 @@ class DocxHtmlConverter:
                     r'<img\b[^>]*>', _to_rel_src, html_chunk, flags=re.IGNORECASE
                 )
 
+            # 保护内部路径 href，防止 Spire 将其转换为 file:// 路径
+            html_to_write = self._encode_internal_hrefs(html_to_write)
+
             with open(temp_html_path, 'w', encoding='utf-8') as f:
                 f.write(html_to_write)
 
@@ -3333,6 +3342,71 @@ class DocxHtmlConverter:
                     logger.debug(f"🗑️ 清理chunk目录：{chunk_dir}")
                 except Exception as e:
                     logger.warning(f"⚠️ 清理chunk目录失败：{e}")
+    # ------------------------------------------------------------------ #
+    #  超链接保护（HTML ↔ DOCX 方向）                                        #
+    # ------------------------------------------------------------------ #
+
+    # Spire 在将 HTML 写入 DOCX 时，会把形如 /path 的绝对路径 href
+    # 解析为本地文件路径并加上 file:// 前缀，导致回转 HTML 后链接失效。
+    # 通过以下占位域名"欺骗" Spire，让它把内部路径当成外部 HTTP 链接处理，
+    # 从而完整保留原始 URL。
+    _HREF_PLACEHOLDER_DOMAIN = "https://xappinternal.local"
+
+    def _encode_internal_hrefs(self, html_text: str) -> str:
+        """
+        HTML→DOCX 前调用：将非 http/https/mailto/tel/#/data: 开头的 href
+        替换为带占位域名的形式，防止 Spire 将其转换为 file:// 路径。
+
+        仅处理绝对路径（以 / 开头），相对路径暂不处理以避免语义变化。
+        示例：href="/doc_editor/embeds/EMB_xxx/go"
+              → href="https://xappinternal.local/doc_editor/embeds/EMB_xxx/go"
+        """
+        _safe_prefixes = ('http://', 'https://', 'mailto:', 'tel:', 'javascript:', '#', 'data:')
+
+        def _replace(m):
+            href = m.group(1)
+            if any(href.lower().startswith(p) for p in _safe_prefixes):
+                return m.group(0)
+            if href.startswith('/'):
+                return f'href="{self._HREF_PLACEHOLDER_DOMAIN}{href}"'
+            return m.group(0)
+
+        return re.sub(r'\bhref="([^"]*)"', _replace, html_text, flags=re.IGNORECASE)
+
+    def _decode_internal_hrefs(self, html_text: str) -> str:
+        """
+        DOCX→HTML 后调用：还原 _encode_internal_hrefs 写入的占位域名，
+        并兜底清理 Spire 遗留的 file:/// 前缀（用于处理旧存量 DOCX）。
+
+        规则：
+          1. https://xappinternal.local/path → /path
+          2. href="file:///path"             → href="/path"  （兜底）
+          3. href="file://path"              → href="/path"  （兜底）
+        """
+        placeholder = re.escape(self._HREF_PLACEHOLDER_DOMAIN)
+        # 还原占位域名
+        html_text = re.sub(
+            rf'\bhref="{placeholder}(/[^"]*)"',
+            r'href="\1"',
+            html_text,
+            flags=re.IGNORECASE,
+        )
+        # 兜底1：file:///绝对路径 → /path
+        html_text = re.sub(
+            r'\bhref="file:///([^"]*)"',
+            r'href="/\1"',
+            html_text,
+            flags=re.IGNORECASE,
+        )
+        # 兜底2：file://相对路径 → /path（少数情况）
+        html_text = re.sub(
+            r'\bhref="file://([^/][^"]*)"',
+            r'href="/\1"',
+            html_text,
+            flags=re.IGNORECASE,
+        )
+        return html_text
+
     # ------------------------------------------------------------------ #
     #  图片居中适配（HTML→DOCX 方向）                                       #
     # ------------------------------------------------------------------ #
