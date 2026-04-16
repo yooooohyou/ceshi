@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 # ─── 应用配置 ─────────────────────────────────────────────────────────────────
 from app.core.config import STATIC_WEB_PREFIX, UPLOAD_DIR, system_path
+from app.db.database import init_db_tables
 from app.middleware.http_logging import http_log_middleware
 from app.models.schemas import unified_response
 
@@ -50,6 +51,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 # ─── 路由注册 ─────────────────────────────────────────────────────────────────
 from app.routers import conversion, document, embeds, generation, logs, misc, upload  # noqa: E402
 
+init_db_tables()
 app.include_router(upload.router,     prefix="/doc_editor", tags=["上传"])
 app.include_router(document.router,   prefix="/doc_editor", tags=["文档管理"])
 app.include_router(conversion.router, prefix="/doc_editor", tags=["转换"])

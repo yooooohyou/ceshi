@@ -1,4 +1,23 @@
-DROP TABLE IF EXISTS "yxdl_docx_title_trees";
+CREATE TABLE IF NOT EXISTS "yxdl_embed_components" (
+      "id"          SERIAL PRIMARY KEY,
+      "embed_id"    varchar(64) UNIQUE NOT NULL,
+      "embed_type"  varchar(32) NOT NULL,
+      "version"     int4 NOT NULL DEFAULT 1,
+      "title"       varchar(512) DEFAULT '',
+      "display"     varchar(16) DEFAULT 'inline',
+      "url"         varchar(1024),
+      "payload"     jsonb NOT NULL DEFAULT '{}'::jsonb,
+      "record_id"   int4,
+      "node_id"     int4,
+      "status"      int2 DEFAULT 1,
+      "create_time" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "update_time" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_embed_record ON "yxdl_embed_components" ("record_id");
+    CREATE INDEX IF NOT EXISTS idx_embed_node   ON "yxdl_embed_components" ("node_id");
+    CREATE INDEX IF NOT EXISTS idx_embed_type   ON "yxdl_embed_components" ("embed_type");
+
+
 CREATE TABLE "yxdl_docx_title_trees" (
   "id" SERIAL PRIMARY KEY,
   "record_id" int4,
@@ -37,7 +56,6 @@ COMMENT ON COLUMN "yxdl_docx_title_trees"."split_id" IS '拆分接口返回的�
 COMMENT ON TABLE "yxdl_docx_title_trees" IS '标题树节点表';
 
 
-DROP TABLE IF EXISTS "yxdl_docx_upload_records";
 CREATE TABLE "yxdl_docx_upload_records" (
   "id" SERIAL PRIMARY KEY,
   "original_filename" varchar(255) COLLATE "pg_catalog"."default" NOT NULL,
