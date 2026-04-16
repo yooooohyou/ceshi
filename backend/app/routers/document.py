@@ -472,9 +472,41 @@ async def merge_docx_office_server(
         if old_filepath:
             new_filepath = call_set_table_width(old_filepath)
             merged_file_message.data["filepath"] = new_filepath
-        return merged_file_message
+        else:
+            new_filepath = ""
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件合并失败：{str(e)}")
+
+    # ── 替换合并后 DOCX 中的 embed 占位符为真实表格 ──────────────────────────
+    if new_filepath:
+        try:
+            from docx import Document
+            from app.utils.embed_marker import (
+                build_docx_replace_plan,
+                render_docx_replace_plan,
+                spec_from_db_row,
+            )
+            from app.db.database import list_embed_components_by_record
+
+            embed_rows = list_embed_components_by_record(result_record_id)
+            if embed_rows:
+                specs_by_id = {
+                    row["embed_id"]: spec_from_db_row(row)
+                    for row in embed_rows
+                }
+                doc = Document(new_filepath)
+                plan = build_docx_replace_plan(doc, specs_by_id)
+                if plan:
+                    replaced = render_docx_replace_plan(plan, doc)
+                    doc.save(new_filepath)
+                    logger.info(
+                        f"merge_docx_office_server: embed 替换完成"
+                        f" record_id={result_record_id} replaced={replaced}"
+                    )
+        except Exception as e:
+            logger.error(f"merge_docx_office_server: embed 替换失败 err={e}")
+
+    return merged_file_message
 
 
 @router.post("/generator_query_by_type", summary="查询生成器格式")
@@ -518,42 +550,64 @@ async def query_format_storage_by_type(
 
 @router.post("/update_tree_structure_based_on_record_id", summary="根据record_id更新树结构层级")
 async def update_tree_structure_based_on_record_id(body: UpdateTreeStructureRequest):
+    """
+    根据前端传入的树形结构更新 yxdl_docx_title_trees 中节点的
+    level、parent_id、idx 字段。
+
+    - idx 按 DFS 顺序全局递增（与现有逻辑保持一致）
+    - 根节点的 parent_id 置为 NULL
+    """
     record_id = body.record_id
 
-    # 1. 校验 record_id 略 (保持原样) ...
+    # ── 1. 校验 record_id 存在 ─────────────────────────────────────────────
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    'SELECT id FROM "yxdl_docx_upload_records" WHERE id = %s',
+                    (record_id,),
+                )
+                if not cursor.fetchone():
+                    return unified_response(404, f"未找到record_id={record_id}的上传记录")
+    except Exception as e:
+        return unified_response(500, f"数据库查询失败：{str(e)}")
 
-    # ── 2. DFS 展开树，重新计算 level 和 idx ──
-    updates: list[tuple] = []  # 存储待更新的数据：(level, parent_id, idx, node_id)
-    counter = [0]  # 全局索引计数器
+    # ── 2. DFS 展开树，收集 (node_id, level, parent_id, idx) ──────────────
+    updates: list[tuple] = []  # (level, parent_id, idx, node_id)
+    counter = [0]
 
-    def _dfs(nodes: list[TreeNodeUpdate], parent_id: int | None, current_level: int):
-        """
-        nodes: 当前层级的节点列表
-        parent_id: 父节点ID
-        current_level: 当前层级的数值（根层为1）
-        """
+    def _dfs(nodes: list[TreeNodeUpdate], parent_id: int | None):
         for node in nodes:
-            # 重新计算 idx：按遍历顺序递增
             idx = counter[0]
             counter[0] += 1
-
-            # 使用重新计算的 current_level 和 idx，忽略 node 对象中原始的 level/idx
-            updates.append((current_level, parent_id, idx, node.node_id))
-
-            # 递归处理子节点
+            updates.append((node.level, parent_id, idx, node.node_id))
             if node.children:
-                # 子节点层级 = 当前层级 + 1
-                _dfs(node.children, node.node_id, current_level + 1)
+                _dfs(node.children, node.node_id)
 
-    # 从根节点开始调用，初始层级为 1，父节点为 None
-    _dfs(body.node_ids, None, 1)
+    _dfs(body.node_ids, None)
 
     if not updates:
         return unified_response(400, "node_ids 为空，无需更新")
 
-    # 3. 校验所有 node_id 归属略 (保持原样) ...
+    # ── 3. 校验所有 node_id 均属于该 record_id ────────────────────────────
+    node_id_list = [u[3] for u in updates]
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f'SELECT id FROM "yxdl_docx_title_trees" '
+                    f'WHERE record_id = %s AND id = ANY(%s)',
+                    (record_id, node_id_list),
+                )
+                valid_ids = {row[0] for row in cursor.fetchall()}
+    except Exception as e:
+        return unified_response(500, f"校验节点归属失败：{str(e)}")
 
-    # ── 4. 批量更新数据库 ──
+    invalid = [nid for nid in node_id_list if nid not in valid_ids]
+    if invalid:
+        return unified_response(400, f"以下节点不属于 record_id={record_id}：{invalid}")
+
+    # ── 4. 批量更新 ────────────────────────────────────────────────────────
     current_time = datetime.datetime.now()
     try:
         with get_db_connection() as conn:
@@ -569,7 +623,7 @@ async def update_tree_structure_based_on_record_id(body: UpdateTreeStructureRequ
     except Exception as e:
         return unified_response(500, f"更新树结构失败：{str(e)}")
 
-    return unified_response(200, "树结构更新成功（层级与索引已重置）", {
+    return unified_response(200, "树结构更新成功", {
         "record_id": record_id,
         "updated_count": len(updates),
         "update_time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
