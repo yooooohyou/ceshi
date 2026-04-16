@@ -465,17 +465,33 @@ async def merge_docx_office_server(
 
     files_ = _collect_files(nested_tree_items)
 
+    # ── 合并 DOCX ─────────────────────────────────────────────────────────────
     try:
         merge_request = MergeRequest(tree=nested_tree_items, files=files_, format_args=_MERGE_FORMAT_ARGS)
         merged_file_message = call_docx_merge(merge_request, add_title=0, add_heading_num=1, update_title=1)
-        old_filepath = merged_file_message.data.get("filepath", "")
-        if old_filepath:
-            new_filepath = call_set_table_width(old_filepath)
-            merged_file_message.data["filepath"] = new_filepath
-        else:
-            new_filepath = ""
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件合并失败：{str(e)}")
+
+    # ── 表格宽度适配（独立 try，失败时降级使用原路径，不影响后续 embed 替换） ────
+    old_filepath = merged_file_message.data.get("out_path", "")
+    logging.info(11111111111111)
+    logging.info(old_filepath)
+    new_filepath = ""
+    if old_filepath:
+        try:
+            widened = call_set_table_width(old_filepath)
+            if widened:
+                merged_file_message.data["filepath"] = widened
+                new_filepath = widened
+            else:
+                logger.warning("merge_docx_office_server: call_set_table_width 返回空，使用原路径")
+        except Exception as e:
+            logger.warning(f"merge_docx_office_server: call_set_table_width 失败，降级使用原路径 err={e}")
+
+    # embed 替换使用的有效路径：优先 new_filepath，兜底 old_filepath
+    effective_filepath = new_filepath or old_filepath
+    logging.info(2222222222222)
+    logging.info(effective_filepath)
 
     # ── 替换合并后 DOCX 中的 embed 占位符为真实表格 ──────────────────────────
     # 处理逻辑：
@@ -485,7 +501,7 @@ async def merge_docx_office_server(
     #      需要在 DOCX 渲染器插入完整表格后将其移除，避免文档中出现重复表格。
     #   3. 调用 render_docx_replace_plan 将占位符替换为完整 Word 表格。
     #   4. 删除步骤 2 中标记的遗留表格。
-    if new_filepath:
+    if effective_filepath:
         try:
             from docx import Document
             from app.utils.embed_marker import (
@@ -501,7 +517,7 @@ async def merge_docx_office_server(
                     row["embed_id"]: spec_from_db_row(row)
                     for row in embed_rows
                 }
-                doc = Document(new_filepath)
+                doc = Document(effective_filepath)
                 plan = build_docx_replace_plan(doc, specs_by_id)
                 if plan:
                     # ── 在替换前，收集每个占位符段落后面紧跟的表格元素 ──────
@@ -537,10 +553,10 @@ async def merge_docx_office_server(
                                     f"merge_docx_office_server: 删除遗留表格失败 err={rm_err}"
                                 )
 
-                    doc.save(new_filepath)
+                    doc.save(effective_filepath)
                     logger.info(
                         f"merge_docx_office_server: embed 替换完成"
-                        f" record_id={result_record_id}"
+                        f" record_id={result_record_id} filepath={effective_filepath}"
                         f" replaced={replaced} removed_stale_tables={removed}"
                     )
         except Exception as e:
