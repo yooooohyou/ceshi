@@ -478,6 +478,13 @@ async def merge_docx_office_server(
         raise HTTPException(status_code=500, detail=f"文件合并失败：{str(e)}")
 
     # ── 替换合并后 DOCX 中的 embed 占位符为真实表格 ──────────────────────────
+    # 处理逻辑：
+    #   1. 扫描 DOCX，找出所有包含 【EMB_xxx】 的占位符段落
+    #   2. 记录每个占位符段落紧跟的下一个元素：若为表格（w:tbl），说明是
+    #      HTML embed 标记被 DOCX 转换服务渲染时遗留的预览表格（前 N 行 + 全部数据链接），
+    #      需要在 DOCX 渲染器插入完整表格后将其移除，避免文档中出现重复表格。
+    #   3. 调用 render_docx_replace_plan 将占位符替换为完整 Word 表格。
+    #   4. 删除步骤 2 中标记的遗留表格。
     if new_filepath:
         try:
             from docx import Document
@@ -497,11 +504,44 @@ async def merge_docx_office_server(
                 doc = Document(new_filepath)
                 plan = build_docx_replace_plan(doc, specs_by_id)
                 if plan:
+                    # ── 在替换前，收集每个占位符段落后面紧跟的表格元素 ──────
+                    # 这些表格是 HTML embed 标记（inner_html 里的预览/全量 HTML 表格）
+                    # 被 DOCX 转换服务转换后残留的，替换完成后需要删除。
+                    stale_tbl_elems: list = []
+                    for item in plan:
+                        para_elem = item["paragraph"]._element
+                        parent = para_elem.getparent()
+                        if parent is None:
+                            continue
+                        children = list(parent)
+                        idx = children.index(para_elem)
+                        if idx + 1 < len(children):
+                            next_elem = children[idx + 1]
+                            # w:tbl 标签（兼容带命名空间的完整 tag 字符串）
+                            if next_elem.tag.endswith("}tbl") or next_elem.tag == "w:tbl":
+                                stale_tbl_elems.append(next_elem)
+
+                    # ── 执行 embed 占位符 → 完整 Word 表格的替换 ─────────────
                     replaced = render_docx_replace_plan(plan, doc)
+
+                    # ── 删除 HTML 转换遗留的旧表格（预览行 + 全部数据链接等） ─
+                    removed = 0
+                    for tbl_elem in stale_tbl_elems:
+                        parent = tbl_elem.getparent()
+                        if parent is not None:
+                            try:
+                                parent.remove(tbl_elem)
+                                removed += 1
+                            except Exception as rm_err:
+                                logger.warning(
+                                    f"merge_docx_office_server: 删除遗留表格失败 err={rm_err}"
+                                )
+
                     doc.save(new_filepath)
                     logger.info(
                         f"merge_docx_office_server: embed 替换完成"
-                        f" record_id={result_record_id} replaced={replaced}"
+                        f" record_id={result_record_id}"
+                        f" replaced={replaced} removed_stale_tables={removed}"
                     )
         except Exception as e:
             logger.error(f"merge_docx_office_server: embed 替换失败 err={e}")
