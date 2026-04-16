@@ -481,6 +481,8 @@ async def merge_docx_office_server(
     if old_filepath:
         try:
             widened = call_set_table_width(old_filepath)
+            logging.info(333333333333333)
+            logging.info(widened)
             if widened:
                 merged_file_message.data["filepath"] = widened
                 new_filepath = widened
