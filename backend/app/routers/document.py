@@ -526,7 +526,7 @@ async def update_tree_structure_based_on_record_id(body: UpdateTreeStructureRequ
     - 根节点的 parent_id 置为 NULL
     """
     record_id = body.record_id
-
+    logging.info(body.node_ids)
     # ── 1. 校验 record_id 存在 ─────────────────────────────────────────────
     try:
         with get_db_connection() as conn:
