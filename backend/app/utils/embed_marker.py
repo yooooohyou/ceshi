@@ -23,6 +23,7 @@ import html
 import json
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
@@ -298,10 +299,32 @@ def build_docx_replace_plan(
     生成替换计划：[{paragraph, embed_id, spec, matched_text}, ...]
 
     调用方拿到计划后，按 spec.embed_type 路由到对应 DOCX 渲染器执行替换。
+
+    性能优化：
+        - 先用一个极简的 `EMBED_ID_PREFIX in text` 前缀检查跳过绝大多数段落，
+          避免对每个段落都跑正则
+        - 每 500 个段落输出一次扫描进度，便于排查大文档慢扫描
     """
     plan: List[Dict[str, Any]] = []
-    for para in docx_document.paragraphs:
+    t0 = time.perf_counter()
+    paragraphs = docx_document.paragraphs
+    total = len(paragraphs)
+    scanned = 0
+    matched_paragraphs = 0
+    prefix = EMBED_ID_PREFIX
+
+    for para in paragraphs:
+        scanned += 1
         text = para.text or ""
+        # 快速预过滤：绝大多数段落不含 EMB_ 前缀，直接跳过，省掉正则开销
+        if prefix not in text:
+            if scanned % 500 == 0:
+                logger.info(
+                    "build_docx_replace_plan 扫描中 %d/%d 段落 plan=%d 耗时=%.2fs",
+                    scanned, total, len(plan), time.perf_counter() - t0,
+                )
+            continue
+        matched_paragraphs += 1
         for eid in set(find_embed_ids_in_docx_text(text)):
             spec = specs_by_id.get(eid)
             if not spec:
@@ -313,23 +336,59 @@ def build_docx_replace_plan(
                 "spec":          spec,
                 "matched_text":  VISIBLE_PLACEHOLDER_FMT.format(embed_id=eid),
             })
+        if scanned % 500 == 0:
+            logger.info(
+                "build_docx_replace_plan 扫描中 %d/%d 段落 plan=%d 耗时=%.2fs",
+                scanned, total, len(plan), time.perf_counter() - t0,
+            )
+
+    logger.info(
+        "build_docx_replace_plan 扫描完成 段落=%d 命中段=%d 计划项=%d 耗时=%.2fs",
+        total, matched_paragraphs, len(plan), time.perf_counter() - t0,
+    )
     return plan
 
 
 def render_docx_replace_plan(plan: List[Dict[str, Any]], docx_document) -> int:
-    """按计划逐项调用已注册的 DOCX 渲染器；返回成功处理数。"""
+    """
+    按计划逐项调用已注册的 DOCX 渲染器；返回成功处理数。
+
+    性能/可观测性：
+        - 每渲染完一项就打印进度（含 embed_id、类型、单项耗时、累计耗时、ETA），
+          便于在日志里直接看到卡在了哪个表格上
+    """
     ok = 0
-    for item in plan:
+    total = len(plan)
+    t0 = time.perf_counter()
+    logger.info("render_docx_replace_plan 开始 共 %d 项 embed", total)
+
+    for i, item in enumerate(plan, 1):
         spec: EmbedSpec = item["spec"]
         renderer = _DOCX_RENDERERS.get(spec.embed_type)
         if renderer is None:
             logger.warning(f"render_docx_replace_plan: 类型 {spec.embed_type} 无 DOCX 渲染器")
             continue
+        t_item = time.perf_counter()
         try:
             renderer(spec, item["paragraph"], docx_document)
             ok += 1
         except Exception as e:
             logger.error(f"DOCX 渲染失败 embed_id={spec.embed_id}：{e}")
+            continue
+
+        elapsed = time.perf_counter() - t0
+        item_cost = time.perf_counter() - t_item
+        eta = (elapsed / i) * (total - i) if i > 0 else 0.0
+        logger.info(
+            "render_docx_replace_plan 进度 %d/%d embed_id=%s type=%s"
+            " 单项=%.2fs 累计=%.2fs ETA≈%.2fs",
+            i, total, spec.embed_id, spec.embed_type, item_cost, elapsed, eta,
+        )
+
+    logger.info(
+        "render_docx_replace_plan 结束 成功=%d/%d 总耗时=%.2fs",
+        ok, total, time.perf_counter() - t0,
+    )
     return ok
 
 

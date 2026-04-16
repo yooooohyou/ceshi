@@ -2,6 +2,7 @@ import datetime
 import json
 import logging
 import os
+import time
 from typing import Any, List, Optional
 
 import psycopg2
@@ -501,6 +502,8 @@ async def merge_docx_office_server(
     #      需要在 DOCX 渲染器插入完整表格后将其移除，避免文档中出现重复表格。
     #   3. 调用 render_docx_replace_plan 将占位符替换为完整 Word 表格。
     #   4. 删除步骤 2 中标记的遗留表格。
+    #
+    # 性能/可观测性：每个阶段都有独立的耗时日志，方便定位慢点。
     if effective_filepath:
         try:
             from docx import Document
@@ -511,36 +514,76 @@ async def merge_docx_office_server(
             )
             from app.db.database import list_embed_components_by_record
 
+            t_pipeline = time.perf_counter()
+
+            t_stage = time.perf_counter()
             embed_rows = list_embed_components_by_record(result_record_id)
+            logger.info(
+                f"merge_docx_office_server[embed]: 加载 embed 组件 record_id={result_record_id}"
+                f" count={len(embed_rows) if embed_rows else 0}"
+                f" 耗时={time.perf_counter() - t_stage:.2f}s"
+            )
+
             if embed_rows:
+                t_stage = time.perf_counter()
                 specs_by_id = {
                     row["embed_id"]: spec_from_db_row(row)
                     for row in embed_rows
                 }
+                logger.info(
+                    f"merge_docx_office_server[embed]: 反序列化 specs 完成"
+                    f" specs={len(specs_by_id)}"
+                    f" 耗时={time.perf_counter() - t_stage:.2f}s"
+                )
+
+                t_stage = time.perf_counter()
                 doc = Document(effective_filepath)
+                logger.info(
+                    f"merge_docx_office_server[embed]: 打开 DOCX 完成 filepath={effective_filepath}"
+                    f" 耗时={time.perf_counter() - t_stage:.2f}s"
+                )
+
+                t_stage = time.perf_counter()
                 plan = build_docx_replace_plan(doc, specs_by_id)
+                logger.info(
+                    f"merge_docx_office_server[embed]: 构建替换计划完成 plan={len(plan)}"
+                    f" 耗时={time.perf_counter() - t_stage:.2f}s"
+                )
+
                 if plan:
-                    # ── 在替换前，收集每个占位符段落后面紧跟的表格元素 ──────
+                    # ── 收集每个占位符段落后面紧跟的表格元素 ──────────────
                     # 这些表格是 HTML embed 标记（inner_html 里的预览/全量 HTML 表格）
                     # 被 DOCX 转换服务转换后残留的，替换完成后需要删除。
+                    # 性能优化：使用 lxml 的 getnext() 直接拿兄弟节点，
+                    # 避免 list(parent).index(para_elem) 的 O(N) 开销。
+                    t_stage = time.perf_counter()
                     stale_tbl_elems: list = []
                     for item in plan:
                         para_elem = item["paragraph"]._element
-                        parent = para_elem.getparent()
-                        if parent is None:
+                        next_elem = para_elem.getnext()
+                        if next_elem is None:
                             continue
-                        children = list(parent)
-                        idx = children.index(para_elem)
-                        if idx + 1 < len(children):
-                            next_elem = children[idx + 1]
-                            # w:tbl 标签（兼容带命名空间的完整 tag 字符串）
-                            if next_elem.tag.endswith("}tbl") or next_elem.tag == "w:tbl":
-                                stale_tbl_elems.append(next_elem)
+                        tag = next_elem.tag
+                        # w:tbl 标签（兼容带命名空间的完整 tag 字符串）
+                        if tag.endswith("}tbl") or tag == "w:tbl":
+                            stale_tbl_elems.append(next_elem)
+                    logger.info(
+                        f"merge_docx_office_server[embed]: 定位遗留表格完成"
+                        f" stale={len(stale_tbl_elems)}"
+                        f" 耗时={time.perf_counter() - t_stage:.2f}s"
+                    )
 
                     # ── 执行 embed 占位符 → 完整 Word 表格的替换 ─────────────
+                    t_stage = time.perf_counter()
                     replaced = render_docx_replace_plan(plan, doc)
+                    logger.info(
+                        f"merge_docx_office_server[embed]: 渲染替换完成"
+                        f" replaced={replaced}/{len(plan)}"
+                        f" 耗时={time.perf_counter() - t_stage:.2f}s"
+                    )
 
                     # ── 删除 HTML 转换遗留的旧表格（预览行 + 全部数据链接等） ─
+                    t_stage = time.perf_counter()
                     removed = 0
                     for tbl_elem in stale_tbl_elems:
                         parent = tbl_elem.getparent()
@@ -552,12 +595,28 @@ async def merge_docx_office_server(
                                 logger.warning(
                                     f"merge_docx_office_server: 删除遗留表格失败 err={rm_err}"
                                 )
+                    logger.info(
+                        f"merge_docx_office_server[embed]: 删除遗留表格完成"
+                        f" removed={removed}/{len(stale_tbl_elems)}"
+                        f" 耗时={time.perf_counter() - t_stage:.2f}s"
+                    )
 
+                    t_stage = time.perf_counter()
                     doc.save(effective_filepath)
                     logger.info(
-                        f"merge_docx_office_server: embed 替换完成"
+                        f"merge_docx_office_server[embed]: 保存 DOCX 完成"
+                        f" 耗时={time.perf_counter() - t_stage:.2f}s"
+                    )
+
+                    logger.info(
+                        f"merge_docx_office_server[embed]: 全流程完成"
                         f" record_id={result_record_id} filepath={effective_filepath}"
                         f" replaced={replaced} removed_stale_tables={removed}"
+                        f" 总耗时={time.perf_counter() - t_pipeline:.2f}s"
+                    )
+                else:
+                    logger.info(
+                        f"merge_docx_office_server[embed]: 无可替换占位符 record_id={result_record_id}"
                     )
         except Exception as e:
             logger.error(f"merge_docx_office_server: embed 替换失败 err={e}")

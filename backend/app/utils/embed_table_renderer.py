@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import html
 import logging
+import time
+from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
 from app.utils.embed_marker import (
@@ -42,6 +44,9 @@ from app.utils.embed_marker import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 大表格按 _PROGRESS_ROW_STEP 行打印一次进度
+_PROGRESS_ROW_STEP = 200
 
 # ─── 默认样式 ──────────────────────────────────────────────────────────────────
 
@@ -122,7 +127,7 @@ def _write_cell(
     bg: Optional[str] = None,
     border_color: str = "BFBFBF",
 ) -> None:
-    """写入单元格文字 + 样式。"""
+    """写入单元格文字 + 样式。（兼容老调用方；内部走慢路径）"""
     from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
     from docx.oxml.ns import qn
     from docx.shared import Pt
@@ -146,16 +151,93 @@ def _write_cell(
     )
 
 
+def _build_tc_borders_template(border_color: str):
+    """预先构造一个 w:tcBorders 元素，循环里 deepcopy 即可，避免每个单元格重复创建 5 个 OxmlElement。"""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    color = border_color.upper().lstrip("#")
+    tcBorders = OxmlElement("w:tcBorders")
+    for side in ("top", "left", "bottom", "right"):
+        el = OxmlElement(f"w:{side}")
+        el.set(qn("w:val"),   "single")
+        el.set(qn("w:sz"),    "4")
+        el.set(qn("w:space"), "0")
+        el.set(qn("w:color"), color)
+        tcBorders.append(el)
+    return tcBorders
+
+
+def _build_shd_template(fill_color: str):
+    """预先构造一个 w:shd 背景元素。"""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:val"),   "clear")
+    shd.set(qn("w:color"), "auto")
+    shd.set(qn("w:fill"),  fill_color.upper().lstrip("#"))
+    return shd
+
+
+def _fast_write_cell(
+    cell,
+    text: str,
+    font_name: str,
+    pt_size,
+    rgb,
+    bold: bool,
+    align,
+    tc_borders_tpl,
+    shd_tpl=None,
+    east_asia_qn=None,
+    vcenter=None,
+) -> None:
+    """
+    高频路径下使用的快速单元格写入：
+      - 不重复创建 OxmlElement，统一用 deepcopy(模板)
+      - 不重复解析 hex / 构造 Pt / RGBColor，全部由调用方预计算
+    """
+    tc = cell._tc
+    tcPr = tc.get_or_add_tcPr()
+    tcPr.append(deepcopy(tc_borders_tpl))
+    if shd_tpl is not None:
+        tcPr.append(deepcopy(shd_tpl))
+    if vcenter is not None:
+        cell.vertical_alignment = vcenter
+
+    para = cell.paragraphs[0]
+    para.alignment = align
+    # 新建 cell 时段落里只有一个空 run，省去 clear() 调用（其内部会遍历删除）
+    run = para.add_run(text)
+    font = run.font
+    font.name = font_name
+    font.size = pt_size
+    font.bold = bold
+    font.color.rgb = rgb
+    # 中文字体：eastAsia
+    if east_asia_qn is not None:
+        run._element.get_or_add_rPr().get_or_add_rFonts().set(east_asia_qn, font_name)
+
+
 # ─── DOCX 渲染器 ───────────────────────────────────────────────────────────────
 
 def render_table_to_docx(spec: EmbedSpec, paragraph, document) -> None:
     """
     用 spec.payload 中的表格数据，在 paragraph 所在位置插入真实 Word 表格。
     插入完成后移除占位符段落。
+
+    性能优化要点：
+        - 所有样式相关对象（RGBColor/Pt/border tcPr 模板/shd 模板）在循环外
+          预计算一次，循环内仅做 deepcopy + 赋值
+        - 整行取 cells 后顺序遍历，避免反复 table.cell(ri, ci) 索引
+        - 使用 lxml getnext/getparent，定位占位符位置不再 O(N)
+        - 大表格按 _PROGRESS_ROW_STEP 行打印进度日志，便于观察
     """
-    from docx.enum.table import WD_TABLE_ALIGNMENT
+    from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
     from docx.oxml import OxmlElement
-    from docx.shared import Cm
+    from docx.oxml.ns import qn
+    from docx.shared import Cm, Pt
+
+    t_total = time.perf_counter()
 
     payload = spec.payload or {}
     style   = _merge_style(payload.get("style"))
@@ -170,7 +252,7 @@ def render_table_to_docx(spec: EmbedSpec, paragraph, document) -> None:
     # ── 列数 ─────────────────────────────────────────────────────────────────
     col_count = len(headers) if headers else (max((len(r) for r in rows), default=1))
     if col_count == 0:
-        logger.warning("render_table_to_docx: 列数为 0，跳过")
+        logger.warning("render_table_to_docx: 列数为 0，跳过 embed_id=%s", spec.embed_id)
         return
 
     # ── 构建全部行 ────────────────────────────────────────────────────────────
@@ -185,16 +267,30 @@ def render_table_to_docx(spec: EmbedSpec, paragraph, document) -> None:
         is_header_row.append(False)
 
     if not all_rows:
-        logger.warning("render_table_to_docx: 无任何行数据，跳过")
+        logger.warning("render_table_to_docx: 无任何行数据，跳过 embed_id=%s", spec.embed_id)
         return
 
-    align_para   = _align_enum(style["cell_alignment"])
-    font_name    = style["font_name"]
-    p_elem       = paragraph._element
-    parent       = p_elem.getparent()
+    total_rows = len(all_rows)
+    align_para = _align_enum(style["cell_alignment"])
+    font_name  = style["font_name"]
 
-    # 记录占位符在父节点中的当前索引（后续所有插入基于此值）
-    insert_idx = list(parent).index(p_elem)
+    # ── 预计算样式对象（循环内零分配） ────────────────────────────────────────
+    header_pt   = Pt(int(style["header_font_size"]))
+    body_pt     = Pt(int(style["body_font_size"]))
+    header_rgb  = _hex_to_rgb(style["header_color"])
+    body_rgb    = _hex_to_rgb("000000")
+    border_tpl  = _build_tc_borders_template(style["border_color"])
+    header_shd  = _build_shd_template(style["header_bg"]) if style.get("header_bg") else None
+    east_asia   = qn("w:eastAsia")
+    vcenter     = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+
+    # ── 占位符父节点定位（lxml O(1)）─────────────────────────────────────────
+    p_elem = paragraph._element
+    parent = p_elem.getparent()
+    if parent is None:
+        logger.warning("render_table_to_docx: 占位段落已脱离父节点 embed_id=%s", spec.embed_id)
+        return
+    insert_idx = parent.index(p_elem)  # lxml 原生 index，比 list(parent).index 快
 
     # ── 可选：在占位段落前插入标题段落 ───────────────────────────────────────
     if caption:
@@ -211,45 +307,74 @@ def render_table_to_docx(spec: EmbedSpec, paragraph, document) -> None:
         insert_idx += 1   # 占位符已后移一位
 
     # ── 创建 Word 表格 ────────────────────────────────────────────────────────
-    # add_table 追加到 body 末尾；先把 tbl_elem 从末尾取出，再插到正确位置
-    table = document.add_table(rows=len(all_rows), cols=col_count)
+    t_create = time.perf_counter()
+    table = document.add_table(rows=total_rows, cols=col_count)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     tbl_elem = table._tbl
-    tbl_elem.getparent().remove(tbl_elem)   # 从末尾摘除
-    parent.insert(insert_idx, tbl_elem)      # 插到占位符所在位置
+    tbl_elem.getparent().remove(tbl_elem)    # 从 body 末尾摘除
+    parent.insert(insert_idx, tbl_elem)       # 插到占位符所在位置
+    create_cost = time.perf_counter() - t_create
 
     # ── 列宽 ─────────────────────────────────────────────────────────────────
     if col_widths:
+        widths_cm = [Cm(float(w)) for w in col_widths[:col_count]]
+        # 仅对第一行设置即可（python-docx 会通过 gridCol 影响整列），
+        # 但为兼容老逻辑仍逐行设置；改用整行 cells 取出，避免 .cell(r, c) 重复索引
         for row_obj in table.rows:
-            for ci, cell in enumerate(row_obj.cells):
-                if ci < len(col_widths):
-                    cell.width = Cm(float(col_widths[ci]))
+            row_cells = row_obj.cells
+            for ci, w in enumerate(widths_cm):
+                if ci < len(row_cells):
+                    row_cells[ci].width = w
         table.autofit = False
     else:
         table.autofit = True
 
-    # ── 填充单元格 ────────────────────────────────────────────────────────────
-    for ri, (row_data, is_hdr) in enumerate(zip(all_rows, is_header_row)):
-        for ci, text in enumerate(row_data):
-            cell = table.cell(ri, ci)
-            _write_cell(
-                cell         = cell,
-                text         = text,
-                font_name    = font_name,
-                font_size    = style["header_font_size"] if is_hdr else style["body_font_size"],
-                color        = style["header_color"] if is_hdr else "000000",
-                bold         = is_hdr,
-                align        = align_para,
-                bg           = style["header_bg"] if is_hdr else None,
-                border_color = style["border_color"],
+    # ── 填充单元格（核心循环，热路径） ───────────────────────────────────────
+    t_fill = time.perf_counter()
+    table_rows = table.rows  # 缓存属性引用
+    for ri in range(total_rows):
+        row_data = all_rows[ri]
+        is_hdr   = is_header_row[ri]
+        if is_hdr:
+            pt_size, rgb, shd = header_pt, header_rgb, header_shd
+        else:
+            pt_size, rgb, shd = body_pt, body_rgb, None
+        row_cells = table_rows[ri].cells   # 整行一次性取出
+        for ci in range(col_count):
+            _fast_write_cell(
+                cell           = row_cells[ci],
+                text           = row_data[ci],
+                font_name      = font_name,
+                pt_size        = pt_size,
+                rgb            = rgb,
+                bold           = is_hdr,
+                align          = align_para,
+                tc_borders_tpl = border_tpl,
+                shd_tpl        = shd,
+                east_asia_qn   = east_asia,
+                vcenter        = vcenter,
             )
+        # 大表格分阶段进度日志
+        if total_rows >= _PROGRESS_ROW_STEP and (
+            (ri + 1) % _PROGRESS_ROW_STEP == 0 or ri == total_rows - 1
+        ):
+            elapsed = time.perf_counter() - t_fill
+            done = ri + 1
+            speed = done / elapsed if elapsed > 0 else 0.0
+            eta = (total_rows - done) / speed if speed > 0 else 0.0
+            logger.info(
+                "render_table_to_docx 写入进度 embed_id=%s %d/%d 行"
+                " 已耗时=%.2fs 速度=%.0f行/s ETA≈%.2fs",
+                spec.embed_id, done, total_rows, elapsed, speed, eta,
+            )
+    fill_cost = time.perf_counter() - t_fill
 
     # ── 合并单元格（[行, 起始列, 结束列]） ────────────────────────────────────
     for instr in merge_instructions:
         if len(instr) != 3:
             continue
         ri, c_start, c_end = int(instr[0]), int(instr[1]), int(instr[2])
-        if ri >= len(all_rows) or c_end >= col_count:
+        if ri >= total_rows or c_end >= col_count:
             continue
         try:
             table.cell(ri, c_start).merge(table.cell(ri, c_end))
@@ -257,11 +382,13 @@ def render_table_to_docx(spec: EmbedSpec, paragraph, document) -> None:
             logger.warning(f"合并单元格失败 [{ri},{c_start},{c_end}]：{e}")
 
     # ── 移除占位符段落（此时它已被推到 insert_idx+1 位置） ────────────────────
-    p_elem.getparent().remove(p_elem)
+    parent.remove(p_elem)
 
+    total_cost = time.perf_counter() - t_total
     logger.info(
-        f"render_table_to_docx: embed_id={spec.embed_id} "
-        f"rows={len(all_rows)} cols={col_count}"
+        "render_table_to_docx 完成 embed_id=%s rows=%d cols=%d"
+        " 创建=%.2fs 填充=%.2fs 总计=%.2fs",
+        spec.embed_id, total_rows, col_count, create_cost, fill_cost, total_cost,
     )
 
 
@@ -334,5 +461,4 @@ register_html_renderer(TYPE_TABLE, render_table_to_html)
 register_docx_renderer(TYPE_TABLE, render_table_to_docx)
 
 logger.debug("embed_table_renderer: HTML 和 DOCX 渲染器已注册")
-
 
