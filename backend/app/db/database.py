@@ -35,7 +35,7 @@ def get_db_connection():
 def init_db_tables():
     """初始化 PostgreSQL 数据表（首次运行时调用）"""
     create_file_table_sql = """
-    CREATE TABLE "yxdl_docx_upload_records" (
+    CREATE TABLE IF NOT EXISTS "yxdl_docx_upload_records" (
       "id" SERIAL PRIMARY KEY,
       "original_filename" varchar(255) NOT NULL,
       "new_filename" varchar(255) NOT NULL,
@@ -48,7 +48,7 @@ def init_db_tables():
     """
 
     create_title_tree_table_sql = """
-    CREATE TABLE "yxdl_docx_title_trees" (
+    CREATE TABLE IF NOT EXISTS "yxdl_docx_title_trees" (
       "id" SERIAL PRIMARY KEY,
       "record_id" int4,
       "title_text" varchar(512) NOT NULL,
