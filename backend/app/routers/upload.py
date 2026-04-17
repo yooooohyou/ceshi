@@ -266,7 +266,6 @@ async def route_docx2html_marge(
     """获取 DOCX 文件并转换为合并 HTML"""
     file_path = ""
     split_file_id = ""
-    logging.info(99111111111111111111)
     file_content, original_filename, error = await _get_file_content_from_source(
         file_source_type, file_source
     )
@@ -292,9 +291,7 @@ async def route_docx2html_marge(
         with conn.cursor() as cursor:
             cursor.execute(update_sql, (split_file_id, current_time, record_id))
             conn.commit()
-    logging.info(111111111111111111)
-    logging.info(abs_file_path)
-    logging.info(222222222222222222)
+
     new_file_path = call_set_table_width(abs_file_path)
 
     with open(new_file_path, "rb") as _f:
