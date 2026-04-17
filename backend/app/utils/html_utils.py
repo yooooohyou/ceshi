@@ -230,3 +230,173 @@ def merge_html_texts(html_list: list) -> str:
         merged_body_parts.append(body.decode_contents() if body else str(soup))
     merged_body = "\n".join(merged_body_parts)
     return f"<!DOCTYPE html>\n<html>\n<body>\n{merged_body}\n</body>\n</html>"
+
+
+# ─── HTML 固定宽度处理 ────────────────────────────────────────────────────────
+
+def fix_html_to_fixed_width(html_content: str, width: int) -> str:
+    """将 HTML 中的自适应宽度属性转为固定值，使 HTML 渲染不超过指定宽度，同时保留原始样式。
+
+    处理范围：
+    - <style> 块：展开媒体查询（仅保留目标宽度生效的规则），转换 %/vw 为 px
+    - 内联 style 属性：转换宽度相关属性的 %/vw 为 px
+    - HTML width 属性（table/img/td 等）：转换百分比为 px
+    - 注入全局约束样式，确保内容不溢出指定宽度
+    """
+    soup = BeautifulSoup(html_content, "html.parser")
+
+    for style_tag in soup.find_all("style"):
+        if style_tag.string:
+            style_tag.string = _css_fix_for_width(style_tag.string, width)
+
+    for tag in soup.find_all(True):
+        if tag.get("style"):
+            tag["style"] = _inline_style_fix_for_width(tag["style"], width)
+        if tag.get("width"):
+            tag["width"] = _html_width_attr_to_px(tag["width"], width)
+
+    # 注入全局约束样式（置于最后，优先级高）
+    constraint_style = soup.new_tag("style")
+    constraint_style.string = (
+        f"html,body{{width:{width}px!important;max-width:{width}px!important;"
+        f"overflow-x:hidden!important;box-sizing:border-box!important;}}"
+        f"img{{max-width:100%!important;height:auto!important;}}"
+        f"table{{max-width:100%!important;}}"
+        f"*{{box-sizing:border-box!important;}}"
+    )
+
+    head_tag = soup.find("head")
+    html_tag = soup.find("html")
+    if head_tag:
+        head_tag.append(constraint_style)
+    elif html_tag:
+        new_head = soup.new_tag("head")
+        new_head.append(constraint_style)
+        html_tag.insert(0, new_head)
+    else:
+        # 片段 HTML：包裹固定宽度容器
+        wrapper = soup.new_tag(
+            "div",
+            style=(
+                f"width:{width}px;max-width:{width}px;"
+                f"overflow-x:hidden;box-sizing:border-box;"
+            ),
+        )
+        for child in list(soup.children):
+            wrapper.append(child.extract())
+        soup.append(wrapper)
+
+    return str(soup)
+
+
+def _css_fix_for_width(css: str, width: int) -> str:
+    """处理 CSS 文本：展开媒体查询，转换自适应宽度值为固定 px"""
+    css = _flatten_media_queries(css, width)
+    css = _convert_css_width_props(css, width)
+    return css
+
+
+def _flatten_media_queries(css: str, width: int) -> str:
+    """展开媒体查询，保留在目标宽度下生效的规则，移除不生效的"""
+    result_parts = []
+    pos = 0
+    media_re = re.compile(r'@media\b([^{]*)\{', re.IGNORECASE | re.DOTALL)
+
+    while pos < len(css):
+        m = media_re.search(css, pos)
+        if not m:
+            result_parts.append(css[pos:])
+            break
+
+        result_parts.append(css[pos:m.start()])
+        condition = m.group(1).strip()
+        block_start = m.end()
+
+        depth = 1
+        i = block_start
+        while i < len(css) and depth > 0:
+            if css[i] == "{":
+                depth += 1
+            elif css[i] == "}":
+                depth -= 1
+            i += 1
+
+        block_content = css[block_start : i - 1]
+
+        if _media_condition_applies(condition, width):
+            result_parts.append(block_content)
+
+        pos = i
+
+    return "".join(result_parts)
+
+
+def _media_condition_applies(condition: str, width: int) -> bool:
+    """判断媒体查询条件在指定宽度下是否生效"""
+    cond = condition.lower()
+
+    if re.search(r'\bprint\b|\bspeech\b', cond):
+        return False
+
+    max_w = re.search(r'max-width\s*:\s*(\d+(?:\.\d+)?)(px|em|rem)?', cond)
+    if max_w:
+        val = float(max_w.group(1)) * (16 if (max_w.group(2) or "px") in ("em", "rem") else 1)
+        if width > val:
+            return False
+
+    min_w = re.search(r'min-width\s*:\s*(\d+(?:\.\d+)?)(px|em|rem)?', cond)
+    if min_w:
+        val = float(min_w.group(1)) * (16 if (min_w.group(2) or "px") in ("em", "rem") else 1)
+        if width < val:
+            return False
+
+    return True
+
+
+_CSS_WIDTH_DECL_RE = re.compile(
+    r'((?:^|(?<=[{;]))\s*(?:width|max-width|min-width|flex-basis)\s*:\s*)([^;}\n]+)',
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _convert_css_width_props(css: str, width: int) -> str:
+    """将 CSS 中宽度属性的 %/vw 值转为固定 px"""
+    def replace_value(m):
+        return m.group(1) + _units_to_px(m.group(2), width)
+
+    return _CSS_WIDTH_DECL_RE.sub(replace_value, css)
+
+
+def _inline_style_fix_for_width(style: str, width: int) -> str:
+    """将内联 style 中宽度属性的 %/vw 值转为固定 px"""
+    def replace_decl(m):
+        return m.group(1) + m.group(2) + _units_to_px(m.group(3), width)
+
+    return re.sub(
+        r'((?:^|(?<=;))\s*(?:width|max-width|min-width|flex-basis)\s*)(:\s*)([^;]+)',
+        replace_decl,
+        style,
+        flags=re.IGNORECASE,
+    )
+
+
+def _html_width_attr_to_px(value: str, width: int) -> str:
+    """将 HTML width 属性的百分比值转为整数 px（不带单位）"""
+    value = value.strip()
+    m = re.match(r'^(\d+(?:\.\d+)?)%$', value)
+    if m:
+        return str(int(width * float(m.group(1)) / 100))
+    return value
+
+
+def _units_to_px(value: str, width: int) -> str:
+    """将 CSS 值中的 % 和 vw 单位替换为 px"""
+    def pct(m):
+        return f"{int(width * float(m.group(1)) / 100)}px"
+
+    def vw(m):
+        return f"{int(width * float(m.group(1)) / 100)}px"
+
+    value = re.sub(r'(\d+(?:\.\d+)?)%', pct, value)
+    value = re.sub(r'(\d+(?:\.\d+)?)vw', vw, value)
+    return value
