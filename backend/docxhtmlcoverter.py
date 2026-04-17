@@ -3222,6 +3222,31 @@ class DocxHtmlConverter:
         return BLOCK_RE.sub(_zero_spacing, html)
 
     @staticmethod
+    def _preprocess_tables_for_import(html: str) -> str:
+        """HTML→DOCX 前：将所有 <table> 设为 width:100% + table-layout:fixed，
+        使 Spire 按页面全宽渲染表格，同时保留各列宽度作为比例参考。"""
+        def _fix_table_open(m):
+            tag = m.group(0)
+            tag = re.sub(r'\s+width="[^"]*"', '', tag, flags=re.IGNORECASE)
+            style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE)
+            if style_m:
+                style = style_m.group(1)
+                style = re.sub(r'(?<![a-zA-Z-])width\s*:[^;]+;?', '', style, flags=re.IGNORECASE)
+                style = re.sub(r'table-layout\s*:[^;]+;?', '', style, flags=re.IGNORECASE)
+                style = style.strip('; ')
+                style = (style + '; ' if style else '') + 'width:100%;table-layout:fixed;'
+                tag = tag[:style_m.start()] + f'style="{style}"' + tag[style_m.end():]
+            else:
+                tag = re.sub(
+                    r'(<table\b)', r'\1 style="width:100%;table-layout:fixed;"',
+                    tag, flags=re.IGNORECASE, count=1,
+                )
+            return tag
+
+        return re.sub(r'<table\b[^>]*>', _fix_table_open, html, flags=re.IGNORECASE | re.DOTALL)
+
+    @staticmethod
+    @staticmethod
     def _clean_mce_html(html: str) -> str:
         """
         清理 TinyMCE 产生的冗余标记，避免 Spire 转换时因空块级元素报错：
@@ -3271,6 +3296,7 @@ class DocxHtmlConverter:
             html_text, temp_img_dir = self._extract_base64_images(html_text, output_dir)
             html_text = self._fix_centered_images_for_import(html_text)
             html_text = self._normalize_img_units_for_import(html_text)
+            html_text = self._preprocess_tables_for_import(html_text)
 
             # 提取分页符/分节符，替换为唯一占位符
             breaks_info = []

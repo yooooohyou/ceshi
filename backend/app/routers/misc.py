@@ -3,16 +3,42 @@ import os
 import subprocess
 import tempfile
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Body, File, HTTPException, UploadFile
 
 from app.core.config import UPLOAD_DIR, get_server_uploads_config
 from app.core.constants import LIBREOFFICE_PATH
 from app.models.schemas import unified_response
 from app.utils.file_utils import cleanup_temp_files
+from app.utils.html_utils import fix_html_to_fixed_width
 from fastapi.responses import FileResponse
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+@router.post("/fix-html-width", summary="HTML 固定宽度格式化")
+async def fix_html_width_api(
+    html_content: str = Body(..., description="需要处理的 HTML 文本"),
+    width: int = Body(..., description="目标固定宽度（像素），HTML 渲染不会超过此宽度", gt=0),
+):
+    """将 HTML 中的自适应宽度属性（百分比、vw 单位、媒体查询等）转换为固定像素值，
+    使 HTML 在指定宽度下渲染时不超宽，同时尽可能保留原始视觉样式。
+
+    处理内容：
+    - `<style>` 中的媒体查询展开（保留目标宽度适用的规则）
+    - CSS 宽度属性（width/max-width/min-width/flex-basis）的 %/vw 转 px
+    - 元素内联 `style` 属性中的宽度 %/vw 转 px
+    - HTML `width` 属性（table/img/td 等）的百分比转 px
+    - 注入全局约束样式确保内容不溢出
+    """
+    try:
+        if not html_content.strip():
+            return unified_response(400, "html_content 不能为空")
+        result_html = fix_html_to_fixed_width(html_content, width)
+        return unified_response(0, "处理成功", {"html": result_html})
+    except Exception as e:
+        logger.exception("fix_html_width 处理失败")
+        raise HTTPException(status_code=500, detail=f"处理失败：{str(e)}")
 
 
 @router.get("/health", summary="接口健康检查")
