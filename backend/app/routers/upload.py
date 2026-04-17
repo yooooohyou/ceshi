@@ -266,6 +266,57 @@ async def route_docx2html_marge(
     """获取 DOCX 文件并转换为合并 HTML"""
     file_path = ""
     split_file_id = ""
+    file_content, original_filename, error = await _get_file_content_from_source(
+        file_source_type, file_source
+    )
+    if error:
+        return unified_response(400, error)
+
+    if not original_filename.lower().endswith(".docx"):
+        ext = original_filename.split(".")[-1] if "." in original_filename else "无后缀"
+        return unified_response(400, f"仅支持docx格式文件，当前文件格式：{ext}")
+
+    record_id, abs_file_path, current_time = await _save_file_and_record(
+        file_content, original_filename, "split"
+    )
+    file_path = abs_file_path
+
+    split_file_id = generate_unique_file_id()
+    update_sql = """
+            UPDATE "yxdl_docx_upload_records"
+            SET split_file_id = %s, update_time = %s
+            WHERE id = %s;
+            """
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(update_sql, (split_file_id, current_time, record_id))
+            conn.commit()
+    logging.info(111111111111111111)
+    logging.info(abs_file_path)
+    logging.info(222222222222222222)
+    new_file_path = call_set_table_width(abs_file_path)
+
+    with open(new_file_path, "rb") as _f:
+        file_bytes = _f.read()
+
+    split_result = call_docx_split(
+        file_stream=file_bytes,
+        file_name=original_filename,
+        file_id=split_file_id,
+        had_title=1,
+        rm_outline_in_doc=1,
+        del_page_break=0,
+    )
+
+    html_list = []
+    for file__ in split_result.data.get("files", []):
+        html_content, _ = docx_to_html(file__)
+        html_list.append(html_content)
+    total_html_content = merge_html_texts(html_list)
+
+    return unified_response(200, "文件html转换成功", {
+        "http_path": save_html_and_get_url(total_html_content),
+    })
     try:
         file_content, original_filename, error = await _get_file_content_from_source(
             file_source_type, file_source
@@ -292,7 +343,9 @@ async def route_docx2html_marge(
             with conn.cursor() as cursor:
                 cursor.execute(update_sql, (split_file_id, current_time, record_id))
                 conn.commit()
-
+        logging.info(111111111111111111)
+        logging.info(abs_file_path)
+        logging.info(222222222222222222)
         new_file_path = call_set_table_width(abs_file_path)
 
         with open(new_file_path, "rb") as _f:
