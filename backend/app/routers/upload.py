@@ -295,7 +295,7 @@ async def route_docx2html_marge(
 
         # new_file_path = call_set_table_width(abs_file_path)
 
-        new_file_path = abs_file_path
+        new_file_path = os.path.normpath(os.path.realpath(abs_file_path))
         with open(new_file_path, "rb") as _f:
             file_bytes = _f.read()
 
