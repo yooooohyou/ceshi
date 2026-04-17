@@ -650,6 +650,21 @@ class DocxHtmlConverter:
 
             w_px, h_px = sizes
 
+            # 解析 Spire 当前写入的宽度（px），只做缩减不做放大，防止表格内图片尺寸漂移
+            existing_w_px = None
+            style_m_pre = re.search(r'style="([^"]*)"', tag, re.IGNORECASE)
+            if style_m_pre:
+                sw_m = re.search(r'\bwidth\s*:\s*([\d.]+)(pt|px)', style_m_pre.group(1), re.IGNORECASE)
+                if sw_m:
+                    val = float(sw_m.group(1))
+                    existing_w_px = round(val * 96 / 72) if sw_m.group(2).lower() == 'pt' else round(val)
+            if existing_w_px is None:
+                attr_w = re.search(r'\bwidth="(\d+)"', tag, re.IGNORECASE)
+                if attr_w:
+                    existing_w_px = int(attr_w.group(1))
+            if existing_w_px is not None and w_px > existing_w_px:
+                return tag
+
             tag = re.sub(r'\s+width="[^"]*"', '', tag)
             tag = re.sub(r'\s+height="[^"]*"', '', tag)
             tag = re.sub(r'(<img\b)', rf'\1 width="{w_px}" height="{h_px}"', tag)
@@ -3637,9 +3652,16 @@ class DocxHtmlConverter:
             sw_pt = _parse_to_pt(sw_m.group(1).strip() if sw_m else None)
             sh_pt = _parse_to_pt(sh_m.group(1).strip() if sh_m else None)
 
-            # style 里没有任何尺寸信息 → 不修改
+            # style 里没有任何尺寸信息 → 尝试从 HTML 属性读取（纯整数=px）
             if sw_pt is None and sh_pt is None:
-                return tag
+                attr_w = re.search(r'\bwidth="(\d+)"',  tag, re.IGNORECASE)
+                attr_h = re.search(r'\bheight="(\d+)"', tag, re.IGNORECASE)
+                if not attr_w and not attr_h:
+                    return tag
+                if attr_w:
+                    sw_pt = int(attr_w.group(1)) * PT_PER_PX
+                if attr_h:
+                    sh_pt = int(attr_h.group(1)) * PT_PER_PX
 
             # style 中的单位已全为 pt → 无需处理
             if (sw_pt is not None and sh_pt is not None
