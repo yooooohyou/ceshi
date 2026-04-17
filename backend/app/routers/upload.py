@@ -266,6 +266,7 @@ async def route_docx2html_marge(
     """获取 DOCX 文件并转换为合并 HTML"""
     file_path = ""
     split_file_id = ""
+    logging.info(99111111111111111111)
     file_content, original_filename, error = await _get_file_content_from_source(
         file_source_type, file_source
     )
