@@ -315,30 +315,15 @@ def _render_preview_page(spec: EmbedSpec, preview_rows: int = 10) -> str:
     full_url = f"/doc_editor/embeds/test/html/full?embed_id={html_lib.escape(spec.embed_id)}"
     caption = html_lib.escape(payload.get("caption") or "表格数据")
 
-    page = f"""<!DOCTYPE html>
-<html lang="zh">
-<head>
-  <meta charset="UTF-8">
-  <title>{caption} - 预览</title>
-  <style>
-    body {{ font-family: "仿宋", serif; padding: 40px; background: #fff; color: #222; }}
-    .tip {{ margin-top: 12px; font-size: 13px; color: #555; }}
-    .tip a {{ color: #2E75B6; text-decoration: none; font-weight: bold; }}
-    .tip a:hover {{ text-decoration: underline; }}
-    .badge {{ display: inline-block; background: #2E75B6; color: #fff;
-               padding: 2px 8px; border-radius: 3px; font-size: 12px; margin-left: 6px; }}
-  </style>
-</head>
-<body>
+    page = f"""
   <h3>{caption}（预览前 {preview_rows} 行，共 {total} 行）</h3>
   {table_html}
-  <p class="tip" contenteditable="false">
+  <p class="tip">
     仅显示前 {preview_rows} 行数据。
     <a href="{full_url}" target="_blank">点击查看全部 {total} 行数据</a>
     <span class="badge" style="display:none">embed_id: {html_lib.escape(spec.embed_id)}</span>
   </p>
-</body>
-</html>"""
+"""
     return page
 
 
@@ -374,11 +359,22 @@ async def test_html_full(
     caption = html_lib.escape(payload.get("caption") or "表格数据")
     table_html = render_table_to_html(spec)
 
-    page = f"""
+    page = f"""<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <title>{caption} - 全部数据</title>
+  <style>
+    body {{ font-family: "仿宋", serif; padding: 40px; background: #fff; color: #222; }}
+    .info {{ margin-bottom: 12px; font-size: 13px; color: #555; }}
+  </style>
+</head>
+<body>
   <h3>{caption}（全部 {total} 行）</h3>
   <p class="info" style="display:none">embed_id: {html_lib.escape(spec.embed_id)}</p >
   {table_html}
-"""
+</body>
+</html>"""
     return HTMLResponse(content=page)
 
 
