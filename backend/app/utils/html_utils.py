@@ -201,6 +201,20 @@ def get_html_heading_levels(html_content: str):
     return existing_levels, max_level
 
 
+def replace_first_heading_text(html_content: str, new_title: str) -> str:
+    """将 HTML 中第一个 h1-h6 标签的文本内容替换为 new_title。
+    若找不到任何标题标签，则原样返回。"""
+    if not html_content or not new_title:
+        return html_content
+    soup = BeautifulSoup(html_content, "html.parser")
+    heading = soup.find(re.compile(r"^h[1-6]$", re.IGNORECASE))
+    if heading is None:
+        return html_content
+    heading.clear()
+    heading.append(new_title)
+    return str(soup)
+
+
 def limit_html_heading_levels(html_content: str, max_allowed_level: int) -> str:
     """将超过 max_allowed_level 的标题降级；0 表示去掉标题标签只保留内容"""
     if not isinstance(max_allowed_level, int) or not (0 <= max_allowed_level <= 6):

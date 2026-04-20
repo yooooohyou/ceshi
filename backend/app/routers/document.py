@@ -27,6 +27,7 @@ from app.utils.html_utils import (
     get_html_heading_levels,
     html_base64_images_to_urls,
     html_img_url_to_base64,
+    replace_first_heading_text,
 )
 from app.utils.path_utils import save_html_and_get_url
 from mergfile import MergeRequest, TreeItem, call_docx_merge, call_docx_split, call_set_table_width
@@ -179,6 +180,74 @@ async def update_html_by_node(
 
     except Exception as e:
         return unified_response(500, f"更新节点HTML失败：{str(e)}")
+
+
+@router.post("/modify_title_and_inner_cylinder_title_by_node", summary="修改节点标题及HTML内标题")
+async def modify_title_and_inner_cylinder_title_by_node(
+        request: Request,
+        node_id: int = Body(..., description="要修改的节点ID"),
+        new_title: str = Body(..., description="新标题文本"),
+):
+    """修改文件树节点的标题（title_text），同步将 HTML 内第一个标题标签的文本替换为新标题，
+    重新转换为 DOCX 并更新 yxdl_docx_title_trees 表。"""
+    try:
+        if node_id <= 0:
+            return unified_response(400, "节点ID必须为正整数")
+        new_title = new_title.strip()
+        if not new_title:
+            return unified_response(400, "新标题不能为空")
+
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(
+                    'SELECT id, html_content, title_text FROM "yxdl_docx_title_trees" WHERE id = %s',
+                    (node_id,),
+                )
+                row = cursor.fetchone()
+        if not row:
+            return unified_response(404, f"未找到ID为{node_id}的标题树节点")
+
+        html_content = row["html_content"] or ""
+
+        if html_content.strip():
+            html_content = replace_first_heading_text(html_content, new_title)
+            success, result, temp_docx_path = convert_html_to_docx(html_content)
+            if not success:
+                return unified_response(500, f"HTML转DOCX失败：{result}")
+            eid = os.path.splitext(os.path.basename(temp_docx_path))[0]
+            current_time = datetime.datetime.now()
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """UPDATE "yxdl_docx_title_trees"
+                           SET title_text = %s, html_content = %s,
+                               update_file_path = %s, eid = %s,
+                               update_time = %s, is_conversion_completion = 1
+                           WHERE id = %s""",
+                        (new_title, html_content, temp_docx_path, eid, current_time, node_id),
+                    )
+                    conn.commit()
+        else:
+            current_time = datetime.datetime.now()
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """UPDATE "yxdl_docx_title_trees"
+                           SET title_text = %s, update_time = %s
+                           WHERE id = %s""",
+                        (new_title, current_time, node_id),
+                    )
+                    conn.commit()
+
+        return unified_response(200, "节点标题修改成功", {
+            "node_id": node_id,
+            "old_title": row["title_text"],
+            "new_title": new_title,
+            "update_time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
+        })
+
+    except Exception as e:
+        return unified_response(500, f"修改节点标题失败：{str(e)}")
 
 
 @router.post("/update_html_by_node_new", summary="更新节点HTML文本（新版，支持文件上传）")
