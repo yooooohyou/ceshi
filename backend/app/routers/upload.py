@@ -102,7 +102,8 @@ async def _split_mode(
             cursor.execute(update_sql, (split_file_id, current_time, record_id))
             conn.commit()
 
-    new_file_path = abs_file_path
+    # 调用表格宽度适配接口
+    new_file_path = call_set_table_width(abs_file_path)
     with open(new_file_path, "rb") as _f:
         file_bytes = _f.read()
 
