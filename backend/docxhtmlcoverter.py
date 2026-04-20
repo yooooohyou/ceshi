@@ -2474,32 +2474,44 @@ class DocxHtmlConverter:
         if not modified:
             return docx_path, {}
 
-        # 为每个分节符填入"下一节"的方向，供标签"此处以下"显示。
+        # 为每个分节符填入"下一节"的完整页面属性，供 HTML→DOCX 时恢复 body sectPr。
         # OOXML 规则：pPr/sectPr 描述当前（结束于此）节；分节符之后那节的属性
         # 来自下一个 pPr/sectPr，最后一节来自 body 级 sectPr。
-        body_orient = ''
+        body_meta = {}
         body_sectPr_el = doc.element.body.find(qn('w:sectPr'))
         if body_sectPr_el is not None:
             _pg = body_sectPr_el.find(qn('w:pgSz'))
             if _pg is not None:
-                body_orient = _pg.get(qn('w:orient'), '')
-                if not body_orient:
+                for _attr, _key in [(qn('w:w'), 'data-page-width'),
+                                    (qn('w:h'), 'data-page-height'),
+                                    (qn('w:orient'), 'data-orientation')]:
+                    _val = _pg.get(_attr)
+                    if _val:
+                        body_meta[_key] = _val
+                if 'data-orientation' not in body_meta:
                     try:
-                        _bw = int(_pg.get(qn('w:w')) or 0)
-                        _bh = int(_pg.get(qn('w:h')) or 0)
+                        _bw = int(body_meta.get('data-page-width', 0) or 0)
+                        _bh = int(body_meta.get('data-page-height', 0) or 0)
                         if _bw and _bh:
-                            body_orient = 'landscape' if _bw > _bh else 'portrait'
+                            body_meta['data-orientation'] = 'landscape' if _bw > _bh else 'portrait'
                     except (ValueError, TypeError):
                         pass
+            _pgMar = body_sectPr_el.find(qn('w:pgMar'))
+            if _pgMar is not None:
+                for _side in ['top', 'bottom', 'left', 'right']:
+                    _val = _pgMar.get(qn(f'w:{_side}'))
+                    if _val:
+                        body_meta[f'data-margin-{_side}'] = _val
         sb_markers = [m for m, v in breaks_map.items() if v['type'] == 'section']
         for _i, _marker in enumerate(sb_markers):
-            _next_orient = (
-                breaks_map[sb_markers[_i + 1]]['meta'].get('data-orientation', '')
+            _next_meta = (
+                breaks_map[sb_markers[_i + 1]]['meta']
                 if _i + 1 < len(sb_markers)
-                else body_orient
+                else body_meta
             )
-            if _next_orient:
-                breaks_map[_marker]['meta']['data-next-orientation'] = _next_orient
+            for _k, _v in _next_meta.items():
+                if _k.startswith('data-') and not _k.startswith('data-next-'):
+                    breaks_map[_marker]['meta'][f'data-next-{_k[5:]}'] = _v
 
         temp_docx_name = f"_breaks_{uuid.uuid4().hex[:8]}.docx"
         temp_docx_path = self._normalize_path(os.path.join(work_dir, temp_docx_name))
@@ -2535,10 +2547,9 @@ class DocxHtmlConverter:
         ]
 
         def make_section_break_html(meta: dict) -> str:
-            # 按约定顺序拼接 data-* 属性，排除内部字段 data-next-orientation
-            display_meta = {k: v for k, v in meta.items() if k != 'data-next-orientation'}
-            ordered = {k: display_meta[k] for k in DATA_ATTR_ORDER if k in display_meta}
-            ordered.update({k: v for k, v in display_meta.items() if k not in ordered})
+            # 按约定顺序拼接 data-* 属性，包含 data-next-* 供 HTML→DOCX 恢复 body sectPr
+            ordered = {k: meta[k] for k in DATA_ATTR_ORDER if k in meta}
+            ordered.update({k: v for k, v in meta.items() if k not in ordered})
             data_attrs = ' '.join(f'{k}="{v}"' for k, v in ordered.items())
 
             # 标签优先用"下一节"方向（data-next-orientation），表示分节符以下那节的版式
@@ -2714,6 +2725,43 @@ class DocxHtmlConverter:
             modified = True
 
         if modified:
+            # 更新 body 级 sectPr（最后一节的属性），使用最后一个分节符的 data-next-* 属性
+            last_sb = next(
+                (item for item in reversed(breaks_info) if item['type'] == 'section'),
+                None
+            )
+            if last_sb:
+                last_meta = last_sb.get('meta', {})
+                next_pw     = last_meta.get('data-next-page-width')
+                next_ph     = last_meta.get('data-next-page-height')
+                next_orient = last_meta.get('data-next-orientation')
+                if next_pw or next_ph or next_orient:
+                    body = doc.element.body
+                    body_sectPr = body.find(qn('w:sectPr'))
+                    if body_sectPr is None:
+                        body_sectPr = OxmlElement('w:sectPr')
+                        body.append(body_sectPr)
+                    pgSz = body_sectPr.find(qn('w:pgSz'))
+                    if pgSz is None:
+                        pgSz = OxmlElement('w:pgSz')
+                        body_sectPr.insert(0, pgSz)
+                    if next_pw:
+                        pgSz.set(qn('w:w'), next_pw)
+                    if next_ph:
+                        pgSz.set(qn('w:h'), next_ph)
+                    if next_orient == 'landscape':
+                        pgSz.set(qn('w:orient'), 'landscape')
+                    elif next_orient == 'portrait':
+                        pgSz.attrib.pop(qn('w:orient'), None)
+                    for _side in ['top', 'bottom', 'left', 'right']:
+                        _mv = last_meta.get(f'data-next-margin-{_side}')
+                        if _mv:
+                            pgMar = body_sectPr.find(qn('w:pgMar'))
+                            if pgMar is None:
+                                pgMar = OxmlElement('w:pgMar')
+                                body_sectPr.append(pgMar)
+                            pgMar.set(qn(f'w:{_side}'), _mv)
+                    logger.debug(f"💾 body sectPr 已更新：orient={next_orient}, w={next_pw}, h={next_ph}")
             doc.save(docx_path)
             logger.debug(f"💾 分隔符已写入DOCX：{docx_path}")
 
