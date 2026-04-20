@@ -200,7 +200,9 @@ async def modify_title_and_inner_cylinder_title_by_node(
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute(
-                    'SELECT id, html_content, title_text FROM "yxdl_docx_title_trees" WHERE id = %s',
+                    """SELECT id, html_content, title_text,
+                              is_conversion_completion, origin_file_path
+                       FROM "yxdl_docx_title_trees" WHERE id = %s""",
                     (node_id,),
                 )
                 row = cursor.fetchone()
@@ -209,35 +211,47 @@ async def modify_title_and_inner_cylinder_title_by_node(
 
         html_content = row["html_content"] or ""
 
-        if html_content.strip():
-            html_content = replace_first_heading_text(html_content, new_title)
-            success, result, temp_docx_path = convert_html_to_docx(html_content)
-            if not success:
-                return unified_response(500, f"HTML转DOCX失败：{result}")
-            eid = os.path.splitext(os.path.basename(temp_docx_path))[0]
-            current_time = datetime.datetime.now()
-            with get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute(
-                        """UPDATE "yxdl_docx_title_trees"
-                           SET title_text = %s, html_content = %s,
-                               update_file_path = %s, eid = %s,
-                               update_time = %s, is_conversion_completion = 1
-                           WHERE id = %s""",
-                        (new_title, html_content, temp_docx_path, eid, current_time, node_id),
-                    )
-                    conn.commit()
-        else:
-            current_time = datetime.datetime.now()
-            with get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute(
-                        """UPDATE "yxdl_docx_title_trees"
-                           SET title_text = %s, update_time = %s
-                           WHERE id = %s""",
-                        (new_title, current_time, node_id),
-                    )
-                    conn.commit()
+        # 若 html_content 尚未生成（is_conversion_completion=0），先从 origin_file_path 转换
+        if not html_content.strip() or row["is_conversion_completion"] == 0:
+            origin_path = row.get("origin_file_path") or ""
+            if origin_path.strip():
+                html_content, _ = docx_to_html(origin_path)
+            # 转换后仍为空则降级为仅改 title_text
+            if not html_content.strip():
+                current_time = datetime.datetime.now()
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            """UPDATE "yxdl_docx_title_trees"
+                               SET title_text = %s, update_time = %s
+                               WHERE id = %s""",
+                            (new_title, current_time, node_id),
+                        )
+                        conn.commit()
+                return unified_response(200, "节点标题修改成功（仅标题，无HTML内容）", {
+                    "node_id": node_id,
+                    "old_title": row["title_text"],
+                    "new_title": new_title,
+                    "update_time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
+                })
+
+        html_content = replace_first_heading_text(html_content, new_title)
+        success, result, temp_docx_path = convert_html_to_docx(html_content)
+        if not success:
+            return unified_response(500, f"HTML转DOCX失败：{result}")
+        eid = os.path.splitext(os.path.basename(temp_docx_path))[0]
+        current_time = datetime.datetime.now()
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """UPDATE "yxdl_docx_title_trees"
+                       SET title_text = %s, html_content = %s,
+                           update_file_path = %s, eid = %s,
+                           update_time = %s, is_conversion_completion = 1
+                       WHERE id = %s""",
+                    (new_title, html_content, temp_docx_path, eid, current_time, node_id),
+                )
+                conn.commit()
 
         return unified_response(200, "节点标题修改成功", {
             "node_id": node_id,
@@ -345,9 +359,8 @@ async def update_html_by_node_new(
                 conn.commit()
 
         # 调用表格宽度适配接口
-        new_file_path = call_set_table_width(temp_docx_path_1)
-
-        # new_file_path = temp_docx_path_1
+        # new_file_path = call_set_table_width(temp_docx_path_1)
+        new_file_path = temp_docx_path_1
         with open(new_file_path, "rb") as _f:
             file_bytes = _f.read()
 
