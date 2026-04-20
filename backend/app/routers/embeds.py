@@ -374,22 +374,11 @@ async def test_html_full(
     caption = html_lib.escape(payload.get("caption") or "表格数据")
     table_html = render_table_to_html(spec)
 
-    page = f"""<!DOCTYPE html>
-<html lang="zh">
-<head>
-  <meta charset="UTF-8">
-  <title>{caption} - 全部数据</title>
-  <style>
-    body {{ font-family: "仿宋", serif; padding: 40px; background: #fff; color: #222; }}
-    .info {{ margin-bottom: 12px; font-size: 13px; color: #555; }}
-  </style>
-</head>
-<body>
+    page = f"""
   <h3>{caption}（全部 {total} 行）</h3>
   <p class="info" style="display:none">embed_id: {html_lib.escape(spec.embed_id)}</p >
   {table_html}
-</body>
-</html>"""
+"""
     return HTMLResponse(content=page)
 
 
