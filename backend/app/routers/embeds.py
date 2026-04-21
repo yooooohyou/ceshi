@@ -8,6 +8,7 @@
 - GET  /doc_editor/embeds/{embed_id}/go   URL 跳转（302 → url）
 - POST /doc_editor/embeds/scan            从 HTML 扫描所有 embed 标记
 - GET  /doc_editor/embeds/by_record/{record_id}  列出某个文档下所有组件
+- POST /doc_editor/embeds/xlsx2html_config  解析上传的xlsx，返回结构化配置信息
 - GET  /doc_editor/embeds/test/html       【测试】预览表格前10行 + 全部数据链接
 - GET  /doc_editor/embeds/test/html/full  【测试】全部表格数据
 - POST /doc_editor/embeds/test/docx       【测试】DOCX 表格替换渲染
@@ -15,6 +16,7 @@
 import csv
 import html as html_lib
 import logging
+import math
 import os
 from typing import Any, Dict, List, Optional
 
@@ -186,6 +188,229 @@ async def list_by_record(record_id: int = Path(..., gt=0)):
         "count":     len(rows),
         "items":     rows,
     })
+
+
+# ─── xlsx2html_config ─────────────────────────────────────────────────────────
+
+def _resolve_xlsx_path(file_path: str) -> Optional[str]:
+    """将 split_uploads 返回的 file_path 解析为本地绝对路径"""
+    from urllib.parse import urlparse
+    from app.core.config import UPLOAD_DIR
+
+    if os.path.isfile(file_path):
+        return file_path
+
+    parsed = urlparse(file_path)
+    raw = parsed.path if parsed.scheme in ("http", "https") else file_path
+    basename = os.path.basename(raw.rstrip("/").rstrip("\\"))
+    if basename:
+        candidate = os.path.join(UPLOAD_DIR, basename)
+        if os.path.isfile(candidate):
+            return candidate
+
+    return None
+
+
+def _cell_to_str(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, float):
+        if math.isnan(v) or math.isinf(v):
+            return ""
+        if v == int(v):
+            return str(int(v))
+    return str(v)
+
+
+def _read_xlsx_sheets(path: str, max_rows: int = 10) -> List[Dict]:
+    import pandas as pd
+    with pd.ExcelFile(path, engine="openpyxl") as xl:
+        sheets = []
+        for sheet_name in xl.sheet_names:
+            df = pd.read_excel(xl, sheet_name=sheet_name, header=None, nrows=max_rows)
+            df = df.where(df.notna(), other=None)
+            rows = [[_cell_to_str(v) for v in row] for row in df.values.tolist()]
+            sheets.append({"sheetName": str(sheet_name), "top10Rows": rows})
+    return sheets
+
+
+def _find_xlsx_by_filename(file_name: str) -> Optional[str]:
+    """在 UPLOAD_DIR 中按文件名查找 xlsx，支持直接命中和 {sign}_{name} 格式"""
+    from app.core.config import UPLOAD_DIR
+
+    # 只取 basename，防止路径穿越（如 file_name="/etc/passwd" 或含 ../）
+    safe_name = os.path.basename(file_name)
+    if not safe_name:
+        return None
+
+    upload_abs = os.path.abspath(UPLOAD_DIR)
+
+    direct = os.path.join(upload_abs, safe_name)
+    if os.path.isfile(direct):
+        return direct
+
+    try:
+        suffix = "_" + safe_name
+        matched = [
+            fn for fn in os.listdir(upload_abs)
+            if fn == safe_name or fn.endswith(suffix)
+        ]
+        if matched:
+            matched.sort(key=lambda fn: os.path.getmtime(os.path.join(upload_abs, fn)), reverse=True)
+            return os.path.join(upload_abs, matched[0])
+    except Exception:
+        pass
+
+    return None
+
+
+@router.post("/embeds/xlsx2html_config", summary="解析上传的xlsx文件，返回结构化配置信息")
+async def xlsx2html_config(
+    file_path: str = Body(..., description="split_uploads 返回的 file_path 或 real_file_path"),
+    file_name: Optional[str] = Body(None, description="原始文件名，不传则从路径中提取"),
+):
+    actual_path = _resolve_xlsx_path(file_path)
+    if not actual_path:
+        return unified_response(400, f"文件不存在或路径无效：{file_path}")
+
+    if not actual_path.lower().endswith(".xlsx"):
+        return unified_response(400, "仅支持 xlsx 格式文件")
+
+    try:
+        sheets = _read_xlsx_sheets(actual_path)
+    except Exception as e:
+        logger.error(f"xlsx2html_config: 读取失败 path={actual_path} err={e}")
+        return unified_response(500, f"解析 xlsx 失败：{str(e)}")
+
+    resolved_name = file_name or os.path.basename(actual_path)
+
+    return unified_response(200, "解析成功", {
+        "fileName": resolved_name,
+        "sheets": sheets,
+    })
+
+
+# ─── xlsx2html ─────────────────────────────────────────────────────────────────
+
+@router.post(
+    "/embeds/xlsx2html",
+    summary="根据选定的 Sheet 和表头行生成 HTML 预览（前10行 + 全部数据链接），完整数据存入 DB 供 merge_docx 写入",
+    response_class=HTMLResponse,
+)
+async def xlsx2html(
+    fileName: str = Body(..., description="xlsx2html_config 返回的 fileName"),
+    sheets: List[Dict[str, Any]] = Body(..., description="选定的 Sheet 列表，每项含 sheetName 和 headerRow"),
+    record_id: Optional[int] = Body(None, description="关联文档记录ID，传入后 merge_docx 可将完整数据写入 DOCX"),
+    preview_rows: int = Body(10, ge=1, le=100, description="预览行数，默认10"),
+):
+    actual_path = _find_xlsx_by_filename(fileName)
+    if not actual_path:
+        return HTMLResponse(
+            content=f"<!DOCTYPE html><html><body><h3>未找到文件：{html_lib.escape(fileName)}</h3></body></html>",
+            status_code=404,
+        )
+
+    import pandas as pd
+
+    parts: List[str] = []
+    try:
+        xl = pd.ExcelFile(actual_path, engine="openpyxl")
+    except Exception as e:
+        logger.error(f"xlsx2html: 打开文件失败 path={actual_path} err={e}")
+        return HTMLResponse(
+            content=f"<!DOCTYPE html><html><body><h3>打开文件失败：{html_lib.escape(str(e))}</h3></body></html>",
+            status_code=500,
+        )
+
+    with xl:
+        for sheet_conf in sheets:
+            sheet_name = sheet_conf.get("sheetName", "")
+            header_row: List[str] = [str(v) for v in (sheet_conf.get("headerRow") or [])]
+
+            try:
+                df = pd.read_excel(xl, sheet_name=sheet_name, header=None)
+            except Exception as e:
+                logger.error(f"xlsx2html: 读取 sheet={sheet_name} 失败 err={e}")
+                parts.append(
+                    f"<p>读取 Sheet「{html_lib.escape(sheet_name)}」失败：{html_lib.escape(str(e))}</p>"
+                )
+                continue
+
+            df = df.where(df.notna(), other=None)
+            all_rows = [[_cell_to_str(v) for v in row] for row in df.values.tolist()]
+
+            # 定位 headerRow 所在行索引
+            header_idx = 0
+            for i, row in enumerate(all_rows):
+                if row == header_row:
+                    header_idx = i
+                    break
+
+            headers = all_rows[header_idx] if all_rows else header_row
+            data_rows = all_rows[header_idx + 1:] if header_idx + 1 < len(all_rows) else []
+            total = len(data_rows)
+
+            caption = f"{fileName} · {sheet_name}"
+            style = {
+                "header_bg":        "2E75B6",
+                "header_color":     "FFFFFF",
+                "border_color":     "BFBFBF",
+                "font_name":        "仿宋",
+                "header_font_size": 10,
+                "body_font_size":   9,
+                "cell_alignment":   "left",
+            }
+            full_payload = {
+                "caption": caption,
+                "headers": headers,
+                "rows": data_rows,
+                "has_header": True,
+                "merge_cells": [],
+                "style": style,
+            }
+
+            # 用预览数据（前 preview_rows 行）生成 embed 标记 HTML 片段（含 【EMB_xxx】）
+            preview_payload = {**full_payload, "rows": data_rows[:preview_rows]}
+            spec, snippet = build_embed_marker(
+                data=preview_payload,
+                embed_type=TYPE_TABLE,
+                title=caption,
+                record_id=record_id,
+                url_builder=lambda eid: f"/doc_editor/embeds/{eid}/go",
+            )
+
+            # 入库时替换为完整数据，merge_docx 时写入 DOCX 的是全量行
+            spec.payload = full_payload
+            try:
+                insert_embed_component(spec_to_db_row(spec))
+            except Exception as e:
+                logger.error(f"xlsx2html: 入库失败 embed_id={spec.embed_id} err={e}")
+
+            full_url = f"/doc_editor/embeds/test/html/full?embed_id={html_lib.escape(spec.embed_id)}"
+            shown = min(preview_rows, total)
+            parts.append(
+                f"{snippet}\n"
+                f'<p class="tip" style="margin:4px 0; font-size:12px; color:#555;">'
+                f"仅显示前 {shown} 行数据，共 {total} 行。"
+                f'<a href="{full_url}" target="_blank">查看全部数据</a>'
+                f"</p>"
+            )
+
+    escaped_title = html_lib.escape(fileName)
+    page = f"""<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <title>{escaped_title}</title>
+  <style>
+    body {{ font-family: "仿宋", serif; padding: 40px; background: #fff; color: #222; }}
+  </style>
+</head>
+<body>
+  {"".join(parts)}
+</body>
+</html>"""
+    return HTMLResponse(content=page)
 
 
 # ─── 测试接口 ─────────────────────────────────────────────────────────────────
