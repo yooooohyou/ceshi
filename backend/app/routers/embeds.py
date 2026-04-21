@@ -230,7 +230,7 @@ def _read_xlsx_sheets(path: str, max_rows: int = 10) -> List[Dict]:
             df = pd.read_excel(xl, sheet_name=sheet_name, header=None, nrows=max_rows)
             df = df.where(df.notna(), other=None)
             rows = [
-                {"index": i + 1, "data": [_cell_to_str(v) for v in row]}
+                {"index": i + 1, "data": [{"index": j + 1, "value": _cell_to_str(v)} for j, v in enumerate(row)]}
                 for i, row in enumerate(df.values.tolist())
             ]
             sheets.append({"sheetName": str(sheet_name), "top10Rows": rows})
@@ -331,10 +331,15 @@ async def xlsx2html(
             header_row_conf = sheet_conf.get("headerRow") or {}
 
             # 支持新格式 {index, data}，也兼容旧格式（列表）
-            # data 元素为整数时表示 1-based 列位置，为字符串时表示列名
+            # data 元素格式：{"index": 1-based列位置, "value": 列名} 或 int（列位置）或 str（列名）
             if isinstance(header_row_conf, dict):
                 header_index: Optional[int] = header_row_conf.get("index")
-                selected_columns: List = list(header_row_conf.get("data") or [])
+                raw_cols: List = list(header_row_conf.get("data") or [])
+                # 将 {"index", "value"} 对象统一展开为 (col_pos_or_name,) 供后续处理
+                selected_columns: List = [
+                    col["index"] if isinstance(col, dict) else col
+                    for col in raw_cols
+                ]
             else:
                 header_index = None
                 selected_columns = list(header_row_conf or [])
