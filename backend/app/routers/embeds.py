@@ -371,7 +371,7 @@ async def xlsx2html(
 
             # 用预览数据（前 preview_rows 行）生成 embed 标记 HTML 片段（含 【EMB_xxx】）
             preview_payload = {**full_payload, "rows": data_rows[:preview_rows]}
-            spec, _ = build_embed_marker(
+            spec, snippet = build_embed_marker(
                 data=preview_payload,
                 embed_type=TYPE_TABLE,
                 title=caption,
