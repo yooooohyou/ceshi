@@ -229,7 +229,10 @@ def _read_xlsx_sheets(path: str, max_rows: int = 10) -> List[Dict]:
         for sheet_name in xl.sheet_names:
             df = pd.read_excel(xl, sheet_name=sheet_name, header=None, nrows=max_rows)
             df = df.where(df.notna(), other=None)
-            rows = [[_cell_to_str(v) for v in row] for row in df.values.tolist()]
+            rows = [
+                {"index": i + 1, "data": [_cell_to_str(v) for v in row]}
+                for i, row in enumerate(df.values.tolist())
+            ]
             sheets.append({"sheetName": str(sheet_name), "top10Rows": rows})
     return sheets
 
@@ -299,7 +302,7 @@ async def xlsx2html_config(
 )
 async def xlsx2html(
     fileName: str = Body(..., description="xlsx2html_config 返回的 fileName"),
-    sheets: List[Dict[str, Any]] = Body(..., description="选定的 Sheet 列表，每项含 sheetName 和 headerRow"),
+    sheets: List[Dict[str, Any]] = Body(..., description="选定的 Sheet 列表，每项含 sheetName 和 headerRow（{index, data}，index 为 xlsx2html_config 返回的行序号，data 为选用的列名列表，可调整顺序或减少列）"),
     record_id: Optional[int] = Body(None, description="关联文档记录ID，传入后 merge_docx 可将完整数据写入 DOCX"),
     preview_rows: int = Body(10, ge=1, le=100, description="预览行数，默认10"),
 ):
@@ -325,7 +328,16 @@ async def xlsx2html(
     with xl:
         for sheet_conf in sheets:
             sheet_name = sheet_conf.get("sheetName", "")
-            header_row: List[str] = [str(v) for v in (sheet_conf.get("headerRow") or [])]
+            header_row_conf = sheet_conf.get("headerRow") or {}
+
+            # 支持新格式 {index, data}，也兼容旧格式（列表）
+            # data 元素为整数时表示 1-based 列位置，为字符串时表示列名
+            if isinstance(header_row_conf, dict):
+                header_index: Optional[int] = header_row_conf.get("index")
+                selected_columns: List = list(header_row_conf.get("data") or [])
+            else:
+                header_index = None
+                selected_columns = list(header_row_conf or [])
 
             try:
                 df = pd.read_excel(xl, sheet_name=sheet_name, header=None)
@@ -339,15 +351,41 @@ async def xlsx2html(
             df = df.where(df.notna(), other=None)
             all_rows = [[_cell_to_str(v) for v in row] for row in df.values.tolist()]
 
-            # 定位 headerRow 所在行索引
-            header_idx = 0
-            for i, row in enumerate(all_rows):
-                if row == header_row:
-                    header_idx = i
-                    break
+            # 用 index（1-based）直接定位标题行，兼容旧格式按内容匹配
+            if header_index is not None:
+                header_idx = max(0, header_index - 1)
+            else:
+                header_idx = 0
+                for i, row in enumerate(all_rows):
+                    if row == selected_columns:
+                        header_idx = i
+                        break
 
-            headers = all_rows[header_idx] if all_rows else header_row
-            data_rows = all_rows[header_idx + 1:] if header_idx + 1 < len(all_rows) else []
+            original_headers = all_rows[header_idx] if all_rows else []
+            data_rows_raw = all_rows[header_idx + 1:] if header_idx + 1 < len(all_rows) else []
+
+            # 根据 selected_columns 过滤并重排列
+            # 元素为 int → 1-based 列位置；为 str → 列名匹配
+            if selected_columns:
+                col_indices = []
+                for col in selected_columns:
+                    if isinstance(col, int):
+                        idx = col - 1
+                        if 0 <= idx < len(original_headers):
+                            col_indices.append(idx)
+                    else:
+                        col_str = str(col)
+                        if col_str in original_headers:
+                            col_indices.append(original_headers.index(col_str))
+                headers = [original_headers[i] for i in col_indices]
+                data_rows = [
+                    [row[i] if i < len(row) else "" for i in col_indices]
+                    for row in data_rows_raw
+                ]
+            else:
+                headers = original_headers
+                data_rows = data_rows_raw
+
             total = len(data_rows)
 
             caption = f"{fileName} · {sheet_name}"
