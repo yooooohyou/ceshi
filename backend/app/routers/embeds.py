@@ -581,7 +581,7 @@ def _render_preview_page(spec: EmbedSpec, preview_rows: int = 10) -> str:
     仅显示前 {preview_rows} 行数据。
     <a href="{full_url}" target="_blank">点击查看全部 {total} 行数据</a>
     <span class="badge" style="display:none">embed_id: {html_lib.escape(spec.embed_id)}</span>
-  </p>
+  </p><h3>
 """
     return page
 
