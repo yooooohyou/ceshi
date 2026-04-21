@@ -386,12 +386,6 @@ async def xlsx2html(
             except Exception as e:
                 logger.error(f"xlsx2html: 入库失败 embed_id={spec.embed_id} err={e}")
 
-            # 给 snippet 内的预览表格显式加 contenteditable="false"（display:none 由页面 CSS 统一控制）
-            snippet = snippet.replace(
-                'data-embed-preview="table"',
-                'data-embed-preview="table" contenteditable="false"',
-            )
-
             full_url = f"/doc_editor/embeds/test/html/full?embed_id={html_lib.escape(spec.embed_id)}"
             shown = min(preview_rows, total)
             parts.append(
@@ -399,9 +393,7 @@ async def xlsx2html(
                 f'<p class="tip" style="margin:4px 0; font-size:12px; color:#555;">'
                 f"仅显示前 {shown} 行数据，共 {total} 行。"
                 f'<a href="{full_url}" target="_blank">查看全部数据</a>'
-                f"</p>\n"
-                f'<p class="info" style="display:none" contenteditable="false">'
-                f"embed_id: {html_lib.escape(spec.embed_id)}</p>"
+                f"</p>"
             )
 
     escaped_title = html_lib.escape(fileName)
@@ -411,8 +403,7 @@ async def xlsx2html(
   <meta charset="UTF-8">
   <title>{escaped_title}</title>
   <style>
-    body {{ font-family: "仿宋", serif; padding: 40px; background: #fff; }}
-    [data-embed-preview="table"] {{ display: none; }}
+    body {{ font-family: "仿宋", serif; padding: 40px; background: #fff; color: #222; }}
   </style>
 </head>
 <body>
@@ -547,14 +538,15 @@ def _render_preview_page(spec: EmbedSpec, preview_rows: int = 10) -> str:
     table_html = render_table_to_html(preview_spec)
 
     full_url = f"/doc_editor/embeds/test/html/full?embed_id={html_lib.escape(spec.embed_id)}"
+    caption = html_lib.escape(payload.get("caption") or "表格数据")
 
     page = f"""
-  <div style="display:none" contenteditable="false">{table_html}</div>
+  <h3>{table_html}
   <p class="tip">
     仅显示前 {preview_rows} 行数据。
     <a href="{full_url}" target="_blank">点击查看全部 {total} 行数据</a>
+    <span class="badge" style="display:none">embed_id: {html_lib.escape(spec.embed_id)}</span>
   </p>
-  <p class="info" style="display:none" contenteditable="false">embed_id: {html_lib.escape(spec.embed_id)}</p>
 """
     return page
 
