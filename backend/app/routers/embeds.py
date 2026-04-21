@@ -576,12 +576,12 @@ def _render_preview_page(spec: EmbedSpec, preview_rows: int = 10) -> str:
     caption = html_lib.escape(payload.get("caption") or "表格数据")
 
     page = f"""
-  <h3>{table_html}
+  <h3>{table_html}<h3>
   <p class="tip">
     仅显示前 {preview_rows} 行数据。
     <a href="{full_url}" target="_blank">点击查看全部 {total} 行数据</a>
     <span class="badge" style="display:none">embed_id: {html_lib.escape(spec.embed_id)}</span>
-  </p><h3>
+  </p>
 """
     return page
 
