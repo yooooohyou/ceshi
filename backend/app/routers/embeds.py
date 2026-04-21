@@ -371,7 +371,7 @@ async def xlsx2html(
 
             # 用预览数据（前 preview_rows 行）生成 embed 标记 HTML 片段（含 【EMB_xxx】）
             preview_payload = {**full_payload, "rows": data_rows[:preview_rows]}
-            spec, snippet = build_embed_marker(
+            spec, _ = build_embed_marker(
                 data=preview_payload,
                 embed_type=TYPE_TABLE,
                 title=caption,
@@ -386,15 +386,7 @@ async def xlsx2html(
             except Exception as e:
                 logger.error(f"xlsx2html: 入库失败 embed_id={spec.embed_id} err={e}")
 
-            full_url = f"/doc_editor/embeds/test/html/full?embed_id={html_lib.escape(spec.embed_id)}"
-            shown = min(preview_rows, total)
-            parts.append(
-                f"{snippet}\n"
-                f'<p class="tip" style="margin:4px 0; font-size:12px; color:#555;">'
-                f"仅显示前 {shown} 行数据，共 {total} 行。"
-                f'<a href="{full_url}" target="_blank">查看全部数据</a>'
-                f"</p>"
-            )
+            parts.append(_render_preview_page(spec, preview_rows))
 
     escaped_title = html_lib.escape(fileName)
     page = f"""<!DOCTYPE html>
@@ -403,7 +395,7 @@ async def xlsx2html(
   <meta charset="UTF-8">
   <title>{escaped_title}</title>
   <style>
-    body {{ font-family: "仿宋", serif; padding: 40px; background: #fff; color: #222; }}
+    body {{ font-family: "仿宋", serif; padding: 40px; background: #fff; }}
   </style>
 </head>
 <body>
