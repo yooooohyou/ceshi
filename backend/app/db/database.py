@@ -691,3 +691,17 @@ def get_embed_components_by_ids(embed_ids: List[str]) -> Dict[str, Dict[str, Any
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(sql, (embed_ids,))
             return {row["embed_id"]: dict(row) for row in cursor.fetchall()}
+
+
+def get_original_filename_by_new_filename(new_filename: str) -> Optional[str]:
+    """按 new_filename 查询上传记录，返回用户上传时的 original_filename，未找到返回 None。"""
+    sql = """
+        SELECT original_filename FROM "yxdl_docx_upload_records"
+        WHERE new_filename = %s
+        LIMIT 1
+    """
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, (new_filename,))
+            row = cursor.fetchone()
+    return row[0] if row else None

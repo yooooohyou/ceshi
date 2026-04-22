@@ -313,6 +313,11 @@ async def xlsx2html(
             status_code=404,
         )
 
+    # 用磁盘上的实际文件名（new_filename）查 DB，取回用户上传时的原始文件名作为标题展示
+    from app.db.database import get_original_filename_by_new_filename
+    _new_fname = os.path.basename(actual_path)
+    display_name = get_original_filename_by_new_filename(_new_fname) or fileName
+
     import pandas as pd
 
     parts: List[str] = []
@@ -393,7 +398,7 @@ async def xlsx2html(
 
             total = len(data_rows)
 
-            caption = f"{fileName} · {sheet_name}"
+            caption = f"{display_name} · {sheet_name}"
             style = {
                 "header_bg":        "2E75B6",
                 "header_color":     "FFFFFF",
