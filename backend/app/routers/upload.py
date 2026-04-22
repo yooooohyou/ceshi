@@ -361,6 +361,17 @@ async def split_upload_and_generate_tree(
 
         if result == 1:
             file_path = f"{path_}{full_file_name}"
+            # 分片合并完成，写入 xlsx 上传记录表
+            try:
+                from app.db.database import insert_xlsx_upload_record
+                insert_xlsx_upload_record(
+                    original_filename=file_name,
+                    new_filename=full_file_name,
+                    file_sign=file_sign,
+                    save_path=real_file_path,
+                )
+            except Exception as db_err:
+                logger.warning(f"split_uploads: 写入 xlsx 上传记录失败 err={db_err}")
         else:
             file_path = ""
             real_file_path = ""

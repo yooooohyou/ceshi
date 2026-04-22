@@ -85,12 +85,27 @@ def init_db_tables():
     CREATE INDEX IF NOT EXISTS idx_embed_type   ON "yxdl_embed_components" ("embed_type");
     """
 
+    create_xlsx_upload_records_sql = """
+    CREATE TABLE IF NOT EXISTS "yxdl_xlsx_upload_records" (
+      "id"                SERIAL PRIMARY KEY,
+      "original_filename" varchar(255) NOT NULL,
+      "new_filename"      varchar(255) NOT NULL,
+      "file_sign"         varchar(128) NOT NULL,
+      "save_path"         varchar(512) NOT NULL,
+      "upload_time"       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "update_time"       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_xlsx_new_filename ON "yxdl_xlsx_upload_records" ("new_filename");
+    CREATE INDEX IF NOT EXISTS idx_xlsx_file_sign    ON "yxdl_xlsx_upload_records" ("file_sign");
+    """
+
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(create_file_table_sql)
                 cursor.execute(create_title_tree_table_sql)
                 cursor.execute(create_embed_components_sql)
+                cursor.execute(create_xlsx_upload_records_sql)
                 conn.commit()
         logger.debug("PostgreSQL数据表初始化成功")
     except Exception as e:
@@ -693,10 +708,31 @@ def get_embed_components_by_ids(embed_ids: List[str]) -> Dict[str, Dict[str, Any
             return {row["embed_id"]: dict(row) for row in cursor.fetchall()}
 
 
-def get_original_filename_by_new_filename(new_filename: str) -> Optional[str]:
-    """按 new_filename 查询上传记录，返回用户上传时的 original_filename，未找到返回 None。"""
+def insert_xlsx_upload_record(
+    original_filename: str,
+    new_filename: str,
+    file_sign: str,
+    save_path: str,
+) -> int:
+    """向 yxdl_xlsx_upload_records 写入一条 xlsx 上传记录，返回新行 id。"""
     sql = """
-        SELECT original_filename FROM "yxdl_docx_upload_records"
+        INSERT INTO "yxdl_xlsx_upload_records"
+          (original_filename, new_filename, file_sign, save_path, upload_time, update_time)
+        VALUES (%s, %s, %s, %s, NOW(), NOW())
+        RETURNING id;
+    """
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, (original_filename, new_filename, file_sign, save_path))
+            row_id = cursor.fetchone()[0]
+            conn.commit()
+    return row_id
+
+
+def get_original_filename_by_new_filename(new_filename: str) -> Optional[str]:
+    """按 new_filename 从 xlsx 上传记录表查 original_filename，未找到返回 None。"""
+    sql = """
+        SELECT original_filename FROM "yxdl_xlsx_upload_records"
         WHERE new_filename = %s
         LIMIT 1
     """
