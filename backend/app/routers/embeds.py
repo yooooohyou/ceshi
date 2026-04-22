@@ -577,19 +577,20 @@ def _render_preview_page(spec: EmbedSpec, preview_rows: int = 10) -> str:
     )
     table_html = render_table_to_html(preview_spec)
 
+    # 将隐藏标记注入到 caption 段落（table_html 的第一个 <p>）标签内：
+    # - 浏览器：span display:none 使【EMB_xxx】不可见
+    # - DOCX 转换器：忽略 display:none，将文本保留在段落里，
+    #   使 build_docx_replace_plan 能定位该段落并触发替换
+    hidden_marker = f'<span style="display:none">【{html_lib.escape(spec.embed_id)}】</span>'
+    stripped = table_html.lstrip()
+    if stripped.startswith('<p'):
+        offset = len(table_html) - len(stripped)
+        first_p_end = table_html.index('>', offset) + 1
+        table_html = table_html[:first_p_end] + hidden_marker + table_html[first_p_end:]
+
     full_url = f"/doc_editor/embeds/test/html/full?embed_id={html_lib.escape(spec.embed_id)}"
 
-    # 【EMB_xxx】锚点段落必须出现在预览内容之前：
-    # DOCX 转换服务会将其转为一个独立段落，merge_docx_office_server 靠此文本
-    # 定位占位符位置，替换为完整 Word 表格并删除后面的预览表格。
-    anchor = (
-        f'<a href="{html_lib.escape(spec.url or full_url)}" target="_blank" '
-        f'data-embed-anchor="1" data-embed-id="{html_lib.escape(spec.embed_id)}">'
-        f'【{html_lib.escape(spec.embed_id)}】</a>'
-    )
-
     page = f"""
-  <p style="display:none">{anchor}</p>
   {table_html}
   <p class="tip">
     仅显示前 {preview_rows} 行数据。

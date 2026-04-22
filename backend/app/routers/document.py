@@ -650,13 +650,13 @@ async def merge_docx_office_server(
                     )
 
                     if plan:
-                        # ── 收集遗留元素（占位符后的预览表格、中间段落及 tip 段落） ──
-                        # _render_preview_page 生成的 HTML 经 DOCX 转换后结构为：
-                        #   段落:【EMB_xxx】← 占位符（锚点 <a> 转来的）
-                        #   段落: caption   ← render_table_to_html 的 <p>（中间段落）
-                        #   表格: 预览表格  ← 遗留预览表格
-                        #   段落: tip       ← "仅显示前N行…" 提示段（可选，转换器保留时存在）
-                        # 扫描策略：跳过中间 w:p 找到 w:tbl，再收集 tbl 后紧跟的 w:p（tip）。
+                        # ── 收集遗留元素（预览表格及 tip 段落） ──────────────────
+                        # _render_preview_page 将【EMB_xxx】注入 caption <p> 的首部，
+                        # DOCX 转换后结构为：
+                        #   段落:【EMB_xxx】caption  ← 占位符（caption <p> 转来的，含隐藏 span）
+                        #   表格: 预览表格           ← 遗留预览表格（直接紧跟，无中间段落）
+                        #   段落: tip（可选）        ← "仅显示前N行…" 提示段
+                        # 扫描策略：直接找 w:tbl，再收集 tbl 后紧跟的 w:p（tip）。
                         t_stage = time.perf_counter()
                         stale_elems: list = []
                         for item in plan:
