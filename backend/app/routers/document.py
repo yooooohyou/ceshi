@@ -650,31 +650,41 @@ async def merge_docx_office_server(
                     )
 
                     if plan:
-                        # ── 收集遗留元素（占位符后的预览表格及中间段落） ──────────
-                        # HTML 转换后 DOCX 结构为：
-                        #   段落:【EMB_xxx】← 占位符
-                        #   段落: caption   ← inner_html 里的 <p>（中间隔 1 个段落）
-                        #   表格: 预览表格  ← 遗留表格（第 2 个兄弟，非直接下一个）
-                        # 需跳过中间 w:p，找到第一个 w:tbl，连同中间段落一并删除。
+                        # ── 收集遗留元素（占位符后的预览表格、中间段落及 tip 段落） ──
+                        # _render_preview_page 生成的 HTML 经 DOCX 转换后结构为：
+                        #   段落:【EMB_xxx】← 占位符（锚点 <a> 转来的）
+                        #   段落: caption   ← render_table_to_html 的 <p>（中间段落）
+                        #   表格: 预览表格  ← 遗留预览表格
+                        #   段落: tip       ← "仅显示前N行…" 提示段（可选，转换器保留时存在）
+                        # 扫描策略：跳过中间 w:p 找到 w:tbl，再收集 tbl 后紧跟的 w:p（tip）。
                         t_stage = time.perf_counter()
                         stale_elems: list = []
                         for item in plan:
                             para_elem = item["paragraph"]._element
                             intermediate: list = []
                             sibling = para_elem.getnext()
+                            found_tbl = None
                             for _ in range(5):  # 最多向后扫 5 个兄弟节点
                                 if sibling is None:
                                     break
                                 tag = sibling.tag
                                 if tag.endswith("}tbl") or tag == "w:tbl":
-                                    stale_elems.extend(intermediate)
-                                    stale_elems.append(sibling)
+                                    found_tbl = sibling
                                     break
                                 elif tag.endswith("}p") or tag == "w:p":
                                     intermediate.append(sibling)
                                     sibling = sibling.getnext()
                                 else:
                                     break
+                            if found_tbl is not None:
+                                stale_elems.extend(intermediate)
+                                stale_elems.append(found_tbl)
+                                # 收集 tbl 后紧跟的 tip 段落（如有）
+                                after_tbl = found_tbl.getnext()
+                                if after_tbl is not None and (
+                                    after_tbl.tag.endswith("}p") or after_tbl.tag == "w:p"
+                                ):
+                                    stale_elems.append(after_tbl)
                         logger.info(
                             f"merge_docx_office_server[embed]: 定位遗留元素完成"
                             f" stale={len(stale_elems)}"

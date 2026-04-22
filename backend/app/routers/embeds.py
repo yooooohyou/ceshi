@@ -578,14 +578,22 @@ def _render_preview_page(spec: EmbedSpec, preview_rows: int = 10) -> str:
     table_html = render_table_to_html(preview_spec)
 
     full_url = f"/doc_editor/embeds/test/html/full?embed_id={html_lib.escape(spec.embed_id)}"
-    caption = html_lib.escape(payload.get("caption") or "表格数据")
+
+    # 【EMB_xxx】锚点段落必须出现在预览内容之前：
+    # DOCX 转换服务会将其转为一个独立段落，merge_docx_office_server 靠此文本
+    # 定位占位符位置，替换为完整 Word 表格并删除后面的预览表格。
+    anchor = (
+        f'<a href="{html_lib.escape(spec.url or full_url)}" target="_blank" '
+        f'data-embed-anchor="1" data-embed-id="{html_lib.escape(spec.embed_id)}">'
+        f'【{html_lib.escape(spec.embed_id)}】</a>'
+    )
 
     page = f"""
+  <p style="display:none">{anchor}</p>
   {table_html}
   <p class="tip">
     仅显示前 {preview_rows} 行数据。
     <a href="{full_url}" target="_blank">点击查看全部 {total} 行数据</a>
-    <span class="badge" style="display:none">embed_id: {html_lib.escape(spec.embed_id)}</span>
   </p>
 """
     return page
