@@ -420,13 +420,13 @@ def render_table_to_html(spec: EmbedSpec) -> str:
     lines: List[str] = []
     if caption:
         lines.append(
-            f'<p style="font-weight:bold; margin:4px 0; '
+            f'<p class="excel-swk" style="font-weight:bold; margin:4px 0; '
             f'font-family:{html.escape(font_name)},serif;">'
             f'{html.escape(caption)}</p>'
         )
 
     lines.append(
-        f'<table style="border-collapse:collapse; width:100%; '
+        f'<table class="excel-swk" style="border-collapse:collapse; width:100%; '
         f'font-size:{b_size}pt; margin:4px 0;" data-embed-preview="table">'
     )
 
@@ -461,4 +461,3 @@ register_html_renderer(TYPE_TABLE, render_table_to_html)
 register_docx_renderer(TYPE_TABLE, render_table_to_docx)
 
 logger.debug("embed_table_renderer: HTML 和 DOCX 渲染器已注册")
-

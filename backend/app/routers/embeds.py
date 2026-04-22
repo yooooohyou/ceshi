@@ -592,7 +592,7 @@ def _render_preview_page(spec: EmbedSpec, preview_rows: int = 10) -> str:
 
     page = f"""
   {table_html}
-  <p class="tip">
+  <p class="excel-swk tip">
     仅显示前 {preview_rows} 行数据。
     <a href="{full_url}" target="_blank">点击查看全部 {total} 行数据</a>
   </p>
