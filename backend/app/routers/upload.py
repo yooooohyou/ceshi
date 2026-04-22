@@ -1,6 +1,7 @@
 import datetime
 import logging
 import os
+import re
 
 import aiohttp
 from fastapi import APIRouter, Body, File, Request, UploadFile
@@ -25,6 +26,16 @@ from mergfile import TreeItem, call_docx_split, call_set_table_width
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# 前端分片上传时会在文件名前拼接 "{hex}-{timestamp}" 标识，如：
+#   de7bc437130692b5c8287b787baa26bb-1776828981534测试_3000段表格数据.xlsx
+# 入库前需将该前缀剥离，只保留用户真实文件名。
+_FRONTEND_FILENAME_PREFIX_RE = re.compile(r'^[0-9a-f]+-\d+')
+
+
+def _strip_filename_prefix(file_name: str) -> str:
+    """去除前端拼接的 hex-timestamp 前缀，返回用户原始文件名。"""
+    return _FRONTEND_FILENAME_PREFIX_RE.sub("", file_name)
 
 
 # ─── 公共逻辑：保存文件 + 创建上传记录 ─────────────────────────────────────
@@ -365,7 +376,7 @@ async def split_upload_and_generate_tree(
             try:
                 from app.db.database import insert_xlsx_upload_record
                 insert_xlsx_upload_record(
-                    original_filename=file_name,
+                    original_filename=_strip_filename_prefix(file_name),
                     new_filename=full_file_name,
                     file_sign=file_sign,
                     save_path=real_file_path,
