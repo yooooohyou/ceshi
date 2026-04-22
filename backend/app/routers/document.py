@@ -64,7 +64,8 @@ _MERGE_FORMAT_CONFIG = {
 }
 
 _MERGE_FORMAT_ARGS = {
-    "config_dict": _MERGE_FORMAT_CONFIG,
+    # "config_dict": _MERGE_FORMAT_CONFIG,
+    # 一键排版参数
     "token": "984f5b0a2793eeafeeddfd2cd095ad31",
     "key": "984f5b0a2793eeafeeddfd2cd095ad31-1772598822992",
 }
