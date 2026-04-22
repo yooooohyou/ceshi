@@ -650,25 +650,34 @@ async def merge_docx_office_server(
                     )
 
                     if plan:
-                        # ── 收集每个占位符段落后面紧跟的表格元素 ──────────────
-                        # 这些表格是 HTML embed 标记（inner_html 里的预览/全量 HTML 表格）
-                        # 被 DOCX 转换服务转换后残留的，替换完成后需要删除。
-                        # 性能优化：使用 lxml 的 getnext() 直接拿兄弟节点，
-                        # 避免 list(parent).index(para_elem) 的 O(N) 开销。
+                        # ── 收集遗留元素（占位符后的预览表格及中间段落） ──────────
+                        # HTML 转换后 DOCX 结构为：
+                        #   段落:【EMB_xxx】← 占位符
+                        #   段落: caption   ← inner_html 里的 <p>（中间隔 1 个段落）
+                        #   表格: 预览表格  ← 遗留表格（第 2 个兄弟，非直接下一个）
+                        # 需跳过中间 w:p，找到第一个 w:tbl，连同中间段落一并删除。
                         t_stage = time.perf_counter()
-                        stale_tbl_elems: list = []
+                        stale_elems: list = []
                         for item in plan:
                             para_elem = item["paragraph"]._element
-                            next_elem = para_elem.getnext()
-                            if next_elem is None:
-                                continue
-                            tag = next_elem.tag
-                            # w:tbl 标签（兼容带命名空间的完整 tag 字符串）
-                            if tag.endswith("}tbl") or tag == "w:tbl":
-                                stale_tbl_elems.append(next_elem)
+                            intermediate: list = []
+                            sibling = para_elem.getnext()
+                            for _ in range(5):  # 最多向后扫 5 个兄弟节点
+                                if sibling is None:
+                                    break
+                                tag = sibling.tag
+                                if tag.endswith("}tbl") or tag == "w:tbl":
+                                    stale_elems.extend(intermediate)
+                                    stale_elems.append(sibling)
+                                    break
+                                elif tag.endswith("}p") or tag == "w:p":
+                                    intermediate.append(sibling)
+                                    sibling = sibling.getnext()
+                                else:
+                                    break
                         logger.info(
-                            f"merge_docx_office_server[embed]: 定位遗留表格完成"
-                            f" stale={len(stale_tbl_elems)}"
+                            f"merge_docx_office_server[embed]: 定位遗留元素完成"
+                            f" stale={len(stale_elems)}"
                             f" 耗时={time.perf_counter() - t_stage:.2f}s"
                         )
 
@@ -681,22 +690,22 @@ async def merge_docx_office_server(
                             f" 耗时={time.perf_counter() - t_stage:.2f}s"
                         )
 
-                        # ── 删除 HTML 转换遗留的旧表格（预览行 + 全部数据链接等） ─
+                        # ── 删除遗留元素（中间 caption 段落 + 预览表格） ─────────
                         t_stage = time.perf_counter()
                         removed = 0
-                        for tbl_elem in stale_tbl_elems:
-                            parent = tbl_elem.getparent()
+                        for elem in stale_elems:
+                            parent = elem.getparent()
                             if parent is not None:
                                 try:
-                                    parent.remove(tbl_elem)
+                                    parent.remove(elem)
                                     removed += 1
                                 except Exception as rm_err:
                                     logger.warning(
-                                        f"merge_docx_office_server: 删除遗留表格失败 err={rm_err}"
+                                        f"merge_docx_office_server: 删除遗留元素失败 err={rm_err}"
                                     )
                         logger.info(
-                            f"merge_docx_office_server[embed]: 删除遗留表格完成"
-                            f" removed={removed}/{len(stale_tbl_elems)}"
+                            f"merge_docx_office_server[embed]: 删除遗留元素完成"
+                            f" removed={removed}/{len(stale_elems)}"
                             f" 耗时={time.perf_counter() - t_stage:.2f}s"
                         )
 
@@ -710,7 +719,7 @@ async def merge_docx_office_server(
                         logger.info(
                             f"merge_docx_office_server[embed]: 全流程完成"
                             f" record_id={result_record_id} filepath={effective_filepath}"
-                            f" replaced={replaced} removed_stale_tables={removed}"
+                            f" replaced={replaced} removed_stale={removed}"
                             f" 总耗时={time.perf_counter() - t_pipeline:.2f}s"
                         )
                     else:
