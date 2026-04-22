@@ -290,6 +290,20 @@ def find_embed_ids_in_docx_text(text: str) -> List[str]:
     return EMBED_ID_RE.findall(text or "")
 
 
+def collect_docx_embed_ids(docx_document) -> set:
+    """
+    快速扫描 Document 段落，返回文件中实际出现的 embed_id 集合（不加载任何 spec）。
+    用于在查询 DB 前预判哪些 embed 占位符在文档中确实存在，避免无效的 DB 查询和反序列化。
+    """
+    ids: set = set()
+    prefix = EMBED_ID_PREFIX
+    for para in docx_document.paragraphs:
+        text = para.text or ""
+        if prefix in text:
+            ids.update(find_embed_ids_in_docx_text(text))
+    return ids
+
+
 def build_docx_replace_plan(
     docx_document,
     specs_by_id: Dict[str, EmbedSpec],
