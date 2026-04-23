@@ -6,7 +6,7 @@ import requests
 
 from app.core.config import UPLOAD_DIR, STATIC_WEB_FRONT_PREFIX
 from app.utils.file_utils import generate_unique_filename
-from app.utils.html_utils import html_base64_images_to_urls
+from app.utils.html_utils import hide_mce_anchor_tags, html_base64_images_to_urls
 from app.utils.path_utils import judge_path_type
 
 logger = logging.getLogger(__name__)
@@ -53,6 +53,7 @@ def docx_to_html(file_path: str):
             html_content, _ = html_base64_images_to_urls(
                 html_content, UPLOAD_DIR, STATIC_WEB_FRONT_PREFIX
             )
+            html_content = hide_mce_anchor_tags(html_content)
 
         return html_content or "", abs_file_path
 

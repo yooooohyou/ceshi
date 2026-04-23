@@ -190,6 +190,39 @@ def html_img_url_to_base64(html_text: str, base_url: str = None, timeout: int = 
                 pass
 
 
+_MCE_ANCHOR_TAG_RE = re.compile(
+    r'<a\b[^>]*\bclass\s*=\s*(["\'])([^"\']*\bmce-item-anchor\b[^"\']*)\1[^>]*>',
+    re.IGNORECASE,
+)
+_MCE_ANCHOR_STYLE_RE = re.compile(r'\bstyle\s*=\s*(["\'])([^"\']*)\1', re.IGNORECASE)
+_MCE_ANCHOR_DISPLAY_RE = re.compile(r'display\s*:\s*[^;]+;?', re.IGNORECASE)
+
+
+def hide_mce_anchor_tags(html_content: str) -> str:
+    """为带 class="mce-item-anchor" 的 <a> 标签追加 style="display:none"。
+
+    DOCX 转 HTML 时由目录/书签生成的占位锚点（如
+    <a name="_Toc77943134" class="mce-item-anchor"></a>）默认会占据空行，
+    这里统一隐藏避免影响排版。"""
+    if not html_content or "mce-item-anchor" not in html_content:
+        return html_content
+
+    def _process(match):
+        tag = match.group(0)
+        style_m = _MCE_ANCHOR_STYLE_RE.search(tag)
+        if style_m:
+            existing = style_m.group(2).strip()
+            if re.search(r'display\s*:', existing, re.IGNORECASE):
+                new_style = _MCE_ANCHOR_DISPLAY_RE.sub('display:none;', existing).rstrip(';')
+            else:
+                new_style = f"{existing};display:none".strip(';')
+            quote = style_m.group(1)
+            return tag.replace(style_m.group(0), f'style={quote}{new_style}{quote}')
+        return re.sub(r'(\s*/?>)$', r' style="display:none"\1', tag, count=1)
+
+    return _MCE_ANCHOR_TAG_RE.sub(_process, html_content)
+
+
 def get_html_heading_levels(html_content: str):
     """返回 (existing_levels, max_level)"""
     if not html_content or not isinstance(html_content, str):
