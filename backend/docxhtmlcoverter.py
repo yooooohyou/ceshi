@@ -2555,9 +2555,9 @@ class DocxHtmlConverter:
             # 标签优先用"下一节"方向（data-next-orientation），表示分节符以下那节的版式
             label_orient = meta.get('data-next-orientation') or meta.get('data-orientation', '')
             if label_orient == 'landscape':
-                label = '此处以下为分节符(竖版)'
-            elif label_orient == 'portrait':
                 label = '此处以下为分节符(横版)'
+            elif label_orient == 'portrait':
+                label = '此处以下为分节符(竖版)'
             else:
                 label = '此处为分节符'
 
