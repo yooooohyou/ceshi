@@ -191,7 +191,11 @@ def html_img_url_to_base64(html_text: str, base_url: str = None, timeout: int = 
 
 
 _MCE_ANCHOR_TAG_RE = re.compile(
-    r'<a\b[^>]*\bclass\s*=\s*(["\'])([^"\']*\bmce-item-anchor\b[^"\']*)\1[^>]*>',
+    r'<a\b[^>]*(?:'
+    r'\bclass\s*=\s*(["\'])[^"\']*\bmce-item-anchor\b[^"\']*\1'
+    r'|'
+    r'\bname\s*=\s*(["\'])_[Tt]oc[^"\']*\2'
+    r')[^>]*>',
     re.IGNORECASE,
 )
 _MCE_ANCHOR_STYLE_RE = re.compile(r'\bstyle\s*=\s*(["\'])([^"\']*)\1', re.IGNORECASE)
@@ -199,12 +203,14 @@ _MCE_ANCHOR_DISPLAY_RE = re.compile(r'display\s*:\s*[^;]+;?', re.IGNORECASE)
 
 
 def hide_mce_anchor_tags(html_content: str) -> str:
-    """为带 class="mce-item-anchor" 的 <a> 标签追加 style="display:none"。
+    """为 DOCX 转 HTML 产生的目录/书签锚点 <a> 标签追加 style="display:none"。
 
-    DOCX 转 HTML 时由目录/书签生成的占位锚点（如
-    <a name="_Toc77943134" class="mce-item-anchor"></a>）默认会占据空行，
-    这里统一隐藏避免影响排版。"""
-    if not html_content or "mce-item-anchor" not in html_content:
+    覆盖两种形式：
+    - <a class="mce-item-anchor" ...>
+    - <a name="_TocXXXXXX" ...>（无 mce-item-anchor class 的 Toc 书签）"""
+    if not html_content or not (
+        "mce-item-anchor" in html_content or "_Toc" in html_content or "_toc" in html_content
+    ):
         return html_content
 
     def _process(match):
