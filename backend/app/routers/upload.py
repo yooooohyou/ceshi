@@ -114,8 +114,8 @@ async def _split_mode(
             conn.commit()
 
     # 调用表格宽度适配接口
-    # new_file_path = call_set_table_width(abs_file_path)
-    new_file_path = abs_file_path
+    new_file_path = call_set_table_width(abs_file_path)
+    # new_file_path = abs_file_path
     with open(new_file_path, "rb") as _f:
         file_bytes = _f.read()
 
