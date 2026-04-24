@@ -99,6 +99,11 @@ def init_db_tables():
     CREATE INDEX IF NOT EXISTS idx_xlsx_file_sign    ON "yxdl_xlsx_upload_records" ("file_sign");
     """
 
+    alter_upload_records_sql = """
+    ALTER TABLE "yxdl_docx_upload_records"
+    ADD COLUMN IF NOT EXISTS "title_font_dict" jsonb DEFAULT NULL;
+    """
+
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -106,6 +111,7 @@ def init_db_tables():
                 cursor.execute(create_title_tree_table_sql)
                 cursor.execute(create_embed_components_sql)
                 cursor.execute(create_xlsx_upload_records_sql)
+                cursor.execute(alter_upload_records_sql)
                 conn.commit()
         logger.debug("PostgreSQL数据表初始化成功")
     except Exception as e:

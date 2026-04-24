@@ -64,7 +64,8 @@ CREATE TABLE "yxdl_docx_upload_records" (
   "upload_time" timestamptz NOT NULL,
   "update_time" timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "split_file_id" varchar(128) COLLATE "pg_catalog"."default",
-  "process_mode" varchar(16) COLLATE "pg_catalog"."default" DEFAULT 'single'
+  "process_mode" varchar(16) COLLATE "pg_catalog"."default" DEFAULT 'single',
+  "title_font_dict" jsonb DEFAULT NULL
 );
 
 COMMENT ON COLUMN "yxdl_docx_upload_records"."id" IS '记录ID';
@@ -75,4 +76,5 @@ COMMENT ON COLUMN "yxdl_docx_upload_records"."upload_time" IS '上传时间';
 COMMENT ON COLUMN "yxdl_docx_upload_records"."update_time" IS '更新时间';
 COMMENT ON COLUMN "yxdl_docx_upload_records"."split_file_id" IS '拆分接口使用的file_id';
 COMMENT ON COLUMN "yxdl_docx_upload_records"."process_mode" IS '处理模式：single/split';
+COMMENT ON COLUMN "yxdl_docx_upload_records"."title_font_dict" IS '拆分接口返回的标题字体字典';
 COMMENT ON TABLE "yxdl_docx_upload_records" IS 'DOCX文件上传记录';

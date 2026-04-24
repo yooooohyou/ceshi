@@ -1,7 +1,8 @@
+import io
 import logging
 import pathlib
 import urllib.parse
-from typing import Optional, Union
+from typing import Any, Dict, Optional, Union
 
 import requests
 from fastapi import APIRouter, Body, Request
@@ -12,6 +13,7 @@ from app.core.config import UPLOAD_DIR
 from app.models.schemas import unified_response
 from app.utils.file_utils import generate_unique_filename
 from file_resp import FileResp
+from mergfile import call_docx_merge, MergeRequest, TreeItem
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -21,6 +23,9 @@ logger = logging.getLogger(__name__)
 async def html_to_docx_api(
     html_content: str = Body(..., description="需要转换的HTML文本"),
     filename: Optional[str] = Body("output.docx", description="下载的DOCX文件名"),
+    config_dict: Dict[str, Any] = Body(None, description="一键排版配置字典"),
+    token: str = Body(None, description="排版服务token"),
+    key: str = Body(None, description="排版服务key"),
 ) -> Union[JSONResponse, StreamingResponse]:
     """接收 HTML 文本，生成并返回 DOCX 文件流"""
     import datetime
@@ -38,6 +43,32 @@ async def html_to_docx_api(
         if not success:
             return unified_response(500, result)
 
+        tree_item = TreeItem(
+            eid="root",
+            level=1,
+            idx=0,
+            file_path=path_,
+            is_conversion_completion=0,
+        )
+        if config_dict:
+            megre_docx_config = {"config_dict": config_dict, "token": token, "key": key}
+            merge_request = MergeRequest(tree=[tree_item], files=[path_], format_args=megre_docx_config)
+        else:
+            megre_docx_config = {}
+            merge_request = MergeRequest(tree=[tree_item], files=[path_])
+        logger.info("一键排版参数")
+        logger.info(megre_docx_config)
+        merged_result = call_docx_merge(merge_request, add_title=0, add_heading_num=1, update_title=1)
+
+        merged_path = merged_result.data.get("out_path", "")
+        if not merged_path or not os.path.exists(merged_path):
+            return unified_response(500, "合并接口未返回有效文件路径")
+
+        merged_stream = io.BytesIO()
+        with open(merged_path, "rb") as f:
+            merged_stream.write(f.read())
+        merged_stream.seek(0)
+
         encoded_filename = urllib.parse.quote(filename)
         headers = {
             "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}; filename={encoded_filename}",
@@ -45,7 +76,7 @@ async def html_to_docx_api(
             "X-Update-Time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
         }
         response = StreamingResponse(
-            result,
+            merged_stream,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             headers=headers,
         )
