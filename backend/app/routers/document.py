@@ -435,7 +435,7 @@ async def merge_docx_office_server(
         "key": key,}
     else:
         megre_docx_config = {
-            # "config_dict": _MERGE_FORMAT_CONFIG,
+            "config_dict": {},
             # 一键排版参数
             "token": "984f5b0a2793eeafeeddfd2cd095ad31",
             "key": "984f5b0a2793eeafeeddfd2cd095ad31-1772598822992",
