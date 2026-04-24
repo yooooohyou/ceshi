@@ -568,6 +568,7 @@ async def merge_docx_office_server(
                                  "key": key, }
             merge_request = MergeRequest(tree=nested_tree_items, files=files_, format_args=megre_docx_config)
         else:
+            megre_docx_config = {}
             merge_request = MergeRequest(tree=nested_tree_items, files=files_)
         logger.info("一键排版参数")
         logger.info(megre_docx_config)
