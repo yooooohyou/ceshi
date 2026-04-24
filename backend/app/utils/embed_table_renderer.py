@@ -221,18 +221,55 @@ def _fast_write_cell(
 # ─── 表格页面宽度工具 ──────────────────────────────────────────────────────────
 
 def _get_page_content_width_twips(document) -> int:
-    """获取文档正文区域宽度，单位 twips（1 英寸 = 1440 twips）。
+    """获取文档正文区域宽度，单位 twips。
 
-    A4 标准正文宽度约 9072 twips（页宽 11907 - 左右页边距各 1440）。
-    取不到时返回该兜底值。
+    优先直接读取 XML 中的 w:pgSz / w:pgMar（本身已是 twips，无需换算）；
+    其次回退到 python-docx sections API（EMU → twips）；
+    均失败时兜底返回 9072（A4 标准正文宽度，页宽 11906 - 左右各 1440）。
     """
+    from docx.oxml.ns import qn
+
+    # 方法一：直接解析 body 末尾的文档级 sectPr（twips，精度最高）
+    try:
+        body = document.element.body
+        sectPr = body.find(qn("w:sectPr"))
+        if sectPr is not None:
+            pgSz  = sectPr.find(qn("w:pgSz"))
+            pgMar = sectPr.find(qn("w:pgMar"))
+            if pgSz is not None:
+                page_w = int(pgSz.get(qn("w:w"), 0))
+                if pgMar is not None:
+                    left  = int(pgMar.get(qn("w:left"),  1440))
+                    right = int(pgMar.get(qn("w:right"), 1440))
+                else:
+                    left = right = 1440
+                content = page_w - left - right
+                if content > 0:
+                    logger.debug(
+                        "_get_page_content_width_twips: sectPr → page=%d left=%d right=%d content=%d",
+                        page_w, left, right, content,
+                    )
+                    return content
+    except Exception as _e:
+        logger.debug("_get_page_content_width_twips sectPr 解析失败: %s", _e)
+
+    # 方法二：python-docx sections API（EMU ÷ 635 → twips）
     try:
         section = document.sections[0]
-        emu = int(section.page_width) - int(section.left_margin) - int(section.right_margin)
-        # 1 twip = 914400/1440 = 635 EMU
-        return max(100, emu // 635)
-    except Exception:
-        return 9072
+        pw = section.page_width
+        lm = section.left_margin
+        rm = section.right_margin
+        if pw is not None and lm is not None and rm is not None:
+            emu = int(pw) - int(lm) - int(rm)
+            if emu > 0:
+                content = max(100, emu // 635)
+                logger.debug("_get_page_content_width_twips: sections API → content=%d twips", content)
+                return content
+    except Exception as _e:
+        logger.debug("_get_page_content_width_twips sections API 失败: %s", _e)
+
+    logger.debug("_get_page_content_width_twips: 回退兜底 9072")
+    return 9072
 
 
 def _apply_table_page_width(tbl_elem, col_count: int, col_twips: List[int]) -> None:
@@ -258,7 +295,10 @@ def _apply_table_page_width(tbl_elem, col_count: int, col_twips: List[int]) -> N
     tblW_el = OxmlElement("w:tblW")
     tblW_el.set(qn("w:w"), str(total_twips))
     tblW_el.set(qn("w:type"), "dxa")
-    tblPr.insert(0, tblW_el)
+    # OOXML 规定 tblW 须在 tblStyle 之后，插到 tblStyle 后面；没有 tblStyle 则插首位
+    tblStyle = tblPr.find(qn("w:tblStyle"))
+    _tblW_pos = (list(tblPr).index(tblStyle) + 1) if tblStyle is not None else 0
+    tblPr.insert(_tblW_pos, tblW_el)
 
     # 2. 更新 w:tblGrid 各列宽（影响列定义）
     tblGrid = tbl_elem.find(qn("w:tblGrid"))
@@ -430,6 +470,7 @@ def render_table_to_docx(spec: EmbedSpec, paragraph, document) -> None:
     # 单元格填充完成后统一设置列宽，确保所有 tcPr 已建立。
     # 无论是否指定 col_widths，表格总宽均与页面正文宽度对齐；
     # 有 col_widths 时按比例缩放，无 col_widths 时等分。
+    # 两种情况均使用 autofit=False（固定布局），防止 Word 按内容收缩列宽。
     page_twips = _get_page_content_width_twips(document)
     if col_widths:
         raw = [max(0.01, float(w)) for w in col_widths[:col_count]]
@@ -439,14 +480,17 @@ def render_table_to_docx(spec: EmbedSpec, paragraph, document) -> None:
         scaled = [int(page_twips * c / total_raw) for c in raw]
         # 修正整数截断累计误差（末列吸收）
         scaled[-1] = max(1, page_twips - sum(scaled[:-1]))
-        _apply_table_page_width(tbl_elem, col_count, scaled)
-        table.autofit = False
     else:
         base = page_twips // col_count
         scaled = [base] * col_count
         scaled[-1] = max(1, page_twips - base * (col_count - 1))
-        _apply_table_page_width(tbl_elem, col_count, scaled)
-        table.autofit = True
+    _apply_table_page_width(tbl_elem, col_count, scaled)
+    # 固定布局：Word 严格按 tcW 渲染，不会按内容收缩，保证表格撑满页面正文宽度
+    table.autofit = False
+    logger.debug(
+        "render_table_to_docx 宽度设置: page_twips=%d col_count=%d scaled=%s",
+        page_twips, col_count, scaled,
+    )
 
     # ── 合并单元格（[行, 起始列, 结束列]） ────────────────────────────────────
     for instr in merge_instructions:
