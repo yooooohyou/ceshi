@@ -78,8 +78,8 @@ class DocxHtmlConverter:
                 obj.CharacterFormat.FontName = backup["font_name"]
             if backup["font_size"] and backup["font_size"] > 0:
                 obj.CharacterFormat.FontSize = backup["font_size"]
-            # obj.CharacterFormat.TextColor = backup["text_color"]
-            # obj.CharacterFormat.Bold = backup["is_bold"]
+            obj.CharacterFormat.TextColor = backup["text_color"]
+            obj.CharacterFormat.Bold = backup["is_bold"]
 
     def _fix_underline_span_width(self, html_content: str) -> str:
         """
