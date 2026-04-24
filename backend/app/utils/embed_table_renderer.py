@@ -218,6 +218,74 @@ def _fast_write_cell(
         run._element.get_or_add_rPr().get_or_add_rFonts().set(east_asia_qn, font_name)
 
 
+# ─── 表格页面宽度工具 ──────────────────────────────────────────────────────────
+
+def _get_page_content_width_twips(document) -> int:
+    """获取文档正文区域宽度，单位 twips（1 英寸 = 1440 twips）。
+
+    A4 标准正文宽度约 9072 twips（页宽 11907 - 左右页边距各 1440）。
+    取不到时返回该兜底值。
+    """
+    try:
+        section = document.sections[0]
+        emu = int(section.page_width) - int(section.left_margin) - int(section.right_margin)
+        # 1 twip = 914400/1440 = 635 EMU
+        return max(100, emu // 635)
+    except Exception:
+        return 9072
+
+
+def _apply_table_page_width(tbl_elem, col_count: int, col_twips: List[int]) -> None:
+    """将 Word 表格宽度信息（tblW / tblGrid / 每格 tcW）统一设置为给定列宽列表。
+
+    所有宽度单位均为 twips (dxa)。调用方负责：
+    - col_twips 长度 == col_count
+    - sum(col_twips) == 目标总宽（通常为页面正文宽度）
+    """
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    total_twips = sum(col_twips)
+
+    # 1. 更新 w:tblW（表格总宽）
+    tblPr = tbl_elem.find(qn("w:tblPr"))
+    if tblPr is None:
+        tblPr = OxmlElement("w:tblPr")
+        tbl_elem.insert(0, tblPr)
+    old_tblW = tblPr.find(qn("w:tblW"))
+    if old_tblW is not None:
+        tblPr.remove(old_tblW)
+    tblW_el = OxmlElement("w:tblW")
+    tblW_el.set(qn("w:w"), str(total_twips))
+    tblW_el.set(qn("w:type"), "dxa")
+    tblPr.insert(0, tblW_el)
+
+    # 2. 更新 w:tblGrid 各列宽（影响列定义）
+    tblGrid = tbl_elem.find(qn("w:tblGrid"))
+    if tblGrid is not None:
+        for i, gc in enumerate(tblGrid.findall(qn("w:gridCol"))):
+            if i < col_count:
+                gc.set(qn("w:w"), str(col_twips[i]))
+
+    # 3. 更新每个单元格 tcW（合并单元格保持原合并宽不动，只改非合并格）
+    for tr in tbl_elem.findall(qn("w:tr")):
+        tcs = tr.findall(qn("w:tc"))
+        for ci, tc in enumerate(tcs):
+            if ci >= col_count:
+                break
+            tcPr = tc.find(qn("w:tcPr"))
+            if tcPr is None:
+                tcPr = OxmlElement("w:tcPr")
+                tc.insert(0, tcPr)
+            old_tcW = tcPr.find(qn("w:tcW"))
+            if old_tcW is not None:
+                tcPr.remove(old_tcW)
+            tcW_el = OxmlElement("w:tcW")
+            tcW_el.set(qn("w:w"), str(col_twips[ci]))
+            tcW_el.set(qn("w:type"), "dxa")
+            tcPr.insert(0, tcW_el)
+
+
 # ─── DOCX 渲染器 ───────────────────────────────────────────────────────────────
 
 def render_table_to_docx(spec: EmbedSpec, paragraph, document) -> None:
@@ -315,19 +383,8 @@ def render_table_to_docx(spec: EmbedSpec, paragraph, document) -> None:
     parent.insert(insert_idx, tbl_elem)       # 插到占位符所在位置
     create_cost = time.perf_counter() - t_create
 
-    # ── 列宽 ─────────────────────────────────────────────────────────────────
-    if col_widths:
-        widths_cm = [Cm(float(w)) for w in col_widths[:col_count]]
-        # 仅对第一行设置即可（python-docx 会通过 gridCol 影响整列），
-        # 但为兼容老逻辑仍逐行设置；改用整行 cells 取出，避免 .cell(r, c) 重复索引
-        for row_obj in table.rows:
-            row_cells = row_obj.cells
-            for ci, w in enumerate(widths_cm):
-                if ci < len(row_cells):
-                    row_cells[ci].width = w
-        table.autofit = False
-    else:
-        table.autofit = True
+    # ── 列宽（自适应页面正文宽度） ───────────────────────────────────────────
+    # 列宽设置推迟到单元格填充之后执行，确保 tcPr 已全部建立
 
     # ── 填充单元格（核心循环，热路径） ───────────────────────────────────────
     t_fill = time.perf_counter()
@@ -368,6 +425,28 @@ def render_table_to_docx(spec: EmbedSpec, paragraph, document) -> None:
                 spec.embed_id, done, total_rows, elapsed, speed, eta,
             )
     fill_cost = time.perf_counter() - t_fill
+
+    # ── 自适应页面正文宽度 ────────────────────────────────────────────────────
+    # 单元格填充完成后统一设置列宽，确保所有 tcPr 已建立。
+    # 无论是否指定 col_widths，表格总宽均与页面正文宽度对齐；
+    # 有 col_widths 时按比例缩放，无 col_widths 时等分。
+    page_twips = _get_page_content_width_twips(document)
+    if col_widths:
+        raw = [max(0.01, float(w)) for w in col_widths[:col_count]]
+        while len(raw) < col_count:
+            raw.append(raw[-1] if raw else 1.0)
+        total_raw = sum(raw)
+        scaled = [int(page_twips * c / total_raw) for c in raw]
+        # 修正整数截断累计误差（末列吸收）
+        scaled[-1] = max(1, page_twips - sum(scaled[:-1]))
+        _apply_table_page_width(tbl_elem, col_count, scaled)
+        table.autofit = False
+    else:
+        base = page_twips // col_count
+        scaled = [base] * col_count
+        scaled[-1] = max(1, page_twips - base * (col_count - 1))
+        _apply_table_page_width(tbl_elem, col_count, scaled)
+        table.autofit = True
 
     # ── 合并单元格（[行, 起始列, 结束列]） ────────────────────────────────────
     for instr in merge_instructions:
