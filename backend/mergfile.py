@@ -56,7 +56,7 @@ TreeItem.update_forward_refs()
 class MergeRequest(BaseModel):
     tree: List[TreeItem]
     files: List[str]
-    format_args: Dict[Any, Any]
+    format_args: Dict[Any, Any] = Field(default=None)
 
 
 class DeleteRequest(BaseModel):

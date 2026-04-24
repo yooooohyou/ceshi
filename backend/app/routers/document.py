@@ -434,12 +434,7 @@ async def merge_docx_office_server(
         "token": token,
         "key": key,}
     else:
-        megre_docx_config = {
-            # "config_dict": {},
-            # 一键排版参数
-            "token": "984f5b0a2793eeafeeddfd2cd095ad31",
-            "key": "984f5b0a2793eeafeeddfd2cd095ad31-1772598822992",
-        }
+        megre_docx_config = None
     logger.info("一键排版参数")
     logger.info(megre_docx_config)
     if node_id <= 0:
