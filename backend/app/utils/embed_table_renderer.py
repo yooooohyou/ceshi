@@ -220,6 +220,72 @@ def _fast_write_cell(
 
 # ─── 表格页面宽度工具 ──────────────────────────────────────────────────────────
 
+def _sectPr_content_width(sectPr) -> int:
+    """从 sectPr XML 元素计算正文区域宽度（twips）。失败返回 0。"""
+    from docx.oxml.ns import qn
+    pgSz  = sectPr.find(qn("w:pgSz"))
+    pgMar = sectPr.find(qn("w:pgMar"))
+    if pgSz is None:
+        return 0
+    page_w = int(pgSz.get(qn("w:w"), 0))
+    left   = int(pgMar.get(qn("w:left"),  1440) if pgMar is not None else 1440)
+    right  = int(pgMar.get(qn("w:right"), 1440) if pgMar is not None else 1440)
+    return max(0, page_w - left - right)
+
+
+def _get_section_content_width_for_tbl(tbl_elem, document) -> int:
+    """获取 tbl_elem **所在节**的正文区域宽度（twips）。
+
+    OOXML 规则：段落 pPr 内的 sectPr 是该节的最后一段的标记；
+    表格所属的节，由 tbl_elem 之后第一个含 sectPr 的段落决定。
+    找不到时退回到文档级 sectPr，再找不到则调用 _get_page_content_width_twips。
+    """
+    from docx.oxml.ns import qn
+
+    try:
+        body = tbl_elem.getparent()
+        if body is None:
+            raise ValueError("tbl_elem 无父节点")
+
+        # 扫描 tbl_elem 之后的兄弟节点，找最近的段落级 sectPr
+        passed_tbl = False
+        for child in body:
+            if child is tbl_elem:
+                passed_tbl = True
+                continue
+            if not passed_tbl:
+                continue
+            if child.tag != qn("w:p"):
+                continue
+            pPr = child.find(qn("w:pPr"))
+            if pPr is None:
+                continue
+            sectPr = pPr.find(qn("w:sectPr"))
+            if sectPr is None:
+                continue
+            w = _sectPr_content_width(sectPr)
+            if w > 0:
+                logger.debug(
+                    "_get_section_content_width_for_tbl: 段落级 sectPr → content=%d twips", w
+                )
+                return w
+
+        # 回退：文档级 sectPr（body 的直接子元素）
+        body_sectPr = body.find(qn("w:sectPr"))
+        if body_sectPr is not None:
+            w = _sectPr_content_width(body_sectPr)
+            if w > 0:
+                logger.debug(
+                    "_get_section_content_width_for_tbl: 文档级 sectPr → content=%d twips", w
+                )
+                return w
+    except Exception as _e:
+        logger.debug("_get_section_content_width_for_tbl 异常: %s", _e)
+
+    # 最终兜底
+    return _get_page_content_width_twips(document)
+
+
 def _get_page_content_width_twips(document) -> int:
     """获取文档正文区域宽度，单位 twips。
 
@@ -471,7 +537,7 @@ def render_table_to_docx(spec: EmbedSpec, paragraph, document) -> None:
     # 无论是否指定 col_widths，表格总宽均与页面正文宽度对齐；
     # 有 col_widths 时按比例缩放，无 col_widths 时等分。
     # 两种情况均使用 autofit=False（固定布局），防止 Word 按内容收缩列宽。
-    page_twips = _get_page_content_width_twips(document)
+    page_twips = _get_section_content_width_for_tbl(tbl_elem, document)
     if col_widths:
         raw = [max(0.01, float(w)) for w in col_widths[:col_count]]
         while len(raw) < col_count:
