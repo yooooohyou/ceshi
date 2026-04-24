@@ -429,8 +429,6 @@ async def merge_docx_office_server(
 ):
     """调用合并接口生成合并后的 DOCX 文件"""
 
-    logger.info("一键排版参数")
-    logger.info(megre_docx_config)
     if node_id <= 0:
         return unified_response(400, "节点ID必须为正整数")
     if not html_content.strip():
@@ -571,7 +569,8 @@ async def merge_docx_office_server(
             merge_request = MergeRequest(tree=nested_tree_items, files=files_, format_args=megre_docx_config)
         else:
             merge_request = MergeRequest(tree=nested_tree_items, files=files_)
-
+        logger.info("一键排版参数")
+        logger.info(megre_docx_config)
         merged_file_message = call_docx_merge(merge_request, add_title=0, add_heading_num=1, update_title=1)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件合并失败：{str(e)}")
