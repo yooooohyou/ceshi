@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Dict
 
 import psycopg2
 from fastapi import APIRouter, Body, Form, HTTPException, Request, UploadFile, File
@@ -64,7 +64,7 @@ _MERGE_FORMAT_CONFIG = {
 }
 
 _MERGE_FORMAT_ARGS = {
-    # "config_dict": _MERGE_FORMAT_CONFIG,
+    "config_dict": _MERGE_FORMAT_CONFIG,
     # 一键排版参数
     "token": "984f5b0a2793eeafeeddfd2cd095ad31",
     "key": "984f5b0a2793eeafeeddfd2cd095ad31-1772598822992",
@@ -419,8 +419,29 @@ async def merge_docx_office_server(
         html_content: str = Body(..., description="需要转换的HTML文本"),
         filename: Optional[str] = Body("output.docx", description="下载的DOCX文件名"),
         title_text: Optional[str] = Body(None, description="可选：更新节点标题文本"),
+        config_dict: Dict[str, Any] = Body(
+            None,
+            description="要更新的节点配置字典",
+            example={"id": 123, "name": "test_node"}  # 建议加上示例
+        ),
+        token: str = Body(None, description="要更新的节点ID"),
+        key: str = Body(None, description="要更新的节点ID"),
 ):
     """调用合并接口生成合并后的 DOCX 文件"""
+    if config_dict:
+        megre_docx_config = {"config_dict": config_dict,
+        # 一键排版参数
+        "token": token,
+        "key": key,}
+    else:
+        megre_docx_config = {
+            # "config_dict": _MERGE_FORMAT_CONFIG,
+            # 一键排版参数
+            "token": "984f5b0a2793eeafeeddfd2cd095ad31",
+            "key": "984f5b0a2793eeafeeddfd2cd095ad31-1772598822992",
+        }
+    logger.info("一键排版参数")
+    logger.info(megre_docx_config)
     if node_id <= 0:
         return unified_response(400, "节点ID必须为正整数")
     if not html_content.strip():
@@ -553,7 +574,7 @@ async def merge_docx_office_server(
 
     # ── 合并 DOCX ─────────────────────────────────────────────────────────────
     try:
-        merge_request = MergeRequest(tree=nested_tree_items, files=files_, format_args=_MERGE_FORMAT_ARGS)
+        merge_request = MergeRequest(tree=nested_tree_items, files=files_, format_args=megre_docx_config)
         merged_file_message = call_docx_merge(merge_request, add_title=0, add_heading_num=1, update_title=1)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件合并失败：{str(e)}")
