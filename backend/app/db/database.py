@@ -101,7 +101,7 @@ def init_db_tables():
 
     alter_upload_records_sql = """
     ALTER TABLE "yxdl_docx_upload_records"
-    ADD COLUMN IF NOT EXISTS "title_font_dict" jsonb DEFAULT NULL;
+    ADD COLUMN "title_font_dict" jsonb DEFAULT NULL;
     """
 
     try:
