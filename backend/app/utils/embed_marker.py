@@ -476,6 +476,192 @@ def _ensure_worker_logging() -> None:
         setup_logging()
 
 
+# 单表行数阈值：行数 >= 该阈值且仅有一个 plan 项时，触发"切行并行"
+HUGE_TABLE_ROW_THRESHOLD = 2000
+
+
+def render_huge_table_parallel(
+    item: Dict[str, Any],
+    docx_document,
+    max_workers: int,
+    chunk_size: Optional[int] = None,
+) -> int:
+    """
+    单个超大表格切片并行渲染。
+
+    场景：plan 只有 1 项但行数极多（如 5 万行），按表级并行毫无收益，
+    必须把行切成 N 段交给 N 个 worker 同时渲染。
+
+    思路：
+      - 把 rows 按 chunk_size 切成若干 sub_payload
+      - 第 0 片保留 caption + headers + 行段（最终表格骨架）
+      - 其余片仅含行段（清空 caption / headers / has_header / merge_cells）
+      - 各片独立调用 build_table_xml；主进程取第 0 片为骨架，
+        将其余片 <w:tbl> 中的 <w:tr> 依次追加到骨架 <w:tbl> 末尾
+      - splice 回主文档原占位段落位置
+
+    限制：
+      - 跨片 merge_cells 不支持（每片是独立 OOXML，行号在片内重排）
+      - 第 0 片渲染失败则整体失败（骨架来自该片）
+
+    返回成功项数（0 或 1）。
+    """
+    import math
+    from concurrent.futures import ProcessPoolExecutor, wait as _futures_wait
+    from copy import deepcopy
+    from lxml import etree
+    from docx.oxml.ns import qn
+    from app.utils.embed_table_renderer import (
+        _get_page_content_width_twips,
+        build_table_xml,
+    )
+
+    spec: EmbedSpec = item["spec"]
+    paragraph = item["paragraph"]
+    payload = spec.payload or {}
+    rows: List[List[str]] = payload.get("rows") or []
+    total_rows = len(rows)
+
+    if total_rows == 0:
+        # 没有数据行就直接走串行（含可能的 caption/headers）
+        return render_docx_replace_plan([item], docx_document)
+
+    page_twips = _get_page_content_width_twips(docx_document)
+    t0 = time.perf_counter()
+
+    # 决定 chunk_size：默认按 max_workers 等分，至少 500 行/片避免片太碎
+    if chunk_size is None:
+        chunk_size = max(500, math.ceil(total_rows / max(1, max_workers)))
+
+    ranges: List[tuple] = []
+    for start in range(0, total_rows, chunk_size):
+        ranges.append((start, min(start + chunk_size, total_rows)))
+    n_chunks = len(ranges)
+
+    logger.info(
+        "render_huge_table_parallel 开始 embed_id=%s 总行数=%d chunk_size=%d 分片数=%d workers=%d",
+        spec.embed_id, total_rows, chunk_size, n_chunks, max_workers,
+    )
+
+    if n_chunks <= 1:
+        return render_docx_replace_plan([item], docx_document)
+
+    # 构造每片 sub_spec_dict
+    sub_spec_dicts: List[tuple] = []
+    base_spec_dict = spec.to_dict()
+    for i, (s, e) in enumerate(ranges):
+        sub_payload = dict(payload)
+        sub_payload["rows"] = rows[s:e]
+        if i > 0:
+            sub_payload["caption"] = ""
+            sub_payload["headers"] = []
+            sub_payload["has_header"] = False
+            sub_payload["merge_cells"] = []
+        sub_spec_dict = {**base_spec_dict, "payload": sub_payload}
+        sub_spec_dicts.append((i, sub_spec_dict))
+
+    # 并行渲染（带 10s 心跳与心跳完成进度）
+    t_parallel = time.perf_counter()
+    chunk_results: Dict[int, List[bytes]] = {}
+    with ProcessPoolExecutor(
+        max_workers=max_workers,
+        initializer=_ensure_worker_logging,
+    ) as executor:
+        future_to_idx = {
+            executor.submit(build_table_xml, d, page_twips): i
+            for i, d in sub_spec_dicts
+        }
+        logger.info(
+            "render_huge_table_parallel 已提交 %d 个 chunk 任务 workers=%d",
+            n_chunks, max_workers,
+        )
+        pending = set(future_to_idx.keys())
+        completed = 0
+        while pending:
+            done, pending = _futures_wait(pending, timeout=10)
+            for fut in done:
+                idx = future_to_idx[fut]
+                completed += 1
+                try:
+                    chunk_results[idx] = fut.result()
+                    logger.info(
+                        "render_huge_table_parallel: chunk 完成 %d/%d idx=%d 耗时=%.2fs",
+                        completed, n_chunks, idx, time.perf_counter() - t_parallel,
+                    )
+                except Exception as ex:
+                    logger.error(
+                        "render_huge_table_parallel: chunk 失败 idx=%d err=%s", idx, ex,
+                    )
+            if pending:
+                logger.info(
+                    "render_huge_table_parallel: 等待中 已完成=%d/%d 耗时=%.2fs",
+                    completed, n_chunks, time.perf_counter() - t_parallel,
+                )
+    logger.info(
+        "render_huge_table_parallel worker 阶段完成 success=%d/%d 耗时=%.2fs",
+        len(chunk_results), n_chunks, time.perf_counter() - t_parallel,
+    )
+
+    if 0 not in chunk_results:
+        logger.error(
+            "render_huge_table_parallel: 第 0 片渲染失败，无法构造骨架 embed_id=%s",
+            spec.embed_id,
+        )
+        return 0
+
+    # 主进程合并：以第 0 片为骨架，把其余片的 <w:tr> 追加到骨架 <w:tbl>
+    t_merge = time.perf_counter()
+    base_elems = [etree.fromstring(b) for b in chunk_results[0]]
+    tbl_tag = qn("w:tbl")
+    base_tbl = next((e for e in base_elems if e.tag == tbl_tag), None)
+    if base_tbl is None:
+        logger.error(
+            "render_huge_table_parallel: 第 0 片缺少 <w:tbl> embed_id=%s",
+            spec.embed_id,
+        )
+        return 0
+
+    appended_rows = 0
+    for i in range(1, n_chunks):
+        if i not in chunk_results:
+            logger.warning(
+                "render_huge_table_parallel: 第 %d 片渲染失败，对应行将丢失", i,
+            )
+            continue
+        for raw in chunk_results[i]:
+            elem = etree.fromstring(raw)
+            if elem.tag != tbl_tag:
+                continue
+            for tr in elem.findall(qn("w:tr")):
+                base_tbl.append(deepcopy(tr))
+                appended_rows += 1
+    logger.info(
+        "render_huge_table_parallel 合并完成 追加行=%d 耗时=%.2fs",
+        appended_rows, time.perf_counter() - t_merge,
+    )
+
+    # splice 回主文档原占位段落位置
+    para_elem = paragraph._element
+    parent = para_elem.getparent()
+    if parent is None:
+        logger.warning(
+            "render_huge_table_parallel: 占位段落已脱离父节点 embed_id=%s",
+            spec.embed_id,
+        )
+        return 0
+    insert_idx = parent.index(para_elem)
+    for elem in base_elems:
+        parent.insert(insert_idx, elem)
+        insert_idx += 1
+    parent.remove(para_elem)
+
+    logger.info(
+        "render_huge_table_parallel 结束 embed_id=%s 总耗时=%.2fs",
+        spec.embed_id, time.perf_counter() - t0,
+    )
+    return 1
+
+
 def render_docx_replace_plan_parallel(
     plan: List[Dict[str, Any]],
     docx_document,
@@ -497,6 +683,22 @@ def render_docx_replace_plan_parallel(
     total = len(plan)
     if total == 0:
         return 0
+
+    # 单表大行场景：plan 只有 1 项但表格行数极多（>= HUGE_TABLE_ROW_THRESHOLD）
+    # 不能按表级并行，改走"切行并行" render_huge_table_parallel
+    if total == 1 and max_workers > 1:
+        only = plan[0]
+        only_spec: EmbedSpec = only["spec"]
+        if only_spec.embed_type == TYPE_TABLE:
+            only_rows = (only_spec.payload or {}).get("rows") or []
+            if len(only_rows) >= HUGE_TABLE_ROW_THRESHOLD:
+                logger.info(
+                    "render_docx_replace_plan_parallel 检测到单表大行场景"
+                    " embed_id=%s rows=%d 走切行并行",
+                    only_spec.embed_id, len(only_rows),
+                )
+                return render_huge_table_parallel(only, docx_document, max_workers)
+
     if total <= 1 or max_workers <= 1:
         return render_docx_replace_plan(plan, docx_document)
 
