@@ -487,7 +487,7 @@ def render_docx_replace_plan_parallel(
     if total <= 1 or max_workers <= 1:
         return render_docx_replace_plan(plan, docx_document)
 
-    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from concurrent.futures import ProcessPoolExecutor, wait as _futures_wait
     from lxml import etree
     from app.utils.embed_table_renderer import (
         _get_page_content_width_twips,
@@ -522,21 +522,42 @@ def render_docx_replace_plan_parallel(
     # 子进程池并行构建每个表格的 XML 元素列表（caption + w:tbl）
     t_parallel = time.perf_counter()
     xml_results: List[tuple] = []  # [(item, [xml_bytes, ...]), ...]
+    total_table = len(table_items)
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         future_to_item = {
             executor.submit(build_table_xml, item["spec"].to_dict(), page_twips): item
             for item in table_items
         }
-        for fut in as_completed(future_to_item):
-            item = future_to_item[fut]
-            spec: EmbedSpec = item["spec"]
-            try:
-                xml_list = fut.result()
-                xml_results.append((item, xml_list))
-            except Exception as e:
-                logger.error(
-                    "render_docx_replace_plan_parallel: worker 渲染失败 embed_id=%s err=%s",
-                    spec.embed_id, e,
+        logger.info(
+            "render_docx_replace_plan_parallel 已提交全部 %d 个 table 任务 workers=%d",
+            total_table, max_workers,
+        )
+        pending = set(future_to_item.keys())
+        completed_count = 0
+        while pending:
+            # 每 10 秒唤醒一次，打印进度（无论是否有新任务完成）
+            done, pending = _futures_wait(pending, timeout=10)
+            for fut in done:
+                item = future_to_item[fut]
+                spec: EmbedSpec = item["spec"]
+                completed_count += 1
+                try:
+                    xml_list = fut.result()
+                    xml_results.append((item, xml_list))
+                    logger.info(
+                        "render_docx_replace_plan_parallel: 完成 %d/%d embed_id=%s 耗时=%.2fs",
+                        completed_count, total_table, spec.embed_id,
+                        time.perf_counter() - t_parallel,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "render_docx_replace_plan_parallel: worker 失败 %d/%d embed_id=%s err=%s",
+                        completed_count, total_table, spec.embed_id, e,
+                    )
+            if pending:
+                logger.info(
+                    "render_docx_replace_plan_parallel: 等待中 已完成=%d/%d 耗时=%.2fs",
+                    completed_count, total_table, time.perf_counter() - t_parallel,
                 )
     logger.info(
         "render_docx_replace_plan_parallel worker 阶段完成 rendered=%d/%d 耗时=%.2fs",

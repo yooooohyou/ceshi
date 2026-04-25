@@ -673,23 +673,53 @@ def build_table_xml(spec_dict: Dict[str, Any], page_twips: int) -> List[bytes]:
     - 必须是模块级顶层函数（ProcessPoolExecutor 的 pickle 要求）
     - 此函数不修改主 Document，worker 进程间完全隔离
     """
+    import os
+    import threading
     from docx import Document
     from docx.oxml.ns import qn
     from lxml import etree
 
     spec = EmbedSpec.from_dict(spec_dict)
-    temp_doc = Document()
-    temp_para = temp_doc.add_paragraph("")
-    body = temp_doc.element.body
+    t_start = time.perf_counter()
+    pid = os.getpid()
 
-    # 记录渲染前 body 的已有子元素，用于渲染后差分出新增元素
-    before_ids = {id(c) for c in body}
+    # 每 10 秒打印一次心跳，表明该 worker 进程仍在运行
+    done_event = threading.Event()
 
-    render_table_to_docx(spec, temp_para, temp_doc, page_twips_override=page_twips)
+    def _heartbeat():
+        while not done_event.wait(10):
+            elapsed = time.perf_counter() - t_start
+            logger.info(
+                "build_table_xml [pid=%d] 渲染中 embed_id=%s 已耗时=%.1fs",
+                pid, spec.embed_id, elapsed,
+            )
 
-    sectPr_tag = qn("w:sectPr")
-    new_elems = [c for c in body if id(c) not in before_ids and c.tag != sectPr_tag]
-    return [etree.tostring(c, xml_declaration=False) for c in new_elems]
+    monitor = threading.Thread(target=_heartbeat, daemon=True)
+    monitor.start()
+
+    try:
+        temp_doc = Document()
+        temp_para = temp_doc.add_paragraph("")
+        body = temp_doc.element.body
+
+        # 记录渲染前 body 的已有子元素，用于渲染后差分出新增元素
+        before_ids = {id(c) for c in body}
+
+        render_table_to_docx(spec, temp_para, temp_doc, page_twips_override=page_twips)
+
+        sectPr_tag = qn("w:sectPr")
+        new_elems = [c for c in body if id(c) not in before_ids and c.tag != sectPr_tag]
+        result = [etree.tostring(c, xml_declaration=False) for c in new_elems]
+    finally:
+        done_event.set()
+        monitor.join(timeout=1)
+
+    elapsed = time.perf_counter() - t_start
+    logger.info(
+        "build_table_xml [pid=%d] 完成 embed_id=%s 耗时=%.2fs 元素数=%d",
+        pid, spec.embed_id, elapsed, len(result),
+    )
+    return result
 
 
 # ─── 注册 ─────────────────────────────────────────────────────────────────────

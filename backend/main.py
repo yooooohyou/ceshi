@@ -26,7 +26,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 # ─── 静态文件挂载（仅 Windows 开发环境） ──────────────────────────────────────
 if system_path == "Windows":
     app.mount(STATIC_WEB_PREFIX, StaticFiles(directory=UPLOAD_DIR), name="uploads")
