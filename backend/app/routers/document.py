@@ -629,53 +629,48 @@ async def merge_docx_office_server(
         try:
             from docx import Document
             from app.utils.embed_marker import (
-                build_docx_replace_plan,
-                collect_docx_embed_ids,
-                render_docx_replace_plan,
+                build_docx_replace_plan_from_map,
+                collect_docx_embed_paragraphs,
+                render_docx_replace_plan_parallel,
                 spec_from_db_row,
             )
-            from app.db.database import list_embed_components_by_record
+            from app.db.database import get_embed_components_by_ids
 
             t_pipeline = time.perf_counter()
 
-            # ── 第一步：打开 DOCX，快速扫描文件中实际存在的 embed 占位符 ──────
-            # 先判断文件里有没有占位符，没有则跳过后续 DB 查询和反序列化，避免空加载。
+            # ── 第一步：打开 DOCX，单次扫描同时收集 embed_id 和对应段落 ──────
+            # collect_docx_embed_paragraphs 一次遍历返回 {embed_id: paragraph}，
+            # 后续用映射直接构建替换计划，省去 build_docx_replace_plan 的第二次段落扫描。
             t_stage = time.perf_counter()
             doc = Document(effective_filepath)
-            docx_embed_ids = collect_docx_embed_ids(doc)
+            para_map = collect_docx_embed_paragraphs(doc)
             logger.info(
                 f"merge_docx_office_server[embed]: 扫描 DOCX 占位符完成"
-                f" record_id={result_record_id} found={len(docx_embed_ids)}"
+                f" record_id={result_record_id} found={len(para_map)}"
                 f" 耗时={time.perf_counter() - t_stage:.2f}s"
             )
 
-            if not docx_embed_ids:
+            if not para_map:
                 logger.info(
                     f"merge_docx_office_server[embed]: DOCX 无占位符，跳过 DB 查询"
                     f" record_id={result_record_id}"
                 )
             else:
-                # ── 第二步：查询 DB，过滤到仅在文件中出现的 embed_id ──────────
-                # 只对文档里真正存在的占位符反序列化 spec，避免加载无关组件。
+                # ── 第二步：按实际 embed_id 精准查询 DB，不加载无关组件 ──────────
                 t_stage = time.perf_counter()
-                all_rows = list_embed_components_by_record(result_record_id)
-                embed_rows = (
-                    [r for r in all_rows if r["embed_id"] in docx_embed_ids]
-                    if all_rows else []
-                )
+                rows_by_id = get_embed_components_by_ids(list(para_map.keys()))
                 logger.info(
                     f"merge_docx_office_server[embed]: 加载 embed 组件"
                     f" record_id={result_record_id}"
-                    f" db_total={len(all_rows) if all_rows else 0}"
-                    f" matched={len(embed_rows)}"
+                    f" matched={len(rows_by_id)}"
                     f" 耗时={time.perf_counter() - t_stage:.2f}s"
                 )
 
-                if embed_rows:
+                if rows_by_id:
                     t_stage = time.perf_counter()
                     specs_by_id = {
-                        row["embed_id"]: spec_from_db_row(row)
-                        for row in embed_rows
+                        eid: spec_from_db_row(row)
+                        for eid, row in rows_by_id.items()
                     }
                     logger.info(
                         f"merge_docx_office_server[embed]: 反序列化 specs 完成"
@@ -683,8 +678,9 @@ async def merge_docx_office_server(
                         f" 耗时={time.perf_counter() - t_stage:.2f}s"
                     )
 
+                    # ── 第三步：从映射直接组装替换计划，无需重新扫描文档 ──────
                     t_stage = time.perf_counter()
-                    plan = build_docx_replace_plan(doc, specs_by_id)
+                    plan = build_docx_replace_plan_from_map(para_map, specs_by_id)
                     logger.info(
                         f"merge_docx_office_server[embed]: 构建替换计划完成 plan={len(plan)}"
                         f" 耗时={time.perf_counter() - t_stage:.2f}s"
@@ -733,8 +729,10 @@ async def merge_docx_office_server(
                         )
 
                         # ── 执行 embed 占位符 → 完整 Word 表格的替换 ─────────────
+                        # 使用进程池并行构建各表格的 <w:tbl> XML，主进程串行 splice；
+                        # plan 项 ≤ 1 时会自动降级为串行，避免进程启动开销倒赔。
                         t_stage = time.perf_counter()
-                        replaced = render_docx_replace_plan(plan, doc)
+                        replaced = render_docx_replace_plan_parallel(plan, doc, max_workers=4)
                         logger.info(
                             f"merge_docx_office_server[embed]: 渲染替换完成"
                             f" replaced={replaced}/{len(plan)}"

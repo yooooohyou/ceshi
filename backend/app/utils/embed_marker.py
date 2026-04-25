@@ -304,6 +304,63 @@ def collect_docx_embed_ids(docx_document) -> set:
     return ids
 
 
+def collect_docx_embed_paragraphs(docx_document) -> Dict[str, Any]:
+    """
+    单次扫描 Document 段落，返回 {embed_id: paragraph} 映射。
+
+    相比先调用 collect_docx_embed_ids 再调用 build_docx_replace_plan，
+    本函数只需一次段落遍历即可同时完成占位符收集与段落定位，
+    可配合 build_docx_replace_plan_from_map 彻底消除第二次扫描。
+    """
+    result: Dict[str, Any] = {}
+    prefix = EMBED_ID_PREFIX
+    t0 = time.perf_counter()
+    paragraphs = docx_document.paragraphs
+    total = len(paragraphs)
+    for i, para in enumerate(paragraphs, 1):
+        text = para.text or ""
+        if prefix not in text:
+            if i % 500 == 0:
+                logger.info(
+                    "collect_docx_embed_paragraphs 扫描中 %d/%d 段落 found=%d 耗时=%.2fs",
+                    i, total, len(result), time.perf_counter() - t0,
+                )
+            continue
+        for eid in set(find_embed_ids_in_docx_text(text)):
+            result[eid] = para
+    logger.info(
+        "collect_docx_embed_paragraphs 扫描完成 段落=%d found=%d 耗时=%.2fs",
+        total, len(result), time.perf_counter() - t0,
+    )
+    return result
+
+
+def build_docx_replace_plan_from_map(
+    para_map: Dict[str, Any],
+    specs_by_id: Dict[str, "EmbedSpec"],
+) -> List[Dict[str, Any]]:
+    """
+    从 collect_docx_embed_paragraphs 返回的 {embed_id: paragraph} 映射
+    直接生成替换计划，无需重新扫描文档。
+
+    比 build_docx_replace_plan 快：段落已在单次扫描中记录，此处仅做
+    spec 查找和 plan 组装，时间复杂度 O(embed 数量)。
+    """
+    plan: List[Dict[str, Any]] = []
+    for eid, para in para_map.items():
+        spec = specs_by_id.get(eid)
+        if not spec:
+            logger.warning("build_docx_replace_plan_from_map: 未知 embed_id=%s，已跳过", eid)
+            continue
+        plan.append({
+            "paragraph":    para,
+            "embed_id":     eid,
+            "spec":         spec,
+            "matched_text": VISIBLE_PLACEHOLDER_FMT.format(embed_id=eid),
+        })
+    return plan
+
+
 def build_docx_replace_plan(
     docx_document,
     specs_by_id: Dict[str, EmbedSpec],
@@ -401,6 +458,132 @@ def render_docx_replace_plan(plan: List[Dict[str, Any]], docx_document) -> int:
 
     logger.info(
         "render_docx_replace_plan 结束 成功=%d/%d 总耗时=%.2fs",
+        ok, total, time.perf_counter() - t0,
+    )
+    return ok
+
+
+def render_docx_replace_plan_parallel(
+    plan: List[Dict[str, Any]],
+    docx_document,
+    max_workers: int = 4,
+) -> int:
+    """
+    并行版替换：子进程池独立构建每个 table 的 <w:tbl> XML，主进程串行 splice。
+
+    设计要点：
+      - 仅对 TYPE_TABLE 类型做进程池并行（其它类型仍走串行 render_docx_replace_plan）
+      - plan 项数 <= 1 或 max_workers <= 1 时直接降级为串行，避免进程启动开销倒赔
+      - 每个 worker 在独立临时 Document 中渲染，互不干扰；主进程负责 splice 与移除占位段落
+      - page_twips 在主进程预计算一次，通过参数传给所有 worker，
+        规避临时 Document 默认页宽导致的列宽错位
+      - worker 异常单独记录并跳过该项，不影响其他 embed 的渲染
+
+    返回成功渲染+splice 的项数。
+    """
+    total = len(plan)
+    if total == 0:
+        return 0
+    if total <= 1 or max_workers <= 1:
+        return render_docx_replace_plan(plan, docx_document)
+
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from lxml import etree
+    from app.utils.embed_table_renderer import (
+        _get_page_content_width_twips,
+        build_table_xml,
+    )
+
+    t0 = time.perf_counter()
+
+    # 拆分：table 走并行，其它类型串行
+    table_items: List[Dict[str, Any]] = []
+    other_items: List[Dict[str, Any]] = []
+    for item in plan:
+        if item["spec"].embed_type == TYPE_TABLE:
+            table_items.append(item)
+        else:
+            other_items.append(item)
+
+    logger.info(
+        "render_docx_replace_plan_parallel 开始 total=%d table=%d other=%d workers=%d",
+        total, len(table_items), len(other_items), max_workers,
+    )
+
+    ok = 0
+
+    # 没有 table 类型时直接降级串行（进程池毫无意义）
+    if not table_items:
+        return render_docx_replace_plan(plan, docx_document)
+
+    # 主进程预计算页面正文宽度（twips）；worker 不再读 document.sections
+    page_twips = _get_page_content_width_twips(docx_document)
+
+    # 子进程池并行构建每个表格的 XML 元素列表（caption + w:tbl）
+    t_parallel = time.perf_counter()
+    xml_results: List[tuple] = []  # [(item, [xml_bytes, ...]), ...]
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        future_to_item = {
+            executor.submit(build_table_xml, item["spec"].to_dict(), page_twips): item
+            for item in table_items
+        }
+        for fut in as_completed(future_to_item):
+            item = future_to_item[fut]
+            spec: EmbedSpec = item["spec"]
+            try:
+                xml_list = fut.result()
+                xml_results.append((item, xml_list))
+            except Exception as e:
+                logger.error(
+                    "render_docx_replace_plan_parallel: worker 渲染失败 embed_id=%s err=%s",
+                    spec.embed_id, e,
+                )
+    logger.info(
+        "render_docx_replace_plan_parallel worker 阶段完成 rendered=%d/%d 耗时=%.2fs",
+        len(xml_results), len(table_items), time.perf_counter() - t_parallel,
+    )
+
+    # 主进程串行 splice（O(1) per item，无竞争）
+    t_splice = time.perf_counter()
+    for item, xml_list in xml_results:
+        spec = item["spec"]
+        if not xml_list:
+            logger.warning(
+                "render_docx_replace_plan_parallel: 空渲染结果 embed_id=%s", spec.embed_id,
+            )
+            continue
+        para_elem = item["paragraph"]._element
+        parent = para_elem.getparent()
+        if parent is None:
+            logger.warning(
+                "render_docx_replace_plan_parallel: 占位段落已脱离父节点 embed_id=%s",
+                spec.embed_id,
+            )
+            continue
+        try:
+            insert_idx = parent.index(para_elem)
+            for xml_bytes in xml_list:
+                elem = etree.fromstring(xml_bytes)
+                parent.insert(insert_idx, elem)
+                insert_idx += 1
+            parent.remove(para_elem)
+            ok += 1
+        except Exception as e:
+            logger.error(
+                "render_docx_replace_plan_parallel: splice 失败 embed_id=%s err=%s",
+                spec.embed_id, e,
+            )
+    logger.info(
+        "render_docx_replace_plan_parallel splice 阶段完成 spliced=%d/%d 耗时=%.2fs",
+        ok, len(xml_results), time.perf_counter() - t_splice,
+    )
+
+    # 其它非 table 类型走原串行渲染
+    if other_items:
+        ok += render_docx_replace_plan(other_items, docx_document)
+
+    logger.info(
+        "render_docx_replace_plan_parallel 结束 成功=%d/%d 总耗时=%.2fs",
         ok, total, time.perf_counter() - t0,
     )
     return ok

@@ -394,10 +394,21 @@ def _apply_table_page_width(tbl_elem, col_count: int, col_twips: List[int]) -> N
 
 # ─── DOCX 渲染器 ───────────────────────────────────────────────────────────────
 
-def render_table_to_docx(spec: EmbedSpec, paragraph, document) -> None:
+def render_table_to_docx(
+    spec: EmbedSpec,
+    paragraph,
+    document,
+    *,
+    page_twips_override: Optional[int] = None,
+) -> None:
     """
     用 spec.payload 中的表格数据，在 paragraph 所在位置插入真实 Word 表格。
     插入完成后移除占位符段落。
+
+    Args:
+        page_twips_override: 显式指定正文宽度（twips）。
+            并行渲染场景下由主进程预计算传入，避免在临时 Document 中
+            通过 _get_section_content_width_for_tbl 取到默认页宽导致尺寸错位。
 
     性能优化要点：
         - 所有样式相关对象（RGBColor/Pt/border tcPr 模板/shd 模板）在循环外
@@ -537,7 +548,10 @@ def render_table_to_docx(spec: EmbedSpec, paragraph, document) -> None:
     # 无论是否指定 col_widths，表格总宽均与页面正文宽度对齐；
     # 有 col_widths 时按比例缩放，无 col_widths 时等分。
     # 两种情况均使用 autofit=False（固定布局），防止 Word 按内容收缩列宽。
-    page_twips = _get_section_content_width_for_tbl(tbl_elem, document)
+    if page_twips_override is not None:
+        page_twips = page_twips_override
+    else:
+        page_twips = _get_section_content_width_for_tbl(tbl_elem, document)
     if col_widths:
         raw = [max(0.01, float(w)) for w in col_widths[:col_count]]
         while len(raw) < col_count:
@@ -642,6 +656,40 @@ def render_table_to_html(spec: EmbedSpec) -> str:
 
     lines.append("</table>")
     return "\n".join(lines)
+
+
+# ─── 并行渲染入口（模块级顶层函数，可被 ProcessPoolExecutor pickle） ──────────
+
+def build_table_xml(spec_dict: Dict[str, Any], page_twips: int) -> List[bytes]:
+    """
+    【子进程入口】在临时隔离 Document 中独立渲染单个表格。
+
+    返回该表格渲染过程中新增的全部元素（caption 段落 + w:tbl）的 XML 字节序列，
+    主进程按顺序 splice 到占位段落位置即可。
+
+    主进程必须预先计算正文宽度并传入 page_twips（twips），
+    因为临时 Document 的默认页宽与主文档可能不同。
+
+    - 必须是模块级顶层函数（ProcessPoolExecutor 的 pickle 要求）
+    - 此函数不修改主 Document，worker 进程间完全隔离
+    """
+    from docx import Document
+    from docx.oxml.ns import qn
+    from lxml import etree
+
+    spec = EmbedSpec.from_dict(spec_dict)
+    temp_doc = Document()
+    temp_para = temp_doc.add_paragraph("")
+    body = temp_doc.element.body
+
+    # 记录渲染前 body 的已有子元素，用于渲染后差分出新增元素
+    before_ids = {id(c) for c in body}
+
+    render_table_to_docx(spec, temp_para, temp_doc, page_twips_override=page_twips)
+
+    sectPr_tag = qn("w:sectPr")
+    new_elems = [c for c in body if id(c) not in before_ids and c.tag != sectPr_tag]
+    return [etree.tostring(c, xml_declaration=False) for c in new_elems]
 
 
 # ─── 注册 ─────────────────────────────────────────────────────────────────────
