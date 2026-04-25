@@ -463,6 +463,19 @@ def render_docx_replace_plan(plan: List[Dict[str, Any]], docx_document) -> int:
     return ok
 
 
+def _ensure_worker_logging() -> None:
+    """ProcessPoolExecutor 子进程 logging 初始化器。
+
+    fork 模式下会继承父进程 handlers，但 spawn 模式（macOS / Python 3.14+ 默认可能改）
+    下子进程是干净的解释器，需要重新调用 setup_logging 才能把日志写入主进程的 app.log，
+    否则 worker 心跳日志只会停留在 stdout，被 /api/logs 接口查不到。
+    """
+    import logging as _lg
+    if not _lg.getLogger().handlers:
+        from app.core.logging_setup import setup_logging
+        setup_logging()
+
+
 def render_docx_replace_plan_parallel(
     plan: List[Dict[str, Any]],
     docx_document,
@@ -523,7 +536,10 @@ def render_docx_replace_plan_parallel(
     t_parallel = time.perf_counter()
     xml_results: List[tuple] = []  # [(item, [xml_bytes, ...]), ...]
     total_table = len(table_items)
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    with ProcessPoolExecutor(
+        max_workers=max_workers,
+        initializer=_ensure_worker_logging,
+    ) as executor:
         future_to_item = {
             executor.submit(build_table_xml, item["spec"].to_dict(), page_twips): item
             for item in table_items
