@@ -5,7 +5,7 @@ from fastapi.responses import Response
 
 logger = logging.getLogger(__name__)
 
-_LOG_SKIP_PATHS = {"/api/logs", "/health", "/docs", "/redoc", "/openapi.json"}
+_LOG_SKIP_PATHS = {"/api/logs", "/api/logs/stream", "/logs/viewer", "/health", "/docs", "/redoc", "/openapi.json"}
 
 
 async def http_log_middleware(request: Request, call_next):

@@ -1,4 +1,5 @@
 import logging
+import os
 import sys
 from logging.handlers import RotatingFileHandler
 
@@ -6,7 +7,7 @@ from logging.handlers import RotatingFileHandler
 def setup_logging() -> str:
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s"
     log_level = logging.INFO
-    log_file = "app.log"
+    log_file = os.path.abspath("app.log")
 
     logging.basicConfig(
         level=log_level,
