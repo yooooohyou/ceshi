@@ -224,8 +224,8 @@ def _cell_to_str(v) -> str:
 
 def _read_xlsx_sheets(path: str, max_rows: int = 10) -> List[Dict]:
     import pandas as pd
-    # with pd.ExcelFile(path, engine="calamine") as xl:
-    with pd.ExcelFile(path, engine="openpyxl") as xl:
+    with pd.ExcelFile(path, engine="calamine") as xl:
+    # with pd.ExcelFile(path, engine="openpyxl") as xl:
         sheets = []
         for sheet_name in xl.sheet_names:
             df = pd.read_excel(xl, sheet_name=sheet_name, header=None, nrows=max_rows)

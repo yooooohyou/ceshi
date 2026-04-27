@@ -732,7 +732,7 @@ async def merge_docx_office_server(
                         # 使用进程池并行构建各表格的 <w:tbl> XML，主进程串行 splice；
                         # plan 项 ≤ 1 时会自动降级为串行，避免进程启动开销倒赔。
                         t_stage = time.perf_counter()
-                        replaced = render_docx_replace_plan_parallel(plan, doc, max_workers=4)
+                        replaced = render_docx_replace_plan_parallel(plan, doc, max_workers=10)
                         logger.info(
                             f"merge_docx_office_server[embed]: 渲染替换完成"
                             f" replaced={replaced}/{len(plan)}"
