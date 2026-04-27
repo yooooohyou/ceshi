@@ -116,6 +116,12 @@ async def _split_mode(
     # 调用表格宽度适配接口
     new_file_path = call_set_table_width(abs_file_path)
     # new_file_path = abs_file_path
+    # 拆分前预埋"下一节"元数据 marker，避免外部拆分服务把多节的 sectPr 信息切碎后丢失。
+    try:
+        from docxhtmlcoverter import DocxHtmlConverter
+        new_file_path = DocxHtmlConverter().inject_section_next_meta_markers(new_file_path)
+    except Exception as _e:
+        logger.warning(f"upload: inject_section_next_meta_markers 失败，按原文件继续 err={_e}")
     with open(new_file_path, "rb") as _f:
         file_bytes = _f.read()
 
@@ -318,6 +324,11 @@ async def route_docx2html_marge(
                 cursor.execute(update_sql, (split_file_id, current_time, record_id))
                 conn.commit()
         new_file_path = call_set_table_width(abs_file_path)
+        try:
+            from docxhtmlcoverter import DocxHtmlConverter
+            new_file_path = DocxHtmlConverter().inject_section_next_meta_markers(new_file_path)
+        except Exception as _e:
+            logger.warning(f"upload: inject_section_next_meta_markers 失败，按原文件继续 err={_e}")
 
         with open(new_file_path, "rb") as _f:
             file_bytes = _f.read()

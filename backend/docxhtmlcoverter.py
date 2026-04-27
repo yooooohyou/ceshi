@@ -10,6 +10,7 @@ import re
 import base64
 import tempfile
 import uuid
+import json
 from docx import Document as PythonDocx          # python-docx：用于切分
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
@@ -2326,6 +2327,176 @@ class DocxHtmlConverter:
 
     # ---------- DOCX → HTML 方向 ----------
 
+    # 拆分前预埋"下一节"元数据 marker 的格式（带 vanish 隐藏），
+    # 便于外部拆分服务把分节符拆到不同小 docx 后仍能恢复语义。
+    _SB_NEXT_MARKER_PREFIX = '__SB_NEXT__'
+    _SB_NEXT_MARKER_SUFFIX = '__/SB_NEXT__'
+    _SB_NEXT_MARKER_RE = re.compile(
+        re.escape('__SB_NEXT__') + r'(\{.*?\})' + re.escape('__/SB_NEXT__'),
+        re.DOTALL,
+    )
+
+    @staticmethod
+    def _read_sectPr_meta(sectPr) -> dict:
+        """从 w:sectPr 元素读出 data-* 元数据（page-width/height/orientation/margin-*）。"""
+        meta = {}
+        type_el = sectPr.find(qn('w:type'))
+        if type_el is not None:
+            meta['data-section-type'] = type_el.get(qn('w:val'), 'nextPage')
+
+        pgSz = sectPr.find(qn('w:pgSz'))
+        if pgSz is not None:
+            for attr, key in [(qn('w:w'), 'data-page-width'),
+                              (qn('w:h'), 'data-page-height'),
+                              (qn('w:orient'), 'data-orientation')]:
+                val = pgSz.get(attr)
+                if val:
+                    meta[key] = val
+            if 'data-orientation' not in meta:
+                try:
+                    w = int(meta.get('data-page-width', 0) or 0)
+                    h = int(meta.get('data-page-height', 0) or 0)
+                    if w and h:
+                        meta['data-orientation'] = 'landscape' if w > h else 'portrait'
+                except (ValueError, TypeError):
+                    pass
+
+        pgMar = sectPr.find(qn('w:pgMar'))
+        if pgMar is not None:
+            for side in ['top', 'bottom', 'left', 'right']:
+                val = pgMar.get(qn(f'w:{side}'))
+                if val:
+                    meta[f'data-margin-{side}'] = val
+        return meta
+
+    @classmethod
+    def _read_body_sectPr_meta(cls, doc) -> dict:
+        body_sectPr = doc.element.body.find(qn('w:sectPr'))
+        if body_sectPr is None:
+            return {}
+        return cls._read_sectPr_meta(body_sectPr)
+
+    def inject_section_next_meta_markers(self, docx_path: str) -> str:
+        """
+        拆分前预处理：扫描 docx 所有 pPr/sectPr 与 body sectPr，按 OOXML 规则
+        计算每个分节符的"下一节"属性（next_meta），序列化为 JSON 后写入该
+        分节符段落的一个隐藏 run（w:vanish）。返回新临时 docx 路径；调用方
+        应使用该新路径调外部拆分接口。
+
+        若 docx 无任何 pPr/sectPr 分节符，原路返回。
+        """
+        try:
+            doc = PythonDocx(docx_path)
+        except Exception as e:
+            logger.warning(f"inject_section_next_meta_markers: 读取 docx 失败 path={docx_path} err={e}")
+            return docx_path
+
+        sb_records = []
+        for para in doc.paragraphs:
+            p_elem = para._p
+            pPr = p_elem.find(qn('w:pPr'))
+            if pPr is None:
+                continue
+            sectPr = pPr.find(qn('w:sectPr'))
+            if sectPr is None:
+                continue
+            sb_records.append({
+                'p_elem': p_elem,
+                'pPr': pPr,
+                'meta': self._read_sectPr_meta(sectPr),
+            })
+
+        if not sb_records:
+            return docx_path
+
+        body_meta = self._read_body_sectPr_meta(doc)
+
+        injected = 0
+        for i, rec in enumerate(sb_records):
+            next_meta = (
+                sb_records[i + 1]['meta'] if i + 1 < len(sb_records) else body_meta
+            )
+            if not next_meta:
+                continue
+
+            # 规整为短键（去掉 data- 前缀），减小 marker 字符串长度
+            short = {
+                k[len('data-'):]: v
+                for k, v in next_meta.items()
+                if k.startswith('data-') and not k.startswith('data-next-')
+            }
+            if not short:
+                continue
+
+            marker_text = (
+                self._SB_NEXT_MARKER_PREFIX
+                + json.dumps(short, ensure_ascii=True, separators=(',', ':'))
+                + self._SB_NEXT_MARKER_SUFFIX
+            )
+
+            r_el = OxmlElement('w:r')
+            rPr = OxmlElement('w:rPr')
+            vanish = OxmlElement('w:vanish')
+            rPr.append(vanish)
+            r_el.append(rPr)
+            t_el = OxmlElement('w:t')
+            t_el.set(qn('xml:space'), 'preserve')
+            t_el.text = marker_text
+            r_el.append(t_el)
+
+            # 插到段落 pPr 之后、原 run 之前
+            rec['pPr'].addnext(r_el)
+            injected += 1
+
+        if injected == 0:
+            return docx_path
+
+        out_dir = os.path.dirname(docx_path) or '.'
+        out_path = self._normalize_path(os.path.join(
+            out_dir, f"_sbprep_{uuid.uuid4().hex[:8]}.docx"
+        ))
+        doc.save(out_path)
+        logger.info(
+            f"inject_section_next_meta_markers: 预埋 next_meta marker 完成"
+            f" sb_count={len(sb_records)} injected={injected}"
+            f" src={docx_path} -> {out_path}"
+        )
+        return out_path
+
+    @classmethod
+    def _extract_and_strip_sb_next_marker(cls, p_elem) -> dict:
+        """
+        扫描段落 run 的 w:t，寻找 __SB_NEXT__{json}__/SB_NEXT__ 隐藏标记。
+        找到则反序列化为短键 dict（如 {'orientation': 'landscape', 'page-width': '15840', ...}）
+        返回，并从段落中剥离 marker 文本/run，避免污染后续 HTML 输出。
+        """
+        for r in list(p_elem.findall(qn('w:r'))):
+            for t in list(r.findall(qn('w:t'))):
+                text = t.text or ''
+                if cls._SB_NEXT_MARKER_PREFIX not in text:
+                    continue
+                m = cls._SB_NEXT_MARKER_RE.search(text)
+                if not m:
+                    continue
+                payload = None
+                try:
+                    payload = json.loads(m.group(1))
+                except Exception as e:
+                    logger.warning(f"_extract_and_strip_sb_next_marker: 解析 marker JSON 失败 err={e}")
+
+                new_text = text[:m.start()] + text[m.end():]
+                if new_text:
+                    t.text = new_text
+                else:
+                    r.remove(t)
+                    non_pr_children = [c for c in r if c.tag != qn('w:rPr')]
+                    if not non_pr_children:
+                        p_elem.remove(r)
+                if isinstance(payload, dict):
+                    return payload
+                return {}
+        return {}
+
     def _inject_break_placeholders(self, docx_path: str, work_dir: str):
         """
         读取 DOCX，将分页符和分节符替换为唯一文本占位符，
@@ -2362,6 +2533,11 @@ class DocxHtmlConverter:
         for para in paragraphs:
             p_elem = para._p
 
+            # 先尝试抽取拆分前预埋的 next_meta marker（隐藏 run）。
+            # 即便该段落 pPr/sectPr 已被外部拆分服务剥离，只要 marker 还在，
+            # 就仍把它视作分节符并恢复"下一节"属性。
+            sb_next_short = self._extract_and_strip_sb_next_marker(p_elem)
+
             # ── 优先检测段落级分节符（pPr/sectPr）────────────────────────
             pPr = p_elem.find(qn('w:pPr'))
             if pPr is not None:
@@ -2370,35 +2546,11 @@ class DocxHtmlConverter:
                     marker_id = uuid.uuid4().hex[:8].upper()
                     marker = f'SB_MARKER_{marker_id}'
 
-                    meta = {}
-                    type_el = sectPr.find(qn('w:type'))
-                    if type_el is not None:
-                        meta['data-section-type'] = type_el.get(qn('w:val'), 'nextPage')
+                    meta = self._read_sectPr_meta(sectPr)
 
-                    pgSz = sectPr.find(qn('w:pgSz'))
-                    if pgSz is not None:
-                        for attr, key in [(qn('w:w'), 'data-page-width'),
-                                          (qn('w:h'), 'data-page-height'),
-                                          (qn('w:orient'), 'data-orientation')]:
-                            val = pgSz.get(attr)
-                            if val:
-                                meta[key] = val
-                        # 部分 Word 不写 w:orient，仅靠宽>高表示横版，需补充推断
-                        if 'data-orientation' not in meta:
-                            try:
-                                w = int(meta.get('data-page-width', 0))
-                                h = int(meta.get('data-page-height', 0))
-                                if w and h:
-                                    meta['data-orientation'] = 'landscape' if w > h else 'portrait'
-                            except ValueError:
-                                pass
-
-                    pgMar = sectPr.find(qn('w:pgMar'))
-                    if pgMar is not None:
-                        for side in ['top', 'bottom', 'left', 'right']:
-                            val = pgMar.get(qn(f'w:{side}'))
-                            if val:
-                                meta[f'data-margin-{side}'] = val
+                    if sb_next_short:
+                        for k, v in sb_next_short.items():
+                            meta[f'data-next-{k}'] = v
 
                     breaks_map[marker] = {'type': 'section', 'meta': meta}
 
@@ -2412,6 +2564,24 @@ class DocxHtmlConverter:
                     pPr.remove(sectPr)
                     modified = True
                     continue
+
+            # 段落 pPr/sectPr 已被剥离但仍带 marker：仍按分节符处理
+            if sb_next_short:
+                marker_id = uuid.uuid4().hex[:8].upper()
+                marker = f'SB_MARKER_{marker_id}'
+                meta = {'data-section-type': 'nextPage'}
+                for k, v in sb_next_short.items():
+                    meta[f'data-next-{k}'] = v
+                breaks_map[marker] = {'type': 'section', 'meta': meta}
+                for r in p_elem.findall(qn('w:r')):
+                    p_elem.remove(r)
+                r_el = OxmlElement('w:r')
+                t_el = OxmlElement('w:t')
+                t_el.text = marker
+                r_el.append(t_el)
+                p_elem.append(r_el)
+                modified = True
+                continue
 
             # ── 检测分页符 ────────────────────────────────────────────────
             # 收集含 w:br type=page 的 run，以及有实质文字的 run
@@ -2511,7 +2681,9 @@ class DocxHtmlConverter:
             )
             for _k, _v in _next_meta.items():
                 if _k.startswith('data-') and not _k.startswith('data-next-'):
-                    breaks_map[_marker]['meta'][f'data-next-{_k[5:]}'] = _v
+                    next_key = f'data-next-{_k[5:]}'
+                    # 拆分前预埋的 marker 已写入 data-next-* 时，尊重原值不覆盖。
+                    breaks_map[_marker]['meta'].setdefault(next_key, _v)
 
         temp_docx_name = f"_breaks_{uuid.uuid4().hex[:8]}.docx"
         temp_docx_path = self._normalize_path(os.path.join(work_dir, temp_docx_name))
@@ -2552,8 +2724,10 @@ class DocxHtmlConverter:
             ordered.update({k: v for k, v in meta.items() if k not in ordered})
             data_attrs = ' '.join(f'{k}="{v}"' for k, v in ordered.items())
 
-            # 标签优先用"下一节"方向（data-next-orientation），表示分节符以下那节的版式
-            label_orient = meta.get('data-next-orientation') or meta.get('data-orientation', '')
+            # 标签只用"下一节"方向（data-next-orientation），描述分节符以下那节版式。
+            # data-orientation 是"当前节"语义，不能 fallback 到此处，否则会把当前节方向
+            # 误标为下一节方向（拆分场景下尤其常见）。
+            label_orient = meta.get('data-next-orientation', '')
             if label_orient == 'landscape':
                 label = '此处以下为分节符(横版)'
             elif label_orient == 'portrait':
