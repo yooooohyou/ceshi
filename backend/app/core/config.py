@@ -39,6 +39,17 @@ def get_server_uploads_config() -> dict:
     }
 
 
+def get_docx_render_max_workers(default: int = 5) -> int:
+    """读取 [docx_render] max_workers；section/key 缺失或非法时回退到 default"""
+    try:
+        config = read_sc_web_config()
+        raw = config.get("docx_render", "max_workers", fallback=str(default))
+        value = int(raw)
+        return value if value >= 1 else default
+    except Exception:
+        return default
+
+
 # ─── 路径常量（根据操作系统自动选择） ────────────────────────────────────────
 
 system_path = platform.system()

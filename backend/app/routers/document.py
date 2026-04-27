@@ -635,6 +635,7 @@ async def merge_docx_office_server(
                 spec_from_db_row,
             )
             from app.db.database import get_embed_components_by_ids
+            from app.core.config import get_docx_render_max_workers
 
             t_pipeline = time.perf_counter()
 
@@ -732,7 +733,8 @@ async def merge_docx_office_server(
                         # 使用进程池并行构建各表格的 <w:tbl> XML，主进程串行 splice；
                         # plan 项 ≤ 1 时会自动降级为串行，避免进程启动开销倒赔。
                         t_stage = time.perf_counter()
-                        replaced = render_docx_replace_plan_parallel(plan, doc, max_workers=10)
+                        max_workers = get_docx_render_max_workers()
+                        replaced = render_docx_replace_plan_parallel(plan, doc, max_workers=max_workers)
                         logger.info(
                             f"merge_docx_office_server[embed]: 渲染替换完成"
                             f" replaced={replaced}/{len(plan)}"
