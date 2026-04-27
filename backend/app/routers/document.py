@@ -793,7 +793,7 @@ async def merge_docx_office_server(
     if effective_filepath:
         old_out_path = merged_file_message.data.get("out_path", "")
         old_map_url  = merged_file_message.data.get("out_map_path", "")
-        if old_out_path and old_map_url:
+        if old_out_path or old_map_url:
             old_basename = os.path.basename(old_out_path)
             new_basename = os.path.basename(effective_filepath)
             if old_basename and old_basename != new_basename and old_basename in old_map_url:
