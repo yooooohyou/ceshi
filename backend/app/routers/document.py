@@ -2,6 +2,7 @@ import datetime
 import json
 import logging
 import os
+import shutil
 import time
 from typing import Any, List, Optional, Dict
 
@@ -793,7 +794,7 @@ async def merge_docx_office_server(
     if effective_filepath:
         old_out_path = merged_file_message.data.get("out_path", "")
         old_map_url  = merged_file_message.data.get("out_map_path", "")
-        if old_out_path or old_map_url:
+        if old_out_path and old_map_url:
             old_basename = os.path.basename(old_out_path)
             new_basename = os.path.basename(effective_filepath)
             if old_basename and old_basename != new_basename and old_basename in old_map_url:
@@ -802,6 +803,28 @@ async def merge_docx_office_server(
                 logger.info(
                     f"merge_docx_office_server: out_map_path 已更新"
                     f" {old_map_url} -> {new_map_url}"
+                )
+
+    if not merged_file_message.data.get("out_map_path"):
+        src_path = (
+            merged_file_message.data.get("filepath")
+            or merged_file_message.data.get("out_path", "")
+        )
+        if src_path and os.path.isfile(src_path):
+            try:
+                basename = os.path.basename(src_path)
+                dst_path = os.path.join(UPLOAD_DIR, basename)
+                if os.path.normpath(src_path) != os.path.normpath(dst_path):
+                    shutil.copyfile(src_path, dst_path)
+                fallback_url = STATIC_WEB_FRONT_PREFIX.rstrip("/") + "/" + basename
+                merged_file_message.data["out_map_path"] = fallback_url
+                logger.warning(
+                    f"merge_docx_office_server: 外部合并服务未返回 out_map_path，"
+                    f"已复制 {src_path} -> {dst_path}，兜底 URL={fallback_url}"
+                )
+            except Exception as cp_err:
+                logger.error(
+                    f"merge_docx_office_server: out_map_path 兜底失败 src={src_path} err={cp_err}"
                 )
 
     return merged_file_message
