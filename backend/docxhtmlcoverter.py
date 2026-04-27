@@ -2639,6 +2639,51 @@ class DocxHtmlConverter:
                 meta = {}
                 for data_m in re.finditer(r'\b(data-[\w-]+)="([^"]*)"', attrs_str):
                     meta[data_m.group(1)] = data_m.group(2)
+
+                # 兜底：前端未传 data-next-* 时，从分节符 span 文本（"…横版"/"…竖版"）
+                # 推断"以下那节"的方向，并据当前节 page-width/height 交换出下一节尺寸。
+                # OOXML 规则：pPr/sectPr 描述当前（结束于此）节，下一节属性来自 body sectPr，
+                # 由下游 _apply_break_markers_to_docx 根据 data-next-* 写入 body sectPr。
+                if 'data-next-orientation' not in meta:
+                    label_m = re.search(r'>([^<]*?(?:横版|竖版)[^<]*?)<', m.group(0))
+                    if label_m:
+                        label_text = label_m.group(1)
+                        if '横版' in label_text:
+                            meta['data-next-orientation'] = 'landscape'
+                        elif '竖版' in label_text:
+                            meta['data-next-orientation'] = 'portrait'
+                if 'data-next-orientation' in meta:
+                    cur_w = meta.get('data-page-width')
+                    cur_h = meta.get('data-page-height')
+                    if cur_w and cur_h and cur_w.isdigit() and cur_h.isdigit():
+                        cw, ch = int(cur_w), int(cur_h)
+                        if meta['data-next-orientation'] == 'landscape':
+                            nw, nh = (cw, ch) if cw > ch else (ch, cw)
+                        else:
+                            nw, nh = (cw, ch) if cw < ch else (ch, cw)
+                        meta.setdefault('data-next-page-width', str(nw))
+                        meta.setdefault('data-next-page-height', str(nh))
+                    # 横/竖切换时边距 top↔left、bottom↔right 互换（仅在用户未显式传 data-next-margin-* 时兜底）
+                    cur_orient_inferred = (
+                        'landscape'
+                        if cur_w and cur_h and cur_w.isdigit() and cur_h.isdigit() and int(cur_w) > int(cur_h)
+                        else 'portrait'
+                    )
+                    if meta['data-next-orientation'] != cur_orient_inferred:
+                        swap_pairs = [('top', 'left'), ('bottom', 'right')]
+                        for a, b in swap_pairs:
+                            va = meta.get(f'data-margin-{a}')
+                            vb = meta.get(f'data-margin-{b}')
+                            if va is not None:
+                                meta.setdefault(f'data-next-margin-{b}', va)
+                            if vb is not None:
+                                meta.setdefault(f'data-next-margin-{a}', vb)
+                    else:
+                        for s in ['top', 'bottom', 'left', 'right']:
+                            v = meta.get(f'data-margin-{s}')
+                            if v is not None:
+                                meta.setdefault(f'data-next-margin-{s}', v)
+
                 marker = f'SB_MARKER_{marker_id}'
                 breaks_info.append({'marker': marker, 'type': 'section', 'meta': meta})
             else:
