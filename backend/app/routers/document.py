@@ -597,7 +597,7 @@ async def merge_docx_office_server(
         merged_file_message = call_docx_merge(merge_request, add_title=0, add_heading_num=1, update_title=1)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件合并失败：{str(e)}")
-
+    logger.info(merged_file_message)
     # ── 表格宽度适配（独立 try，失败时降级使用原路径，不影响后续 embed 替换） ────
     old_filepath = merged_file_message.data.get("out_path", "")
     new_filepath = ""
