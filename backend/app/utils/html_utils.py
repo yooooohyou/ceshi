@@ -255,7 +255,7 @@ def add_nowrap_to_signature_paragraphs(html_content: str) -> str:
         attrs, body = m.group(1), m.group(2)
 
         # 【修复点】：将原先的 < 10 改为 < 1。只要存在至少 1 个下划线 span，且有大量 nbsp 占位，即认为是签字/日期栏
-        if len(_UNDERLINE_SPAN_RE.findall(body)) < 5:
+        if len(_UNDERLINE_SPAN_RE.findall(body)) < 1:
             return m.group(0)
 
         # 维持对 &nbsp; 的严格数量判断，避免误伤普通段落
