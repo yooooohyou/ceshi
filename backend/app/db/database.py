@@ -81,9 +81,9 @@ def init_db_tables():
       "create_time" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       "update_time" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
-    CREATE INDEX  idx_embed_record ON "yxdl_embed_components" ("record_id");
-    CREATE INDEX  idx_embed_node   ON "yxdl_embed_components" ("node_id");
-    CREATE INDEX  idx_embed_type   ON "yxdl_embed_components" ("embed_type");
+    CREATE INDEX IF NOT EXISTS idx_embed_record ON "yxdl_embed_components" ("record_id");
+    CREATE INDEX IF NOT EXISTS idx_embed_node   ON "yxdl_embed_components" ("node_id");
+    CREATE INDEX IF NOT EXISTS idx_embed_type   ON "yxdl_embed_components" ("embed_type");
     """
 
     create_xlsx_upload_records_sql = """
@@ -96,27 +96,47 @@ def init_db_tables():
       "upload_time"       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       "update_time"       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
-    CREATE INDEX idx_xlsx_new_filename ON "yxdl_xlsx_upload_records" ("new_filename");
-    CREATE INDEX idx_xlsx_file_sign    ON "yxdl_xlsx_upload_records" ("file_sign");
+    CREATE INDEX IF NOT EXISTS idx_xlsx_new_filename ON "yxdl_xlsx_upload_records" ("new_filename");
+    CREATE INDEX IF NOT EXISTS idx_xlsx_file_sign    ON "yxdl_xlsx_upload_records" ("file_sign");
     """
 
+    check_title_font_dict_sql = """
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'yxdl_docx_title_trees' AND column_name = 'title_font_dict'
+    LIMIT 1;
+    """
     alter_title_trees_sql = """
     ALTER TABLE "yxdl_docx_title_trees"
     ADD COLUMN "title_font_dict" jsonb DEFAULT NULL;
     """
 
+    ddl_steps = [
+        ("create_upload_records", create_file_table_sql),
+        ("create_title_trees",    create_title_tree_table_sql),
+        ("create_embed",          create_embed_components_sql),
+        ("create_xlsx",           create_xlsx_upload_records_sql),
+    ]
+    for name, sql in ddl_steps:
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(sql)
+                    conn.commit()
+        except Exception as e:
+            logger.warning(f"数据库初始化步骤 {name} 失败，跳过：{e}")
+
+    # title_font_dict 列：先查后加，独立事务
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute(create_file_table_sql)
-                cursor.execute(create_title_tree_table_sql)
-                cursor.execute(create_embed_components_sql)
-                cursor.execute(create_xlsx_upload_records_sql)
-                cursor.execute(alter_title_trees_sql)
+                cursor.execute(check_title_font_dict_sql)
+                if not cursor.fetchone():
+                    cursor.execute(alter_title_trees_sql)
                 conn.commit()
-        logger.debug("PostgreSQL数据表初始化成功")
     except Exception as e:
-        logger.warning(f"警告：数据库初始化失败，部分功能将不可用：{e}")
+        logger.warning(f"数据库初始化步骤 add_title_font_dict 失败，跳过：{e}")
+
+    logger.debug("PostgreSQL 数据表初始化流程结束")
 
 
 # ─── 辅助函数 ────────────────────────────────────────────────────────────────
