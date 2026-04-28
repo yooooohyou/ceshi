@@ -81,9 +81,9 @@ def init_db_tables():
       "create_time" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       "update_time" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
-    CREATE INDEX IF NOT EXISTS idx_embed_record ON "yxdl_embed_components" ("record_id");
-    CREATE INDEX IF NOT EXISTS idx_embed_node   ON "yxdl_embed_components" ("node_id");
-    CREATE INDEX IF NOT EXISTS idx_embed_type   ON "yxdl_embed_components" ("embed_type");
+    CREATE INDEX  idx_embed_record ON "yxdl_embed_components" ("record_id");
+    CREATE INDEX  idx_embed_node   ON "yxdl_embed_components" ("node_id");
+    CREATE INDEX  idx_embed_type   ON "yxdl_embed_components" ("embed_type");
     """
 
     create_xlsx_upload_records_sql = """
@@ -96,13 +96,13 @@ def init_db_tables():
       "upload_time"       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       "update_time"       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
-    CREATE INDEX IF NOT EXISTS idx_xlsx_new_filename ON "yxdl_xlsx_upload_records" ("new_filename");
-    CREATE INDEX IF NOT EXISTS idx_xlsx_file_sign    ON "yxdl_xlsx_upload_records" ("file_sign");
+    CREATE INDEX idx_xlsx_new_filename ON "yxdl_xlsx_upload_records" ("new_filename");
+    CREATE INDEX idx_xlsx_file_sign    ON "yxdl_xlsx_upload_records" ("file_sign");
     """
 
     alter_title_trees_sql = """
     ALTER TABLE "yxdl_docx_title_trees"
-    ADD COLUMN IF NOT EXISTS "title_font_dict" jsonb DEFAULT NULL;
+    ADD COLUMN "title_font_dict" jsonb DEFAULT NULL;
     """
 
     try:
