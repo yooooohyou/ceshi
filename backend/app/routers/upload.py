@@ -341,7 +341,8 @@ async def route_docx2html_marge(
             rm_outline_in_doc=1,
             del_page_break=0,
         )
-
+        logger.info("打印拆分接口参数")
+        logger.info(split_result)
         html_list = []
         for file__ in split_result.data.get("files", []):
             html_content, _ = docx_to_html(file__)
