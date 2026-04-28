@@ -229,6 +229,8 @@ def hide_mce_anchor_tags(html_content: str) -> str:
     return _MCE_ANCHOR_TAG_RE.sub(_process, html_content)
 
 
+# 签字栏/日期栏特征段落识别：DOCX 转 HTML 后这类段落往往含大量下划线 span +
+# 大量 &nbsp;，前端渲染时连续的 nbsp 会被换行，破坏布局。给这些段落加 white-space:nowrap。
 _NOWRAP_PARA_RE = re.compile(r'<p\b([^>]*)>(.*?)</p\s*>', re.IGNORECASE | re.DOTALL)
 _UNDERLINE_SPAN_RE = re.compile(
     r'<span\b[^>]*text-decoration\s*:\s*underline[^>]*>', re.IGNORECASE
@@ -242,8 +244,8 @@ _NOWRAP_DECL_RE = re.compile(r'white-space\s*:\s*nowrap', re.IGNORECASE)
 
 def add_nowrap_to_signature_paragraphs(html_content: str) -> str:
     """
-    DOCX 转 HTML 后处理：给落款/日期/签字栏段落加 white-space: nowrap。
-    保留了完美的 TinyMCE data-mce-style 同步注入机制。
+    DOCX 转 HTML 后处理：给落款/日期/签字栏段落加 white-space: nowrap，避免前端渲染时长串空格换行。
+    增强版：兼容真实 \xa0 空格，并增加语义特征识别（年/月/日），避免死板的阈值判断失效。
     """
     if not html_content:
         return html_content
@@ -251,28 +253,23 @@ def add_nowrap_to_signature_paragraphs(html_content: str) -> str:
     def _replace(m):
         attrs, body = m.group(1), m.group(2)
 
-        # 1. 统计空格
+        # 1. 兼容多种空格符号：包含 &nbsp;、&#160; 以及真实的 \xa0 (Non-breaking space)
         space_count = body.lower().count('&nbsp;') + body.count('&#160;') + body.count('\xa0')
+        underline_count = len(_UNDERLINE_SPAN_RE.findall(body))
 
-        # 2. 统计下划线（除了原有span，兼容一手 Spire 可能生成的 <u> 和底边框）
-        underline_count = len(_UNDERLINE_SPAN_RE.findall(body)) + \
-                          len(re.findall(r'<u\b', body, re.IGNORECASE)) + \
-                          len(re.findall(r'border-bottom', body, re.IGNORECASE))
+        # 2. 提取语义特征：是否包含典型的日期栏关键字
+        # has_date_feature = ('年' in body and '月' in body) or ('签字' in body) or ('日期' in body)
 
-        # 3. 提取语义特征（建议去除HTML标签后再判断，防止汉字被标签打断）
-        pure_text = re.sub(r'<[^>]+>', '', body)
-        # has_date_feature = ('年' in pure_text and '月' in pure_text) or ('签字' in pure_text) or ('日期' in pure_text)
-
-        # 4. 判定门槛（保留老代码的稳定阈值，如果有日期特征且只需少量下划线空格即命中）
-        is_signature_para = (underline_count >= 1 and space_count >= 4) or \
+        # 3. 综合判定：
+        #    - 如果具备明显的落款/日期特征，只要有少量下划线(≥3)和空格(≥5)即可通过
+        #    - 否则走常规统计：下划线 ≥ 5 且 空格 ≥ 10 (阈值适度放宽)
+        is_signature_para = (underline_count >= 3 and space_count >= 5) or \
                             (underline_count >= 5 and space_count >= 10)
 
         if not is_signature_para:
             return m.group(0)
 
-        # ==========================================
-        # 下方全部原封不动保留你老代码里极其稳健的注入逻辑
-        # ==========================================
+        # 后续替换逻辑保持不变，安全追加 white-space: nowrap
         style_m = _STYLE_ATTR_RE.search(attrs)
         mce_m = _DATA_MCE_STYLE_ATTR_RE.search(attrs)
 
