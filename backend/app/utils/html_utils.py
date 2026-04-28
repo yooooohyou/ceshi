@@ -229,10 +229,9 @@ def hide_mce_anchor_tags(html_content: str) -> str:
     return _MCE_ANCHOR_TAG_RE.sub(_process, html_content)
 
 
-# 签字栏/日期栏特征段落识别：DOCX 转 HTML 后这类段落往往是大缩进 + 大量下划线 span +
+# 签字栏/日期栏特征段落识别：DOCX 转 HTML 后这类段落往往含大量下划线 span +
 # 大量 &nbsp;，前端渲染时连续的 nbsp 会被换行，破坏布局。给这些段落加 white-space:nowrap。
 _NOWRAP_PARA_RE = re.compile(r'<p\b([^>]*)>(.*?)</p\s*>', re.IGNORECASE | re.DOTALL)
-_TEXT_INDENT_PT_RE = re.compile(r'text-indent\s*:\s*([\d.]+)\s*pt', re.IGNORECASE)
 _UNDERLINE_SPAN_RE = re.compile(
     r'<span\b[^>]*text-decoration\s*:\s*underline[^>]*>', re.IGNORECASE
 )
@@ -245,41 +244,30 @@ _NOWRAP_DECL_RE = re.compile(r'white-space\s*:\s*nowrap', re.IGNORECASE)
 
 def add_nowrap_to_signature_paragraphs(html_content: str) -> str:
     """
-    DOCX 转 HTML 后处理：识别"签字栏/日期栏"风格段落，给 <p> 加 white-space: nowrap。
-
-    判定（三条件全部满足）：
-      1) <p style/data-mce-style 中含 text-indent ≥ 10pt
-      2) <p 含 data-mce-style 属性
-      3) 段落内含 ≥10 个带 text-decoration:underline 的 <span>，且 ≥10 个 &nbsp;
+    DOCX 转 HTML 后处理：给段落内同时含 ≥10 个 text-decoration:underline 的 <span>
+    且 ≥10 个 &nbsp; 的 <p> 加 white-space: nowrap，避免前端渲染时长串 nbsp 换行。
+    若 <p> 上同时存在 data-mce-style，则同步追加到 data-mce-style，保持 TinyMCE 一致。
     """
-    if not html_content or 'data-mce-style' not in html_content:
+    if not html_content:
         return html_content
 
     def _replace(m):
         attrs, body = m.group(1), m.group(2)
-
-        mce_m = _DATA_MCE_STYLE_ATTR_RE.search(attrs)
-        if not mce_m:
-            return m.group(0)
-
-        style_m = _STYLE_ATTR_RE.search(attrs)
-        style_val = style_m.group(3) if style_m else ''
-
-        indent_m = _TEXT_INDENT_PT_RE.search(style_val) or _TEXT_INDENT_PT_RE.search(mce_m.group(3))
-        if not indent_m:
-            return m.group(0)
-        try:
-            if float(indent_m.group(1)) < 10:
-                return m.group(0)
-        except ValueError:
-            return m.group(0)
 
         if len(_UNDERLINE_SPAN_RE.findall(body)) < 10:
             return m.group(0)
         if body.lower().count('&nbsp;') < 10:
             return m.group(0)
 
-        if _NOWRAP_DECL_RE.search(style_val) and _NOWRAP_DECL_RE.search(mce_m.group(3)):
+        style_m = _STYLE_ATTR_RE.search(attrs)
+        mce_m = _DATA_MCE_STYLE_ATTR_RE.search(attrs)
+
+        style_val = style_m.group(3) if style_m else ''
+        mce_val = mce_m.group(3) if mce_m else ''
+
+        style_has = bool(_NOWRAP_DECL_RE.search(style_val))
+        mce_has = mce_m is not None and bool(_NOWRAP_DECL_RE.search(mce_val))
+        if style_has and (mce_m is None or mce_has):
             return m.group(0)
 
         def _append_nowrap(css: str) -> str:
@@ -290,24 +278,22 @@ def add_nowrap_to_signature_paragraphs(html_content: str) -> str:
                 css += ';'
             return (css + ' white-space: nowrap;').strip()
 
-        new_style = _append_nowrap(style_val)
-        new_mce = _append_nowrap(mce_m.group(3))
-
         new_attrs = attrs
         if style_m:
             new_attrs = new_attrs.replace(
                 style_m.group(0),
-                f'{style_m.group(1)}{style_m.group(2)}{new_style}{style_m.group(2)}',
+                f'{style_m.group(1)}{style_m.group(2)}{_append_nowrap(style_val)}{style_m.group(2)}',
                 1,
             )
         else:
             new_attrs = new_attrs + ' style="white-space: nowrap;"'
 
-        new_attrs = new_attrs.replace(
-            mce_m.group(0),
-            f'{mce_m.group(1)}{mce_m.group(2)}{new_mce}{mce_m.group(2)}',
-            1,
-        )
+        if mce_m is not None:
+            new_attrs = new_attrs.replace(
+                mce_m.group(0),
+                f'{mce_m.group(1)}{mce_m.group(2)}{_append_nowrap(mce_val)}{mce_m.group(2)}',
+                1,
+            )
         return f'<p{new_attrs}>{body}</p>'
 
     return _NOWRAP_PARA_RE.sub(_replace, html_content)
