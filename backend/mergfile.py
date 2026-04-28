@@ -41,6 +41,7 @@ class TreeItem(BaseModel):
     update_file_path: Optional[str] = ""
     node_type: Optional[str] = ""
     is_conversion_completion: Optional[int] = 0
+    title_font_dict: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
         # 强制兜底：无论传入什么，都确保children是列表

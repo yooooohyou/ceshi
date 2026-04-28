@@ -382,17 +382,6 @@ async def update_html_by_node_new(
         if split_result.status == 1:
             return unified_response(500, split_result.msg)
 
-        title_font_dict = split_result.data.get("title_font_dict") or {}
-        if title_font_dict:
-            import json
-            with get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute(
-                        'UPDATE "yxdl_docx_upload_records" SET title_font_dict = %s WHERE id = %s',
-                        (json.dumps(title_font_dict), new_record_id),
-                    )
-                    conn.commit()
-
         from app.db.database import assign_file_path_to_tree, build_eid_path_mapping
         tree_nodes = [TreeItem(**item) for item in split_result.data.get("tree", [])]
         eid_path_map = build_eid_path_mapping(split_result.data.get("files", []))
@@ -454,17 +443,13 @@ async def merge_docx_office_server(
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                '''SELECT t.id, t.record_id, r.title_font_dict
-                   FROM "yxdl_docx_title_trees" t
-                   LEFT JOIN "yxdl_docx_upload_records" r ON r.id = t.record_id
-                   WHERE t.id = %s''',
+                'SELECT id, record_id FROM "yxdl_docx_title_trees" WHERE id = %s',
                 (node_id,),
             )
             row = cursor.fetchone()
             if not row:
                 return unified_response(404, f"未找到ID为{node_id}的标题树节点")
             result_record_id = row[1]
-            title_font_dict = row[2] or {}
 
     logger.info(f"merge_docx_office_server: node_id={node_id} record_id={result_record_id}")
     current_time = datetime.datetime.now()
@@ -472,7 +457,7 @@ async def merge_docx_office_server(
     select_sql = """
         SELECT
             id, title_text, level, eid, idx, parent_id, batch_count,
-            origin_file_path, update_file_path, is_conversion_completion, split_id
+            origin_file_path, update_file_path, is_conversion_completion, split_id, title_font_dict
         FROM "yxdl_docx_title_trees"
         WHERE record_id = %s
         ORDER BY level ASC, idx ASC;
@@ -499,6 +484,7 @@ async def merge_docx_office_server(
             "file_path": item.get("origin_file_path"),
             "update_file_path": item.get("update_file_path", ""),
             "is_conversion_completion": item.get("is_conversion_completion", 0),
+            "title_font_dict": item.get("title_font_dict"),
             "children": [], "file_name": None, "file_info": None, "node_type": "",
         })
         for item in node_records
@@ -551,6 +537,7 @@ async def merge_docx_office_server(
                 level=d.get("level", 1),
                 idx=d.get("idx", 0),
                 text=d.get("text", "") or d.get("title_text", ""),
+                title_font_dict=d.get("title_font_dict"),
                 children=_dicts_to_tree_items(d.get("children", [])),
             )
             matched = next((n for n in tree_nodes_org if n.eid == item.eid), None)
@@ -560,6 +547,8 @@ async def merge_docx_office_server(
                 item.file_path = matched.file_path
                 item.update_file_path = matched.update_file_path
                 item.is_conversion_completion = matched.is_conversion_completion
+                if item.title_font_dict is None:
+                    item.title_font_dict = matched.title_font_dict
             result.append(item)
         return result
 
@@ -589,17 +578,12 @@ async def merge_docx_office_server(
             megre_docx_config = {"config_dict": config_dict,
                                  # 一键排版参数
                                  "token": token,
-                                 "key": key,
-                                 "title_font_dict": title_font_dict, }
+                                 "key": key, }
             merge_request = MergeRequest(tree=nested_tree_items, files=files_, format_args=megre_docx_config)
+            logger.info("一键排版参数")
+            logger.info(megre_docx_config)
         else:
-            megre_docx_config = {"title_font_dict": title_font_dict} if title_font_dict else {}
-            if megre_docx_config:
-                merge_request = MergeRequest(tree=nested_tree_items, files=files_, format_args=megre_docx_config)
-            else:
-                merge_request = MergeRequest(tree=nested_tree_items, files=files_)
-        logger.info("一键排版参数")
-        logger.info(megre_docx_config)
+            merge_request = MergeRequest(tree=nested_tree_items, files=files_)
         merged_file_message = call_docx_merge(merge_request, add_title=0, add_heading_num=1, update_title=1)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件合并失败：{str(e)}")

@@ -133,18 +133,6 @@ async def _split_mode(
         rm_outline_in_doc=1,
         del_page_break=0,
     )
-    logger.info("拆分接口参数")
-    logger.info(split_result)
-    title_font_dict = split_result.data.get("title_font_dict") or {}
-    if title_font_dict:
-        import json
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    'UPDATE "yxdl_docx_upload_records" SET title_font_dict = %s WHERE id = %s',
-                    (json.dumps(title_font_dict), record_id),
-                )
-                conn.commit()
 
     tree_nodes = [TreeItem(**item) for item in split_result.data.get("tree", [])]
     eid_path_map = build_eid_path_mapping(split_result.data.get("files", []))
@@ -342,6 +330,7 @@ async def route_docx2html_marge(
             rm_outline_in_doc=1,
             del_page_break=0,
         )
+
         html_list = []
         for file__ in split_result.data.get("files", []):
             html_content, _ = docx_to_html(file__)

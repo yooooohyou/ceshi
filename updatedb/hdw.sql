@@ -34,7 +34,8 @@ CREATE TABLE "yxdl_docx_title_trees" (
   "update_file_path" text COLLATE "pg_catalog"."default",
   "parent_id" int4,
   "batch_count" int4,
-  "split_id" int4
+  "split_id" int4,
+  "title_font_dict" jsonb DEFAULT NULL
 );
 
 COMMENT ON COLUMN "yxdl_docx_title_trees"."id" IS '节点ID';
@@ -53,6 +54,7 @@ COMMENT ON COLUMN "yxdl_docx_title_trees"."update_file_path" IS '更新后的文
 COMMENT ON COLUMN "yxdl_docx_title_trees"."parent_id" IS '父节点ID，NULL表示根节点';
 COMMENT ON COLUMN "yxdl_docx_title_trees"."batch_count" IS '批次ID，第一次导入为1，每次更新在原最大值基础上+1';
 COMMENT ON COLUMN "yxdl_docx_title_trees"."split_id" IS '拆分接口返回的树节点id，用于合并时还原树结构';
+COMMENT ON COLUMN "yxdl_docx_title_trees"."title_font_dict" IS '拆分接口返回的标题节点字体字典';
 COMMENT ON TABLE "yxdl_docx_title_trees" IS '标题树节点表';
 
 
@@ -76,5 +78,5 @@ COMMENT ON COLUMN "yxdl_docx_upload_records"."upload_time" IS '上传时间';
 COMMENT ON COLUMN "yxdl_docx_upload_records"."update_time" IS '更新时间';
 COMMENT ON COLUMN "yxdl_docx_upload_records"."split_file_id" IS '拆分接口使用的file_id';
 COMMENT ON COLUMN "yxdl_docx_upload_records"."process_mode" IS '处理模式：single/split';
-COMMENT ON COLUMN "yxdl_docx_upload_records"."title_font_dict" IS '拆分接口返回的标题字体字典';
+COMMENT ON COLUMN "yxdl_docx_upload_records"."title_font_dict" IS '（已废弃）原拆分接口标题字体字典 — 现存于 yxdl_docx_title_trees';
 COMMENT ON TABLE "yxdl_docx_upload_records" IS 'DOCX文件上传记录';

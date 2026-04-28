@@ -1,4 +1,5 @@
 import datetime
+import json
 import logging
 import os
 from contextlib import contextmanager
@@ -99,9 +100,9 @@ def init_db_tables():
     CREATE INDEX IF NOT EXISTS idx_xlsx_file_sign    ON "yxdl_xlsx_upload_records" ("file_sign");
     """
 
-    alter_upload_records_sql = """
-    ALTER TABLE "yxdl_docx_upload_records"
-    ADD COLUMN "title_font_dict" jsonb DEFAULT NULL;
+    alter_title_trees_sql = """
+    ALTER TABLE "yxdl_docx_title_trees"
+    ADD COLUMN IF NOT EXISTS "title_font_dict" jsonb DEFAULT NULL;
     """
 
     try:
@@ -111,7 +112,7 @@ def init_db_tables():
                 cursor.execute(create_title_tree_table_sql)
                 cursor.execute(create_embed_components_sql)
                 cursor.execute(create_xlsx_upload_records_sql)
-                cursor.execute(alter_upload_records_sql)
+                cursor.execute(alter_title_trees_sql)
                 conn.commit()
         logger.debug("PostgreSQL数据表初始化成功")
     except Exception as e:
@@ -273,10 +274,11 @@ def process_split_tree_nodes(
         insert_tree_sql = """
         INSERT INTO "yxdl_docx_title_trees"
         (record_id, title_text, html_content, create_time, update_time,
-         level, eid, idx, node_type, origin_file_path, is_conversion_completion, parent_id, batch_count, split_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+         level, eid, idx, node_type, origin_file_path, is_conversion_completion, parent_id, batch_count, split_id, title_font_dict)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id;
         """
+        title_font_dict_json = json.dumps(node.title_font_dict) if node.title_font_dict else None
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(insert_tree_sql, (
@@ -284,7 +286,7 @@ def process_split_tree_nodes(
                     current_time, current_time,
                     node.level, node.eid, node.idx,
                     "branch", node_file_path, is_conversion_completion,
-                    parent_id, batch_count, node.id
+                    parent_id, batch_count, node.id, title_font_dict_json
                 ))
                 node_id = cursor.fetchone()[0]
                 conn.commit()
@@ -402,30 +404,35 @@ def process_single_tree_node(
             node_html_content = ""
         is_conv_done = 1 if node_html_content else 0
 
+        title_font_dict_json = json.dumps(node.title_font_dict) if node.title_font_dict else None
         if convert_html:
             update_tree_sql = """
             UPDATE "yxdl_docx_title_trees"
             SET update_time = %s, level = %s, origin_file_path = %s,
-                html_content = %s, is_conversion_completion = %s, eid = %s
+                html_content = %s, is_conversion_completion = %s, eid = %s,
+                title_font_dict = %s
             WHERE record_id = %s AND id = %s
             RETURNING id;
             """
             params = (
                 current_time, node.level, node.file_path,
                 node_html_content, is_conv_done, node.eid,
+                title_font_dict_json,
                 record_id, id_,
             )
         else:
             update_tree_sql = """
             UPDATE "yxdl_docx_title_trees"
             SET update_time = %s, level = %s, origin_file_path = %s,
-                is_conversion_completion = %s, eid = %s
+                is_conversion_completion = %s, eid = %s,
+                title_font_dict = %s
             WHERE record_id = %s AND id = %s
             RETURNING id;
             """
             params = (
                 current_time, node.level, node.file_path,
                 0, node.eid,
+                title_font_dict_json,
                 record_id, id_,
             )
 
