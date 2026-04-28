@@ -254,7 +254,7 @@ def add_nowrap_to_signature_paragraphs(html_content: str) -> str:
         attrs, body = m.group(1), m.group(2)
 
         # 1. 兼容多种空格符号：包含 &nbsp;、&#160; 以及真实的 \xa0 (Non-breaking space)
-        space_count = body.lower().count('&nbsp;') + body.count('&#160;') + body.count('\xa0')
+        space_count = body.lower().count('&nbsp;') + body.count('&#160;') + body.count('\xa0')  + body.count('&#xa0')+ body.count('&#xA0')+ body.count('\xa0')+ body.count('\u00A0')
         underline_count = len(_UNDERLINE_SPAN_RE.findall(body))
 
         # 2. 提取语义特征：是否包含典型的日期栏关键字
