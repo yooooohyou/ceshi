@@ -244,60 +244,70 @@ _NOWRAP_DECL_RE = re.compile(r'white-space\s*:\s*nowrap', re.IGNORECASE)
 
 def add_nowrap_to_signature_paragraphs(html_content: str) -> str:
     """
-    DOCX 转 HTML 后处理：给段落内含有 'underline' 且 ≥10 个 &nbsp; 的 <p>
-    加 white-space: nowrap，避免前端渲染时长串 nbsp 换行。
-    重写版：使用更鲁棒的正则和字符串切片，防止属性错位。
+    DOCX 转 HTML 后处理：给落款/日期/签字栏段落加 white-space: nowrap，避免前端渲染时长串空格换行。
+    增强版：兼容真实 \xa0 空格，并增加语义特征识别（年/月/日），避免死板的阈值判断失效。
     """
     if not html_content:
         return html_content
 
-    # 精确切分：组1为 <p ...>，组2为段落内部，组3为 </p>
-    para_re = re.compile(r'(<p\b[^>]*>)(.*?)(</p\s*>)', re.IGNORECASE | re.DOTALL)
-
     def _replace(m):
-        p_open = m.group(1)
-        body = m.group(2)
-        p_close = m.group(3)
+        attrs, body = m.group(1), m.group(2)
 
-        body_lower = body.lower()
-        # 条件1：只要内容中带有下划线特征，就认为是匹配目标
-        if 'underline' not in body_lower:
+        # 1. 兼容多种空格符号：包含 &nbsp;、&#160; 以及真实的 \xa0 (Non-breaking space)
+        space_count = body.lower().count('&nbsp;') + body.count('&#160;') + body.count('\xa0')
+        underline_count = len(_UNDERLINE_SPAN_RE.findall(body))
+
+        # 2. 提取语义特征：是否包含典型的日期栏关键字
+        has_date_feature = ('年' in body and '月' in body) or ('签字' in body) or ('日期' in body)
+
+        # 3. 综合判定：
+        #    - 如果具备明显的落款/日期特征，只要有少量下划线(≥3)和空格(≥5)即可通过
+        #    - 否则走常规统计：下划线 ≥ 5 且 空格 ≥ 10 (阈值适度放宽)
+        is_signature_para = (has_date_feature and underline_count >= 3 and space_count >= 5) or \
+                            (underline_count >= 5 and space_count >= 10)
+
+        if not is_signature_para:
             return m.group(0)
 
-        # 条件2：存在大量连续空格占位符 (兼容 &nbsp; 和 &#160;)
-        nbsp_count = body_lower.count('&nbsp;') + body_lower.count('&#160;')
-        if nbsp_count < 10:
+        # 后续替换逻辑保持不变，安全追加 white-space: nowrap
+        style_m = _STYLE_ATTR_RE.search(attrs)
+        mce_m = _DATA_MCE_STYLE_ATTR_RE.search(attrs)
+
+        style_val = style_m.group(3) if style_m else ''
+        mce_val = mce_m.group(3) if mce_m else ''
+
+        style_has = bool(_NOWRAP_DECL_RE.search(style_val))
+        mce_has = mce_m is not None and bool(_NOWRAP_DECL_RE.search(mce_val))
+        if style_has and (mce_m is None or mce_has):
             return m.group(0)
 
         def _append_nowrap(css: str) -> str:
             css = (css or '').strip()
-            if re.search(r'white-space\s*:\s*nowrap', css, re.IGNORECASE):
+            if _NOWRAP_DECL_RE.search(css):
                 return css
             if css and not css.endswith(';'):
                 css += ';'
             return (css + ' white-space: nowrap;').strip()
 
-        # 精确匹配真实的 style 属性（使用否定环视 (?<![-a-zA-Z]) 避免错误匹配到 data-mce-style）
-        style_m = re.search(r'(?<![-a-zA-Z])style\s*=\s*(["\'])(.*?)\1', p_open, re.IGNORECASE)
+        new_attrs = attrs
         if style_m:
-            old_style = style_m.group(2)
-            new_style = _append_nowrap(old_style)
-            # 使用切片精确替换，杜绝 replace() 导致的错配
-            p_open = p_open[:style_m.start()] + f'style="{new_style}"' + p_open[style_m.end():]
+            new_attrs = new_attrs.replace(
+                style_m.group(0),
+                f'{style_m.group(1)}{style_m.group(2)}{_append_nowrap(style_val)}{style_m.group(2)}',
+                1,
+            )
         else:
-            # 如果一开始没有 style，直接在尾部追加
-            p_open = p_open[:-1] + ' style="white-space: nowrap;">'
+            new_attrs = new_attrs + ' style="white-space: nowrap;"'
 
-        # 同理，如果存在 TinyMCE 专用样式，也同步追加
-        mce_m = re.search(r'data-mce-style\s*=\s*(["\'])(.*?)\1', p_open, re.IGNORECASE)
-        if mce_m:
-            old_mce = mce_m.group(2)
-            new_mce = _append_nowrap(old_mce)
-            p_open = p_open[:mce_m.start()] + f'data-mce-style="{new_mce}"' + p_open[mce_m.end():]
+        if mce_m is not None:
+            new_attrs = new_attrs.replace(
+                mce_m.group(0),
+                f'{mce_m.group(1)}{mce_m.group(2)}{_append_nowrap(mce_val)}{mce_m.group(2)}',
+                1,
+            )
+        return f'<p{new_attrs}>{body}</p>'
 
-        return p_open + body + p_close
-
-    return para_re.sub(_replace, html_content)
+    return _NOWRAP_PARA_RE.sub(_replace, html_content)
 
 
 def get_html_heading_levels(html_content: str):

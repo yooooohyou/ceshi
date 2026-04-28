@@ -106,6 +106,7 @@ def docx_to_html(file_path: str):
             html_content = hide_mce_anchor_tags(html_content)
             html_content = add_nowrap_to_signature_paragraphs(html_content)
 
+
         return html_content or "", abs_file_path
 
     except Exception as e:
