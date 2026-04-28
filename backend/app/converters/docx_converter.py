@@ -1,6 +1,7 @@
 import io
 import logging
 import os
+import time
 
 import requests
 
@@ -12,8 +13,36 @@ from app.utils.path_utils import judge_path_type
 logger = logging.getLogger(__name__)
 
 
+def _wait_until_docx_readable(path: str, attempts: int = 3, delay: float = 0.4) -> bool:
+    """
+    偶发：拆分服务返回的小 docx 路径在 NFS/共享挂载上短暂不可见，或文件刚写入
+    尚未完成（PK\\x03\\x04 zip 头未就绪）。短延迟轮询直到可读，避免 python-docx
+    抛 "Package not found" / "File is not a zip file"。
+    """
+    last_err = None
+    for i in range(attempts):
+        try:
+            if not os.path.exists(path):
+                last_err = "path not exist"
+            elif os.path.getsize(path) < 32:
+                last_err = "file too small"
+            else:
+                with open(path, "rb") as f:
+                    head = f.read(4)
+                if head == b"PK\x03\x04":
+                    return True
+                last_err = f"bad header {head!r}"
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
+        if i < attempts - 1:
+            time.sleep(delay)
+    logger.warning(f"docx_to_html: 等待文件可读超时 path={path} last_err={last_err}")
+    return False
+
+
 def docx_to_html(file_path: str):
     """DOCX 转 HTML，返回 (html_str, abs_file_path)"""
+    abs_file_path = ""
     try:
         if judge_path_type(file_path) == "web":
             response = requests.get(file_path, timeout=30)
@@ -25,6 +54,11 @@ def docx_to_html(file_path: str):
         else:
             abs_file_path = file_path
 
+        # 拆分接口返回的小 docx 偶发不存在 / 写入未完成 / 不是合法 zip。
+        # 不可用时直接返回空 HTML，不再写"转换失败"到内容里污染下游合并结果。
+        if not _wait_until_docx_readable(abs_file_path):
+            return "", abs_file_path
+
         file_size = os.path.getsize(abs_file_path)
         if file_size > 10 * 1024 * 1024:
             logger.warning(f"警告：文件过大（{file_size / 1024 / 1024:.2f}MB），可能转换失败")
@@ -34,7 +68,19 @@ def docx_to_html(file_path: str):
         temp_html_filename = generate_unique_filename("temp.html")
         temp_html_path = os.path.join(UPLOAD_DIR, temp_html_filename)
 
-        html_content = converter.docx_to_single_html(abs_file_path, temp_html_path)
+        try:
+            html_content = converter.docx_to_single_html(abs_file_path, temp_html_path)
+        except Exception as e_first:
+            # python-docx 在边缘场景偶发 Package not found / not a zip：
+            # 兼容 NFS/共享存储的短暂可见性问题，再次等待并重试一次。
+            logger.warning(
+                f"docx_to_html: 首次转换异常将重试 path={abs_file_path} "
+                f"err={type(e_first).__name__}: {e_first}"
+            )
+            time.sleep(0.5)
+            if not _wait_until_docx_readable(abs_file_path):
+                return "", abs_file_path
+            html_content = converter.docx_to_single_html(abs_file_path, temp_html_path)
 
         if os.path.exists(temp_html_path):
             try:
@@ -58,8 +104,11 @@ def docx_to_html(file_path: str):
         return html_content or "", abs_file_path
 
     except Exception as e:
-        logger.debug(f"Word转HTML失败: {e}")
-        return f"<p>转换失败：{str(e)}</p>", ""
+        logger.warning(
+            f"docx_to_html: Word转HTML失败 path={file_path} "
+            f"err={type(e).__name__}: {e}"
+        )
+        return "", abs_file_path
 
 
 def convert_html_to_docx(html_content: str):
