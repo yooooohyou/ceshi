@@ -244,7 +244,7 @@ _NOWRAP_DECL_RE = re.compile(r'white-space\s*:\s*nowrap', re.IGNORECASE)
 
 def add_nowrap_to_signature_paragraphs(html_content: str) -> str:
     """
-    DOCX 转 HTML 后处理：给段落内同时含 ≥10 个 text-decoration:underline 的 <span>
+    DOCX 转 HTML 后处理：给段落内同时含 ≥1 个 text-decoration:underline 的 <span>
     且 ≥10 个 &nbsp; 的 <p> 加 white-space: nowrap，避免前端渲染时长串 nbsp 换行。
     若 <p> 上同时存在 data-mce-style，则同步追加到 data-mce-style，保持 TinyMCE 一致。
     """
@@ -254,8 +254,11 @@ def add_nowrap_to_signature_paragraphs(html_content: str) -> str:
     def _replace(m):
         attrs, body = m.group(1), m.group(2)
 
-        if len(_UNDERLINE_SPAN_RE.findall(body)) < 10:
+        # 【修复点】：将原先的 < 10 改为 < 1。只要存在至少 1 个下划线 span，且有大量 nbsp 占位，即认为是签字/日期栏
+        if len(_UNDERLINE_SPAN_RE.findall(body)) < 5:
             return m.group(0)
+
+        # 维持对 &nbsp; 的严格数量判断，避免误伤普通段落
         if body.lower().count('&nbsp;') < 10:
             return m.group(0)
 
