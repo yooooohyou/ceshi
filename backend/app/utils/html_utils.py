@@ -242,7 +242,6 @@ _DATA_MCE_STYLE_ATTR_RE = re.compile(
 _NOWRAP_DECL_RE = re.compile(r'white-space\s*:\s*nowrap', re.IGNORECASE)
 
 
-
 def add_nowrap_to_signature_paragraphs(html_content: str) -> str:
     """
     DOCX 转 HTML 后处理：给段落内含有 'underline' 且 ≥10 个 &nbsp; 的 <p>
