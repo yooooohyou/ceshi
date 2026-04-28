@@ -280,6 +280,8 @@ async def update_html_by_node_new(
             return unified_response(400, "节点ID必须为正整数")
 
         html_content = (await file.read()).decode("utf-8")
+        logger.info("更新html")
+        logger.info(html_content)
         if not html_content.strip():
             return unified_response(400, "HTML内容不能为空")
 
@@ -305,14 +307,13 @@ async def update_html_by_node_new(
 
         # ── 无标题：直接更新当前节点 ────────────────────────────────────────
         if max_level == 0:
-            html_content_org = copy.deepcopy(html_content)
             success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
 
             eid = os.path.splitext(os.path.basename(temp_docx_path_1))[0]
 
             update_fields = ["html_content = %s", "update_time = %s",
                              "update_file_path = %s", "eid = %s", "is_conversion_completion = %s"]
-            update_values = [html_content_org, current_time, temp_docx_path_1, eid, 1]
+            update_values = [html_content, current_time, temp_docx_path_1, eid, 1]
 
             if title_text is not None and title_text.strip():
                 update_fields.append("title_text = %s")
