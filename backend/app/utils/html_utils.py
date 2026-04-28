@@ -263,10 +263,10 @@ def add_nowrap_to_signature_paragraphs(html_content: str) -> str:
         # 3. 综合判定：
         #    - 如果具备明显的落款/日期特征，只要有少量下划线(≥3)和空格(≥5)即可通过
         #    - 否则走常规统计：下划线 ≥ 5 且 空格 ≥ 10 (阈值适度放宽)
-        logging.info("判断空格")
-        logging.info(body)
-        logging.info(underline_count)
-        logging.info(space_count)
+        # logging.info("判断空格")
+        # logging.info(body)
+        # logging.info(underline_count)
+        # logging.info(space_count)
         is_signature_para = (underline_count >= 3 and space_count >= 5) or \
                             (underline_count >= 5 and space_count >= 10)
 
