@@ -242,64 +242,63 @@ _DATA_MCE_STYLE_ATTR_RE = re.compile(
 _NOWRAP_DECL_RE = re.compile(r'white-space\s*:\s*nowrap', re.IGNORECASE)
 
 
+
 def add_nowrap_to_signature_paragraphs(html_content: str) -> str:
     """
-    DOCX 转 HTML 后处理：给段落内同时含 ≥1 个 text-decoration:underline 的 <span>
-    且 ≥10 个 &nbsp; 的 <p> 加 white-space: nowrap，避免前端渲染时长串 nbsp 换行。
-    若 <p> 上同时存在 data-mce-style，则同步追加到 data-mce-style，保持 TinyMCE 一致。
+    DOCX 转 HTML 后处理：给段落内含有 'underline' 且 ≥10 个 &nbsp; 的 <p>
+    加 white-space: nowrap，避免前端渲染时长串 nbsp 换行。
+    重写版：使用更鲁棒的正则和字符串切片，防止属性错位。
     """
     if not html_content:
         return html_content
 
+    # 精确切分：组1为 <p ...>，组2为段落内部，组3为 </p>
+    para_re = re.compile(r'(<p\b[^>]*>)(.*?)(</p\s*>)', re.IGNORECASE | re.DOTALL)
+
     def _replace(m):
-        attrs, body = m.group(1), m.group(2)
+        p_open = m.group(1)
+        body = m.group(2)
+        p_close = m.group(3)
 
-        # 【修复点】：将原先的 < 10 改为 < 1。只要存在至少 1 个下划线 span，且有大量 nbsp 占位，即认为是签字/日期栏
-        if len(_UNDERLINE_SPAN_RE.findall(body)) < 1:
+        body_lower = body.lower()
+        # 条件1：只要内容中带有下划线特征，就认为是匹配目标
+        if 'underline' not in body_lower:
             return m.group(0)
 
-        # 维持对 &nbsp; 的严格数量判断，避免误伤普通段落
-        if body.lower().count('&nbsp;') < 10:
-            return m.group(0)
-
-        style_m = _STYLE_ATTR_RE.search(attrs)
-        mce_m = _DATA_MCE_STYLE_ATTR_RE.search(attrs)
-
-        style_val = style_m.group(3) if style_m else ''
-        mce_val = mce_m.group(3) if mce_m else ''
-
-        style_has = bool(_NOWRAP_DECL_RE.search(style_val))
-        mce_has = mce_m is not None and bool(_NOWRAP_DECL_RE.search(mce_val))
-        if style_has and (mce_m is None or mce_has):
+        # 条件2：存在大量连续空格占位符 (兼容 &nbsp; 和 &#160;)
+        nbsp_count = body_lower.count('&nbsp;') + body_lower.count('&#160;')
+        if nbsp_count < 10:
             return m.group(0)
 
         def _append_nowrap(css: str) -> str:
             css = (css or '').strip()
-            if _NOWRAP_DECL_RE.search(css):
+            if re.search(r'white-space\s*:\s*nowrap', css, re.IGNORECASE):
                 return css
             if css and not css.endswith(';'):
                 css += ';'
             return (css + ' white-space: nowrap;').strip()
 
-        new_attrs = attrs
+        # 精确匹配真实的 style 属性（使用否定环视 (?<![-a-zA-Z]) 避免错误匹配到 data-mce-style）
+        style_m = re.search(r'(?<![-a-zA-Z])style\s*=\s*(["\'])(.*?)\1', p_open, re.IGNORECASE)
         if style_m:
-            new_attrs = new_attrs.replace(
-                style_m.group(0),
-                f'{style_m.group(1)}{style_m.group(2)}{_append_nowrap(style_val)}{style_m.group(2)}',
-                1,
-            )
+            old_style = style_m.group(2)
+            new_style = _append_nowrap(old_style)
+            # 使用切片精确替换，杜绝 replace() 导致的错配
+            p_open = p_open[:style_m.start()] + f'style="{new_style}"' + p_open[style_m.end():]
         else:
-            new_attrs = new_attrs + ' style="white-space: nowrap;"'
+            # 如果一开始没有 style，直接在尾部追加
+            p_open = p_open[:-1] + ' style="white-space: nowrap;">'
 
-        if mce_m is not None:
-            new_attrs = new_attrs.replace(
-                mce_m.group(0),
-                f'{mce_m.group(1)}{mce_m.group(2)}{_append_nowrap(mce_val)}{mce_m.group(2)}',
-                1,
-            )
-        return f'<p{new_attrs}>{body}</p>'
+        # 同理，如果存在 TinyMCE 专用样式，也同步追加
+        mce_m = re.search(r'data-mce-style\s*=\s*(["\'])(.*?)\1', p_open, re.IGNORECASE)
+        if mce_m:
+            old_mce = mce_m.group(2)
+            new_mce = _append_nowrap(old_mce)
+            p_open = p_open[:mce_m.start()] + f'data-mce-style="{new_mce}"' + p_open[mce_m.end():]
 
-    return _NOWRAP_PARA_RE.sub(_replace, html_content)
+        return p_open + body + p_close
+
+    return para_re.sub(_replace, html_content)
 
 
 def get_html_heading_levels(html_content: str):
