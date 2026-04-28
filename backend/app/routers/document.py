@@ -280,8 +280,6 @@ async def update_html_by_node_new(
             return unified_response(400, "节点ID必须为正整数")
 
         html_content = (await file.read()).decode("utf-8")
-        logger.info("更新html")
-        logger.info(html_content)
         if not html_content.strip():
             return unified_response(400, "HTML内容不能为空")
 
@@ -300,19 +298,13 @@ async def update_html_by_node_new(
         logger.info(f"update_html_by_node_new: node_id={node_id} record_id={record_id} level={now_level}")
 
         html_content, _ = html_img_url_to_base64(html_content)
-        logger.info("更新html1")
-        logger.info(html_content)
         html_content, _ = html_base64_images_to_urls(html_content, UPLOAD_DIR, STATIC_WEB_FRONT_PREFIX)
-        logger.info("更新html2")
-        logger.info(html_content)
         existing_levels, max_level = get_html_heading_levels(html_content)
         current_time = datetime.datetime.now()
 
         # ── 无标题：直接更新当前节点 ────────────────────────────────────────
         if max_level == 0:
             success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
-            logger.info("更新html3")
-            logger.info(html_content)
             eid = os.path.splitext(os.path.basename(temp_docx_path_1))[0]
 
             update_fields = ["html_content = %s", "update_time = %s",
