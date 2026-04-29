@@ -319,10 +319,11 @@ def get_html_heading_levels(html_content: str):
     if not html_content or not isinstance(html_content, str):
         return [], 0
     soup = BeautifulSoup(html_content, "html.parser")
-    headings = soup.find_all(re.compile(r"^h[1-6]$", re.IGNORECASE))
+    headings = soup.find_all(re.compile(r"^h[1-9]$", re.IGNORECASE))
     existing_levels = sorted({int(h.name[1]) for h in headings})
     max_level = max(existing_levels) if existing_levels else 0
-    return existing_levels, max_level
+    len_existing_levels = len(existing_levels)
+    return existing_levels, max_level, len_existing_levels
 
 
 def replace_first_heading_text(html_content: str, new_title: str) -> str:
