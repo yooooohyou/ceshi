@@ -303,7 +303,7 @@ async def update_html_by_node_new(
         current_time = datetime.datetime.now()
 
         # ── 无标题：直接更新当前节点 ────────────────────────────────────────
-        if max_level == 0:
+        if max_level == 0 or max_level == 1:
             success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
             eid = os.path.splitext(os.path.basename(temp_docx_path_1))[0]
 
