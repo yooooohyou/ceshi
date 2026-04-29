@@ -301,7 +301,7 @@ async def update_html_by_node_new(
         html_content, _ = html_base64_images_to_urls(html_content, UPLOAD_DIR, STATIC_WEB_FRONT_PREFIX)
         existing_levels, max_level = get_html_heading_levels(html_content)
         current_time = datetime.datetime.now()
-
+        logger.info(max_level)
         # ── 无标题：直接更新当前节点 ────────────────────────────────────────
         if max_level == 0 or max_level == 1:
             success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
@@ -336,6 +336,7 @@ async def update_html_by_node_new(
             })
 
         # ── 有标题：转换 → 拆分 → 重新入库 ──────────────────────────────────
+        logger.info("调用拆分接口")
         success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
         if not success:
             return unified_response(500, f"HTML转DOCX失败：{result}")
