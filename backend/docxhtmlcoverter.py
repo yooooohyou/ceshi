@@ -3471,6 +3471,64 @@ class DocxHtmlConverter:
     # ------------------------------------------------------------------ #
 
     @staticmethod
+    def _fix_heading_outline_levels_in_docx(docx_path: str) -> bool:
+        """
+        HTML→DOCX 后修复：Spire 将 HTML 标题写入 DOCX 时，会同时给段落写入
+        <w:pStyle w:val="HeadingN"/> 与 <w:outlineLvl w:val="9"/>，
+        后者覆盖了样式自带的大纲级别，导致目录/导航窗格无法识别为标题。
+
+        本方法在 pPr 内：
+          - 段落 pStyle 为 HeadingN（N=1..9）时，将 outlineLvl 修正为 N-1
+          - 若不存在 outlineLvl，则不新增（继承样式默认即可）
+          - 若 outlineLvl 已是 N-1，则跳过
+        """
+        try:
+            doc = PythonDocx(docx_path)
+        except Exception as e:
+            logger.warning(f"⚠️ 修复标题大纲级别：打开 DOCX 失败：{e}")
+            return False
+
+        modified_count = 0
+        # 同时处理正文与表格内段落
+        all_paragraphs = list(doc.paragraphs)
+        for tbl in doc.tables:
+            for row in tbl.rows:
+                for cell in row.cells:
+                    all_paragraphs.extend(cell.paragraphs)
+
+        heading_re = re.compile(r'^Heading\s*([1-9])$', re.IGNORECASE)
+
+        for para in all_paragraphs:
+            pPr = para._p.find(qn('w:pPr'))
+            if pPr is None:
+                continue
+            pStyle = pPr.find(qn('w:pStyle'))
+            if pStyle is None:
+                continue
+            style_val = pStyle.get(qn('w:val')) or ''
+            m = heading_re.match(style_val.strip())
+            if not m:
+                continue
+            expected_lvl = int(m.group(1)) - 1  # Heading1 → 0
+            outline_el = pPr.find(qn('w:outlineLvl'))
+            if outline_el is None:
+                continue
+            current_val = outline_el.get(qn('w:val'))
+            if current_val == str(expected_lvl):
+                continue
+            outline_el.set(qn('w:val'), str(expected_lvl))
+            modified_count += 1
+
+        if modified_count:
+            try:
+                doc.save(docx_path)
+                logger.debug(f"✅ 修复标题大纲级别：{modified_count} 处")
+            except Exception as e:
+                logger.warning(f"⚠️ 修复标题大纲级别：保存 DOCX 失败：{e}")
+                return False
+        return True
+
+    @staticmethod
     def _strip_paragraph_spacing_css(html: str) -> str:
         """
         HTML→DOCX 方向的段落间距预处理。
@@ -3592,6 +3650,11 @@ class DocxHtmlConverter:
             if para_count <= self.MAX_PARAGRAPHS:
                 logger.debug("✅ 无需分片，直接转换")
                 ok = self._html_chunk_to_docx(html_text, output_docx_path, temp_img_dir)
+                if ok:
+                    try:
+                        self._fix_heading_outline_levels_in_docx(output_docx_path)
+                    except Exception as _he:
+                        logger.warning(f"⚠️ 修复标题大纲级别失败：{_he}")
                 if ok and breaks_info:
                     try:
                         self._apply_break_markers_to_docx(output_docx_path, breaks_info)
@@ -3624,6 +3687,11 @@ class DocxHtmlConverter:
 
             logger.debug(f"🔗 开始合并 {len(chunk_docx_paths)} 个 chunk DOCX...")
             ok = self._merge_docx_chunks(chunk_docx_paths, output_docx_path)
+            if ok:
+                try:
+                    self._fix_heading_outline_levels_in_docx(output_docx_path)
+                except Exception as _he:
+                    logger.warning(f"⚠️ 修复标题大纲级别失败（分片路径）：{_he}")
             if ok and breaks_info:
                 try:
                     self._apply_break_markers_to_docx(output_docx_path, breaks_info)
