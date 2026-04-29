@@ -149,7 +149,8 @@ def call_docx_merge(merge_request: MergeRequest, add_title=0, add_heading_num=1,
     url = f"{TARGET_BASE_URL}/api/tool_api/docx/megre"  # 文档中拼写为 megre（merge笔误）
     try:
         data_ = merge_request.dict(exclude_unset=True)
-        logger.debug(data_)
+        logger.info("一键排版参数")
+        logger.info(data_)
         data_["add_title"] = add_title
         data_["add_heading_num"] = add_heading_num
         data_["update_title"] = update_title
