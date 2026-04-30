@@ -420,6 +420,7 @@ def fix_spire_anchor_image_roundtrip(html_content: str) -> str:
 
     # 第二部分：在处理段落时，打掉父级段落的缩进
     def _para(m):
+
         attrs, body = m.group(1), m.group(2)
 
         # ====== 新增：如果段落里包含绝对定位图片，强制清空段落的 text-indent ======
