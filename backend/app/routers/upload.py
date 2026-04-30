@@ -115,6 +115,9 @@ async def _split_mode(
 
     # 调用表格宽度适配接口
     new_file_path = call_set_table_width(abs_file_path)
+    logger.info(abs_file_path)
+    logger.info(new_file_path)
+    logger.info("打印真实路径")
     # new_file_path = abs_file_path
     # 拆分前预埋"下一节"元数据 marker，避免外部拆分服务把多节的 sectPr 信息切碎后丢失。
     try:
@@ -133,7 +136,8 @@ async def _split_mode(
         rm_outline_in_doc=1,
         del_page_break=0,
     )
-
+    logger.info("打印拆分接口返回数据库")
+    logger.info(split_result.data)
     tree_nodes = [TreeItem(**item) for item in split_result.data.get("tree", [])]
     eid_path_map = build_eid_path_mapping(split_result.data.get("files", []))
     for node in tree_nodes:
