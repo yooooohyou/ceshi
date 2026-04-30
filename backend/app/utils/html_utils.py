@@ -416,8 +416,6 @@ def fix_spire_anchor_image_roundtrip(html_content: str) -> str:
 
     html_content = _IMG_TAG_RE.sub(_img, html_content)
 
-    html_content = _flatten_inline_block_underline_spans(html_content)
-
     def _para(m):
         attrs, body = m.group(1), m.group(2)
         if not _is_anchor_only_paragraph_body(body):
@@ -426,96 +424,6 @@ def fix_spire_anchor_image_roundtrip(html_content: str) -> str:
 
     return _NOWRAP_PARA_RE.sub(_para, html_content)
 
-
-# Bug 3：Spire docx→html 把原 docx 里的 <w:tab/> 渲染成
-# `<span style="display:inline-block; width: Xpt; text-decoration:underline; ...">&nbsp;...</span>`
-# Spire html→docx 反向时只读字符内容、不读 inline-block 的 width，也不写 <w:tab/>，
-# 导致下划线长度退化为"裸字符宽 × nbsp 数"。
-# Spire 输出的 inline-block underline span 内的 nbsp 数量本就是它按字体估出来与
-# width 大致等价的字符数；脱掉 inline-block 与 width 让 Spire html→docx 直接保留
-# 原 nbsp 数量为下划线 run 内容，圆环后下划线总宽度就回到字符宽 × 原 nbsp 数，
-# 比保留 inline-block 时的"全部丢失"显著贴近原文。
-_INLINE_UL_SPAN_RE = re.compile(r'<span\b([^>]*)>([^<]*)</span>', re.IGNORECASE)
-_DISPLAY_INLINE_BLOCK_RE = re.compile(r'\bdisplay\s*:\s*inline-block\b', re.IGNORECASE)
-_TEXT_DECO_UL_RE = re.compile(r'\btext-decoration\s*:\s*[^;]*\bunderline\b', re.IGNORECASE)
-_WIDTH_DECL_RE = re.compile(r'\bwidth\s*:\s*[^;]+;?\s*', re.IGNORECASE)
-_DISPLAY_DECL_RE = re.compile(r'\bdisplay\s*:\s*[^;]+;?\s*', re.IGNORECASE)
-
-
-def _strip_layout_decls(css: str) -> str:
-    css = _WIDTH_DECL_RE.sub('', css or '')
-    css = _DISPLAY_DECL_RE.sub('', css)
-    return re.sub(r';\s*;', ';', css).strip(' ;') + (';' if css.strip() else '')
-
-
-def _flatten_inline_block_underline_spans(html: str) -> str:
-    def _rep(m):
-        attrs, body = m.group(1), m.group(2)
-        # 仅匹配 style 上同时含 display:inline-block 与 text-decoration:underline 的 span
-        sm = _STYLE_ATTR_RE.search(attrs)
-        if not sm:
-            return m.group(0)
-        css = sm.group(3)
-        if not (_DISPLAY_INLINE_BLOCK_RE.search(css) and _TEXT_DECO_UL_RE.search(css)):
-            return m.group(0)
-        new_css = _strip_layout_decls(css)
-        new_attrs = attrs.replace(sm.group(0),
-            f'{sm.group(1)}{sm.group(2)}{new_css}{sm.group(2)}', 1)
-        # data-mce-style 同步去掉 inline-block / width
-        mm = _DATA_MCE_STYLE_ATTR_RE.search(new_attrs)
-        if mm:
-            mce_css = _strip_layout_decls(mm.group(3))
-            new_attrs = new_attrs.replace(mm.group(0),
-                f'{mm.group(1)}{mm.group(2)}{mce_css}{mm.group(2)}', 1)
-        return f'<span{new_attrs}>{body}</span>'
-    return _INLINE_UL_SPAN_RE.sub(_rep, html)
-
-
-# Bug 4：Spire html→docx 把浮动图 (wp:anchor) 的 distT/distB/distL/distR
-# 属性丢失（不写 -> 默认 0），与 Word 原文档常用 distL=distR=114300 EMU (=9pt)
-# 不一致；图片在 Word 视觉位置因此与原 docx 偏 9pt 左右。修法：直接在
-# html→docx 输出的 docx 里给 <wp:anchor> 元素补这四个属性。
-import zipfile as _zipfile
-import shutil as _shutil
-
-_WP_ANCHOR_OPEN_RE = re.compile(r'<wp:anchor\b([^>]*)>', re.IGNORECASE)
-
-
-def fix_spire_docx_anchor_dist(docx_path: str) -> None:
-    """给 docx 中 <wp:anchor> 元素补 distT/distB/distL/distR 属性。
-    幂等：已有 distL 的 anchor 跳过。"""
-    if not docx_path or not os.path.exists(docx_path):
-        return
-    try:
-        with _zipfile.ZipFile(docx_path) as zin:
-            names = zin.namelist()
-            if 'word/document.xml' not in names:
-                return
-            contents = {n: zin.read(n) for n in names}
-        xml = contents['word/document.xml'].decode('utf-8')
-
-        def _add_dist(m):
-            anc_open = m.group(0)
-            if 'distL=' in anc_open or 'distL =' in anc_open:
-                return anc_open
-            return anc_open.replace(
-                '<wp:anchor',
-                '<wp:anchor distT="0" distB="0" distL="114300" distR="114300"',
-                1,
-            )
-
-        new_xml = _WP_ANCHOR_OPEN_RE.sub(_add_dist, xml)
-        if new_xml == xml:
-            return
-        contents['word/document.xml'] = new_xml.encode('utf-8')
-
-        tmp_path = docx_path + '.tmp_anchor_dist'
-        with _zipfile.ZipFile(tmp_path, 'w', _zipfile.ZIP_DEFLATED) as zout:
-            for n in names:
-                zout.writestr(n, contents[n])
-        _shutil.move(tmp_path, docx_path)
-    except Exception as e:
-        logger.warning(f"fix_spire_docx_anchor_dist 失败 path={docx_path} err={type(e).__name__}: {e}")
 
 
 def get_html_heading_levels(html_content: str):
