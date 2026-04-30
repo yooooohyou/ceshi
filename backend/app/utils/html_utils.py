@@ -416,6 +416,8 @@ def fix_spire_anchor_image_roundtrip(html_content: str) -> str:
 
     html_content = _IMG_TAG_RE.sub(_img, html_content)
 
+    html_content = _flatten_inline_block_underline_spans(html_content)
+
     def _para(m):
         attrs, body = m.group(1), m.group(2)
         if not _is_anchor_only_paragraph_body(body):
@@ -423,6 +425,50 @@ def fix_spire_anchor_image_roundtrip(html_content: str) -> str:
         return f'<p{attrs}>{body}<br></p>'
 
     return _NOWRAP_PARA_RE.sub(_para, html_content)
+
+
+# Bug 3：Spire docx→html 把原 docx 里的 <w:tab/> 渲染成
+# `<span style="display:inline-block; width: Xpt; text-decoration:underline; ...">&nbsp;...</span>`
+# Spire html→docx 反向时只读字符内容、不读 inline-block 的 width，也不写 <w:tab/>，
+# 导致下划线长度退化为"裸字符宽 × nbsp 数"。
+# Spire 输出的 inline-block underline span 内的 nbsp 数量本就是它按字体估出来与
+# width 大致等价的字符数；脱掉 inline-block 与 width 让 Spire html→docx 直接保留
+# 原 nbsp 数量为下划线 run 内容，圆环后下划线总宽度就回到字符宽 × 原 nbsp 数，
+# 比保留 inline-block 时的"全部丢失"显著贴近原文。
+_INLINE_UL_SPAN_RE = re.compile(r'<span\b([^>]*)>([^<]*)</span>', re.IGNORECASE)
+_DISPLAY_INLINE_BLOCK_RE = re.compile(r'\bdisplay\s*:\s*inline-block\b', re.IGNORECASE)
+_TEXT_DECO_UL_RE = re.compile(r'\btext-decoration\s*:\s*[^;]*\bunderline\b', re.IGNORECASE)
+_WIDTH_DECL_RE = re.compile(r'\bwidth\s*:\s*[^;]+;?\s*', re.IGNORECASE)
+_DISPLAY_DECL_RE = re.compile(r'\bdisplay\s*:\s*[^;]+;?\s*', re.IGNORECASE)
+
+
+def _strip_layout_decls(css: str) -> str:
+    css = _WIDTH_DECL_RE.sub('', css or '')
+    css = _DISPLAY_DECL_RE.sub('', css)
+    return re.sub(r';\s*;', ';', css).strip(' ;') + (';' if css.strip() else '')
+
+
+def _flatten_inline_block_underline_spans(html: str) -> str:
+    def _rep(m):
+        attrs, body = m.group(1), m.group(2)
+        # 仅匹配 style 上同时含 display:inline-block 与 text-decoration:underline 的 span
+        sm = _STYLE_ATTR_RE.search(attrs)
+        if not sm:
+            return m.group(0)
+        css = sm.group(3)
+        if not (_DISPLAY_INLINE_BLOCK_RE.search(css) and _TEXT_DECO_UL_RE.search(css)):
+            return m.group(0)
+        new_css = _strip_layout_decls(css)
+        new_attrs = attrs.replace(sm.group(0),
+            f'{sm.group(1)}{sm.group(2)}{new_css}{sm.group(2)}', 1)
+        # data-mce-style 同步去掉 inline-block / width
+        mm = _DATA_MCE_STYLE_ATTR_RE.search(new_attrs)
+        if mm:
+            mce_css = _strip_layout_decls(mm.group(3))
+            new_attrs = new_attrs.replace(mm.group(0),
+                f'{mm.group(1)}{mm.group(2)}{mce_css}{mm.group(2)}', 1)
+        return f'<span{new_attrs}>{body}</span>'
+    return _INLINE_UL_SPAN_RE.sub(_rep, html)
 
 
 
