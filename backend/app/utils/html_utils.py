@@ -401,6 +401,8 @@ def fix_spire_anchor_image_roundtrip(html_content: str) -> str:
     if not html_content:
         return html_content
 
+        # 第一部分：保留您写的，修复 img 上的绝对坐标
+
     def _img(m):
         attrs = m.group(1)
         for rx in (_STYLE_ATTR_RE, _DATA_MCE_STYLE_ATTR_RE):
@@ -416,10 +418,21 @@ def fix_spire_anchor_image_roundtrip(html_content: str) -> str:
 
     html_content = _IMG_TAG_RE.sub(_img, html_content)
 
+    # 第二部分：在处理段落时，打掉父级段落的缩进
     def _para(m):
         attrs, body = m.group(1), m.group(2)
+
+        # ====== 新增：如果段落里包含绝对定位图片，强制清空段落的 text-indent ======
+        if 'position: absolute' in body.lower() or '-spr-left-pos' in body.lower():
+            # 将 text-indent 和 margin-left 强制置为 0，防止坐标双重叠加
+            attrs = re.sub(r'text-indent\s*:\s*[^;]+;?', 'text-indent: 0pt;', attrs, flags=re.IGNORECASE)
+            attrs = re.sub(r'margin-left\s*:\s*[^;]+;?', 'margin-left: 0pt;', attrs, flags=re.IGNORECASE)
+        # =====================================================================
+
         if not _is_anchor_only_paragraph_body(body):
-            return m.group(0)
+            # 注意：这里改为了直接返回带修改后 attrs 的段落
+            return f'<p{attrs}>{body}</p>'
+
         return f'<p{attrs}>{body}<br></p>'
 
     return _NOWRAP_PARA_RE.sub(_para, html_content)
