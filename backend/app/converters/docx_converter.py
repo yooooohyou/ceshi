@@ -10,7 +10,6 @@ from app.utils.file_utils import generate_unique_filename
 from app.utils.html_utils import (
     add_nowrap_to_signature_paragraphs,
     fix_spire_anchor_image_roundtrip,
-    fix_spire_docx_anchor_dist,
     hide_mce_anchor_tags,
     html_base64_images_to_urls,
 )
