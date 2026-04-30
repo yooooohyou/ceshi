@@ -334,6 +334,98 @@ def add_nowrap_to_signature_paragraphs(html_content: str) -> str:
     return _NOWRAP_PARA_RE.sub(_replace, html_content)
 
 
+# ---------------------------------------------------------------------------
+# Spire docx<->html 圆环锚点修复
+# ---------------------------------------------------------------------------
+# 现象：原 docx 里独立的"空白段+浮动签字图"（<w:p> 仅含 <w:drawing wp:anchor>）
+# 经 Spire docx→html 输出为：
+#   <p style="text-indent: 94.5pt; ...">
+#     <span style="...position: absolute; ...">
+#       <img style="margin-left: 60pt; -spr-left-pos: 154.5pt; ..."> ...
+#     </span>
+#   </p>
+# 反向 Spire html→docx 时丢两个东西：
+#   ① <img margin-left> = (绝对偏移 - 父段 text-indent)，反向只读 margin-left
+#      不加回 text-indent → anchor 横向偏移系统性少 ~text-indent；
+#   ② "anchor-only 空白段"会被合并到下一段，使 paragraph-relative 的 posV
+#      参照漂到下一段（即视觉上签字图盖到下一行文字上）。
+# 修法：
+#   ① 把 <img margin-left/top> 改写为 -spr-left-pos / -spr-top-pos 那个绝对值，
+#      让 Spire 反向读出来直接是 column-relative 的真实偏移；
+#   ② 在 anchor-only 段尾追加 <br>，让 Spire 反向时把该段保留为独立段，
+#      anchor 仍归属该段，posV 参照不漂。
+_SPR_LEFT_POS_RE = re.compile(r'-spr-left-pos\s*:\s*(-?\d+(?:\.\d+)?)\s*pt', re.IGNORECASE)
+_SPR_TOP_POS_RE  = re.compile(r'-spr-top-pos\s*:\s*(-?\d+(?:\.\d+)?)\s*pt', re.IGNORECASE)
+_MARGIN_LEFT_RE  = re.compile(r'(margin-left\s*:\s*)(-?\d+(?:\.\d+)?)\s*pt', re.IGNORECASE)
+_MARGIN_TOP_RE   = re.compile(r'(margin-top\s*:\s*)(-?\d+(?:\.\d+)?)\s*pt', re.IGNORECASE)
+_IMG_TAG_RE      = re.compile(r'<img\b([^>]*)/?>', re.IGNORECASE)
+_ABS_POS_SPAN_RE = re.compile(r'<span\b[^>]*position\s*:\s*absolute', re.IGNORECASE)
+_ANY_TAG_RE      = re.compile(r'<[^>]+>')
+_SPACE_LIKE_RE   = re.compile(r'&nbsp;|&#160;|&#xa0;|&#xA0;|\xa0|\s+', re.IGNORECASE)
+
+
+def _rewrite_image_margin_to_abs(style: str) -> str:
+    """把 margin-left / margin-top 的相对值改写为 -spr-*-pos 上保存的绝对值。"""
+    if not style:
+        return style
+    new = style
+    sl = _SPR_LEFT_POS_RE.search(style)
+    st = _SPR_TOP_POS_RE.search(style)
+    if sl:
+        v = sl.group(1)
+        if _MARGIN_LEFT_RE.search(new):
+            new = _MARGIN_LEFT_RE.sub(lambda m: f'{m.group(1)}{v}pt', new, count=1)
+        else:
+            new = (new.rstrip().rstrip(';') + f'; margin-left: {v}pt;').lstrip('; ').strip()
+    if st:
+        v = st.group(1)
+        if _MARGIN_TOP_RE.search(new):
+            new = _MARGIN_TOP_RE.sub(lambda m: f'{m.group(1)}{v}pt', new, count=1)
+        else:
+            new = (new.rstrip().rstrip(';') + f'; margin-top: {v}pt;').lstrip('; ').strip()
+    return new
+
+
+def _is_anchor_only_paragraph_body(body: str) -> bool:
+    if not _ABS_POS_SPAN_RE.search(body):
+        return False
+    text = _ANY_TAG_RE.sub('', body)
+    return _SPACE_LIKE_RE.sub('', text) == ''
+
+
+def fix_spire_anchor_image_roundtrip(html_content: str) -> str:
+    """修复 Spire 的 docx→html→docx 圆环里浮动签字图位置漂移：
+    ① 把 <img> margin-left/top 替换为 -spr-*-pos 的绝对值；
+    ② 给 anchor-only 段尾追加 <br>，避免 Spire 反向时合并这种段。
+    """
+    if not html_content:
+        return html_content
+
+    def _img(m):
+        attrs = m.group(1)
+        for rx in (_STYLE_ATTR_RE, _DATA_MCE_STYLE_ATTR_RE):
+            am = rx.search(attrs)
+            if am:
+                new_css = _rewrite_image_margin_to_abs(am.group(3))
+                attrs = attrs.replace(
+                    am.group(0),
+                    f'{am.group(1)}{am.group(2)}{new_css}{am.group(2)}',
+                    1,
+                )
+        return f'<img{attrs}>'
+
+    html_content = _IMG_TAG_RE.sub(_img, html_content)
+
+    def _para(m):
+        attrs, body = m.group(1), m.group(2)
+        if not _is_anchor_only_paragraph_body(body):
+            return m.group(0)
+        return f'<p{attrs}>{body}<br></p>'
+
+    return _NOWRAP_PARA_RE.sub(_para, html_content)
+
+
+
 def get_html_heading_levels(html_content: str):
     """返回 (existing_levels, max_level)"""
     if not html_content or not isinstance(html_content, str):
