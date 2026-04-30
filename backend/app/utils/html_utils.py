@@ -241,6 +241,20 @@ _DATA_MCE_STYLE_ATTR_RE = re.compile(
 )
 _NOWRAP_DECL_RE = re.compile(r'white-space\s*:\s*nowrap', re.IGNORECASE)
 
+# 段落首行缩进阈值：仅识别 pt 单位，> 150pt 才视为可能的签字/日期段落
+_TEXT_INDENT_PT_RE = re.compile(
+    r'text-indent\s*:\s*(-?\d+(?:\.\d+)?)\s*pt',
+    re.IGNORECASE,
+)
+_TEXT_INDENT_MIN_PT = 150.0
+
+
+def _text_indent_pt(style: str) -> float:
+    if not style:
+        return 0.0
+    m = _TEXT_INDENT_PT_RE.search(style)
+    return float(m.group(1)) if m else 0.0
+
 
 def add_nowrap_to_signature_paragraphs(html_content: str) -> str:
     """
@@ -273,9 +287,15 @@ def add_nowrap_to_signature_paragraphs(html_content: str) -> str:
         if not is_signature_para:
             return m.group(0)
 
-        # 后续替换逻辑保持不变，安全追加 white-space: nowrap
+        # 4. 必要条件：text-indent > 150pt 才视为签字/日期段落，
+        #    避免把内嵌大量下划线填写位的正文段落（首行缩进 21pt 等）误判。
         style_m = _STYLE_ATTR_RE.search(attrs)
         mce_m = _DATA_MCE_STYLE_ATTR_RE.search(attrs)
+
+        indent_pt = _text_indent_pt(style_m.group(3) if style_m else '')
+        if indent_pt <= _TEXT_INDENT_MIN_PT:
+            return m.group(0)
+
 
         style_val = style_m.group(3) if style_m else ''
         mce_val = mce_m.group(3) if mce_m else ''
