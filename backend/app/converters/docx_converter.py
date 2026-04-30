@@ -10,6 +10,7 @@ from app.utils.file_utils import generate_unique_filename
 from app.utils.html_utils import (
     add_nowrap_to_signature_paragraphs,
     fix_spire_anchor_image_roundtrip,
+    fix_spire_docx_anchor_dist,
     hide_mce_anchor_tags,
     html_base64_images_to_urls,
 )
@@ -134,6 +135,8 @@ def convert_html_to_docx(html_content: str):
 
         if not os.path.exists(temp_docx_path):
             return False, f"转换失败：未生成文件 {temp_docx_path}", temp_docx_path
+
+        fix_spire_docx_anchor_dist(temp_docx_path)
 
         docx_stream = io.BytesIO()
         with open(temp_docx_path, "rb") as f:

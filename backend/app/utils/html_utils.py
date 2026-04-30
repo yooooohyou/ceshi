@@ -471,6 +471,52 @@ def _flatten_inline_block_underline_spans(html: str) -> str:
     return _INLINE_UL_SPAN_RE.sub(_rep, html)
 
 
+# Bug 4：Spire html→docx 把浮动图 (wp:anchor) 的 distT/distB/distL/distR
+# 属性丢失（不写 -> 默认 0），与 Word 原文档常用 distL=distR=114300 EMU (=9pt)
+# 不一致；图片在 Word 视觉位置因此与原 docx 偏 9pt 左右。修法：直接在
+# html→docx 输出的 docx 里给 <wp:anchor> 元素补这四个属性。
+import zipfile as _zipfile
+import shutil as _shutil
+
+_WP_ANCHOR_OPEN_RE = re.compile(r'<wp:anchor\b([^>]*)>', re.IGNORECASE)
+
+
+def fix_spire_docx_anchor_dist(docx_path: str) -> None:
+    """给 docx 中 <wp:anchor> 元素补 distT/distB/distL/distR 属性。
+    幂等：已有 distL 的 anchor 跳过。"""
+    if not docx_path or not os.path.exists(docx_path):
+        return
+    try:
+        with _zipfile.ZipFile(docx_path) as zin:
+            names = zin.namelist()
+            if 'word/document.xml' not in names:
+                return
+            contents = {n: zin.read(n) for n in names}
+        xml = contents['word/document.xml'].decode('utf-8')
+
+        def _add_dist(m):
+            anc_open = m.group(0)
+            if 'distL=' in anc_open or 'distL =' in anc_open:
+                return anc_open
+            return anc_open.replace(
+                '<wp:anchor',
+                '<wp:anchor distT="0" distB="0" distL="114300" distR="114300"',
+                1,
+            )
+
+        new_xml = _WP_ANCHOR_OPEN_RE.sub(_add_dist, xml)
+        if new_xml == xml:
+            return
+        contents['word/document.xml'] = new_xml.encode('utf-8')
+
+        tmp_path = docx_path + '.tmp_anchor_dist'
+        with _zipfile.ZipFile(tmp_path, 'w', _zipfile.ZIP_DEFLATED) as zout:
+            for n in names:
+                zout.writestr(n, contents[n])
+        _shutil.move(tmp_path, docx_path)
+    except Exception as e:
+        logger.warning(f"fix_spire_docx_anchor_dist 失败 path={docx_path} err={type(e).__name__}: {e}")
+
 
 def get_html_heading_levels(html_content: str):
     """返回 (existing_levels, max_level)"""
