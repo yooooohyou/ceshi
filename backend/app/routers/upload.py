@@ -133,7 +133,7 @@ async def _split_mode(
         file_name=original_filename,
         file_id=split_file_id,
         had_title=1,
-        rm_outline_in_doc=1,
+        rm_outline_in_doc=0,
         del_page_break=0,
     )
     logger.info("打印拆分接口返回数据库")
@@ -331,7 +331,7 @@ async def route_docx2html_marge(
             file_name=original_filename,
             file_id=split_file_id,
             had_title=1,
-            rm_outline_in_doc=1,
+            rm_outline_in_doc=0,
             del_page_break=0,
         )
 

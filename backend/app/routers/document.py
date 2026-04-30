@@ -377,7 +377,7 @@ async def update_html_by_node_new(
             file_name=original_filename,
             file_id=str(node_id),
             had_title=1,
-            rm_outline_in_doc=1,
+            rm_outline_in_doc=0,
             del_page_break=0,
         )
         if split_result.status == 1:
