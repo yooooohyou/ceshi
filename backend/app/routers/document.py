@@ -438,7 +438,11 @@ async def update_html_by_node_new(
         node_ids = query_and_build_tree(record_id, current_time)
 
         if node_ids and (node_ids[0].get("name") or "").strip() == "默认章节":
+            logger.info("11111111111111111111111111111111111111")
+            logger.info(html_content)
             leading = get_leading_heading_text(html_content)
+            logger.info("是否替换默认章节")
+            logger.info(leading)
             if leading:
                 first_db_id = node_ids[0].get("node_id")
                 with get_db_connection() as conn:
