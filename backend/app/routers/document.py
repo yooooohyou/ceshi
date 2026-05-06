@@ -392,6 +392,16 @@ async def update_html_by_node_new(
         if not tree_nodes:
             return unified_response(500, "拆分结果为空")
 
+        # 剥掉拆分服务给整篇 HTML 加的虚拟外层根：当 HTML 实际最小标题级 > 拆分根 level 时，
+        # 拆分根并非真实标题（拆分服务在 had_title=1 时会把整篇文档包一层 level=1 的容器）。
+        min_real_level = min(existing_levels) if existing_levels else 1
+        while tree_nodes and tree_nodes[0].level < min_real_level:
+            virtual_root = tree_nodes.pop(0)
+            tree_nodes = (virtual_root.children or []) + tree_nodes
+
+        if not tree_nodes:
+            return unified_response(500, "拆分结果为空")
+
         batch_count = get_next_batch_count(record_id)
         first_node = tree_nodes.pop(0)
 
