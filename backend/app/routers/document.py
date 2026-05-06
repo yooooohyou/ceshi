@@ -305,7 +305,7 @@ async def update_html_by_node_new(
         logger.info("判断当前html层级")
         logger.info(max_level)
         # ── 无标题：直接更新当前节点 ────────────────────────────────────────
-        if max_level == 0 and len_existing_levels == 1:
+        if max_level == 0 or len_existing_levels == 1:
             success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
             eid = os.path.splitext(os.path.basename(temp_docx_path_1))[0]
 
@@ -400,6 +400,19 @@ async def update_html_by_node_new(
             virtual_root = tree_nodes.pop(0)
             tree_nodes = (virtual_root.children or []) + tree_nodes
 
+        # 拆分服务有时会保留 level 与真实最小标题级一致的"默认章节"壳，
+        # 当 HTML 有真实首标题时把它整层剥掉，避免 DB 中出现多余的包装层 + 同名子节点。
+        leading = get_leading_heading_text(html_content)
+        stripped_default = False
+        while (
+            tree_nodes
+            and leading is not None
+            and (tree_nodes[0].text or "").strip() == "默认章节"
+        ):
+            virtual_root = tree_nodes.pop(0)
+            tree_nodes = (virtual_root.children or []) + tree_nodes
+            stripped_default = True
+
         if not tree_nodes:
             return unified_response(500, "拆分结果为空")
 
@@ -409,20 +422,36 @@ async def update_html_by_node_new(
         # 层级重基：拆分服务返回的 level 是 HTML 中绝对 h-tag 编号（通常根=1），
         # 与被更新节点在数据库里的 level 无关。把整棵子树平移 (now_level - first_node.level)，
         # 使得 first_node 落到原节点位置，后代按相对深度递增，并 cap 在 MAX_LEVEL_NODE。
-        delta = now_level - first_node.level
+        if stripped_default:
+            # 剥过"默认章节"壳：first_node 就是 HTML 真实首标题，直接保留 HTML 真实级别，
+            # 不向 now_level 平移，确保父子关系/level 一次到位。
+            pass
+        else:
+            delta = now_level - first_node.level
 
-        def _rebase_levels(ns, d):
-            for n in ns:
-                n.level = max(1, min(MAX_LEVEL_NODE, n.level + d))
-                if n.children:
-                    _rebase_levels(n.children, d)
+            def _rebase_levels(ns, d):
+                for n in ns:
+                    n.level = max(1, min(MAX_LEVEL_NODE, n.level + d))
+                    if n.children:
+                        _rebase_levels(n.children, d)
 
-        first_node.level = now_level
-        if first_node.children:
-            _rebase_levels(first_node.children, delta)
-        _rebase_levels(tree_nodes, delta)
+            first_node.level = now_level
+            if first_node.children:
+                _rebase_levels(first_node.children, delta)
+            _rebase_levels(tree_nodes, delta)
 
         first_result = process_single_tree_node(first_node, record_id, node_id, current_time, convert_html=False)
+
+        # process_single_tree_node 不写 title_text 列；剥壳路径下需补写真实标题
+        if stripped_default and first_node.text:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        'UPDATE "yxdl_docx_title_trees" '
+                        'SET title_text = %s WHERE id = %s',
+                        (first_node.text.strip(), node_id),
+                    )
+                    conn.commit()
 
         remaining_nodes = (first_node.children or []) + tree_nodes
         process_split_tree_nodes(
@@ -436,27 +465,6 @@ async def update_html_by_node_new(
         )
 
         node_ids = query_and_build_tree(record_id, current_time)
-
-        if node_ids and (node_ids[0].get("name") or "").strip() == "默认章节":
-            logger.info("11111111111111111111111111111111111111")
-            logger.info(html_content)
-            leading = get_leading_heading_text(html_content)
-            logger.info("是否替换默认章节")
-            logger.info(leading)
-            if leading:
-                leading_level, leading_text = leading
-                first_db_id = node_ids[0].get("node_id")
-                with get_db_connection() as conn:
-                    with conn.cursor() as cursor:
-                        cursor.execute(
-                            'UPDATE "yxdl_docx_title_trees" '
-                            'SET title_text = %s, level = %s, update_time = %s '
-                            'WHERE id = %s',
-                            (leading_text, leading_level, current_time, first_db_id),
-                        )
-                        conn.commit()
-                node_ids[0]["name"] = leading_text
-                node_ids[0]["level"] = leading_level
 
         return unified_response(200, "更新成功", {
             "record_id": record_id,
