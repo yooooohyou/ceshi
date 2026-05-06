@@ -8,7 +8,7 @@ import time
 import uuid
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 
 logger = logging.getLogger(__name__)
 
@@ -450,6 +450,28 @@ def get_html_heading_levels(html_content: str):
     max_level = max(existing_levels) if existing_levels else 0
     len_existing_levels = len(existing_levels)
     return existing_levels, max_level, len_existing_levels
+
+
+def get_leading_heading_text(html_content: str):
+    """若 HTML body 中第一个非空顶层元素是 h1-h9，返回其文本；
+    若首元素是正文/其他非标题元素或没有内容，则返回 None。"""
+    if not html_content or not isinstance(html_content, str):
+        return None
+    soup = BeautifulSoup(html_content, "html.parser")
+    container = soup.body or soup
+    for child in container.children:
+        if isinstance(child, NavigableString):
+            if not str(child).strip():
+                continue
+            return None
+        name = (getattr(child, "name", "") or "").lower()
+        if not name:
+            continue
+        if re.match(r"^h[1-9]$", name):
+            text = child.get_text(strip=True)
+            return text or None
+        return None
+    return None
 
 
 def replace_first_heading_text(html_content: str, new_title: str) -> str:
