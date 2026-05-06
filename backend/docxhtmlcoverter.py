@@ -2331,6 +2331,7 @@ class DocxHtmlConverter:
     # 便于外部拆分服务把分节符拆到不同小 docx 后仍能恢复语义。
     _SB_NEXT_MARKER_PREFIX = '__SB_NEXT__'
     _SB_NEXT_MARKER_SUFFIX = '__/SB_NEXT__'
+    _SB_NEXT_MARKER_STYLE_ID = 'SBNextMarker'
     _SB_NEXT_MARKER_RE = re.compile(
         re.escape('__SB_NEXT__') + r'(\{.*?\})' + re.escape('__/SB_NEXT__'),
         re.DOTALL,
@@ -2376,12 +2377,70 @@ class DocxHtmlConverter:
             return {}
         return cls._read_sectPr_meta(body_sectPr)
 
+    @classmethod
+    def _ensure_sb_next_marker_style(cls, doc) -> None:
+        """
+        确保 docx 的 styles.xml 中存在自定义 paragraph style `SBNextMarker`：
+          - 大纲级别 outlineLvl=9（即 Word UI 的「正文文本」），避免被当作标题
+          - 默认 vanish（整段隐藏）
+        若已存在则直接返回；不存在则追加。
+        """
+        try:
+            styles_root = doc.styles.element
+        except Exception as e:
+            logger.warning(f"_ensure_sb_next_marker_style: 无法访问 styles 部件 err={e}")
+            return
+
+        style_qn = qn('w:style')
+        styleId_qn = qn('w:styleId')
+        for st in styles_root.findall(style_qn):
+            if st.get(styleId_qn) == cls._SB_NEXT_MARKER_STYLE_ID:
+                return
+
+        # 探测文档默认正文段落样式 styleId（用作 basedOn）
+        default_paragraph_style_id = None
+        type_qn = qn('w:type')
+        default_qn = qn('w:default')
+        for st in styles_root.findall(style_qn):
+            if st.get(type_qn) == 'paragraph' and st.get(default_qn) == '1':
+                default_paragraph_style_id = st.get(styleId_qn)
+                break
+
+        new_style = OxmlElement('w:style')
+        new_style.set(type_qn, 'paragraph')
+        new_style.set(qn('w:customStyle'), '1')
+        new_style.set(styleId_qn, cls._SB_NEXT_MARKER_STYLE_ID)
+
+        name_el = OxmlElement('w:name')
+        name_el.set(qn('w:val'), 'SB Next Marker')
+        new_style.append(name_el)
+
+        if default_paragraph_style_id:
+            based_on = OxmlElement('w:basedOn')
+            based_on.set(qn('w:val'), default_paragraph_style_id)
+            new_style.append(based_on)
+
+        new_style.append(OxmlElement('w:qFormat'))
+
+        pPr = OxmlElement('w:pPr')
+        outline_lvl = OxmlElement('w:outlineLvl')
+        outline_lvl.set(qn('w:val'), '9')  # 9 = 正文文本
+        pPr.append(outline_lvl)
+        new_style.append(pPr)
+
+        rPr = OxmlElement('w:rPr')
+        rPr.append(OxmlElement('w:vanish'))
+        new_style.append(rPr)
+
+        styles_root.append(new_style)
+
     def inject_section_next_meta_markers(self, docx_path: str) -> str:
         """
         拆分前预处理：扫描 docx 所有 pPr/sectPr 与 body sectPr，按 OOXML 规则
-        计算每个分节符的"下一节"属性（next_meta），序列化为 JSON 后写入该
-        分节符段落的一个隐藏 run（w:vanish）。返回新临时 docx 路径；调用方
-        应使用该新路径调外部拆分接口。
+        计算每个分节符的"下一节"属性（next_meta），序列化为 JSON 后写入分节符
+        段落**之前**新增的一个独立隐藏段落；该段落使用自定义样式
+        `SBNextMarker`（outlineLvl=9 + vanish），不会被当作标题。返回新临时
+        docx 路径；调用方应使用该新路径调外部拆分接口。
 
         若 docx 无任何 pPr/sectPr 分节符，原路返回。
         """
@@ -2411,6 +2470,8 @@ class DocxHtmlConverter:
 
         body_meta = self._read_body_sectPr_meta(doc)
 
+        self._ensure_sb_next_marker_style(doc)
+
         injected = 0
         for i, rec in enumerate(sb_records):
             next_meta = (
@@ -2434,22 +2495,26 @@ class DocxHtmlConverter:
                 + self._SB_NEXT_MARKER_SUFFIX
             )
 
+            # 构造独立 marker 段落：pStyle=SBNextMarker，run 仍带 vanish
+            new_p = OxmlElement('w:p')
+            new_pPr = OxmlElement('w:pPr')
+            pStyle = OxmlElement('w:pStyle')
+            pStyle.set(qn('w:val'), self._SB_NEXT_MARKER_STYLE_ID)
+            new_pPr.append(pStyle)
+            new_p.append(new_pPr)
+
             r_el = OxmlElement('w:r')
             rPr = OxmlElement('w:rPr')
-            # 将隐藏 run 的字符样式设为「正文」，避免继承所在段落（可能为标题）的样式
-            rStyle = OxmlElement('w:rStyle')
-            rStyle.set(qn('w:val'), '正文')
-            rPr.append(rStyle)
-            vanish = OxmlElement('w:vanish')
-            rPr.append(vanish)
+            rPr.append(OxmlElement('w:vanish'))
             r_el.append(rPr)
             t_el = OxmlElement('w:t')
             t_el.set(qn('xml:space'), 'preserve')
             t_el.text = marker_text
             r_el.append(t_el)
+            new_p.append(r_el)
 
-            # 插到段落 pPr 之后、原 run 之前
-            rec['pPr'].addnext(r_el)
+            # 插入到分节符段落之前，紧贴 sectPr 段
+            rec['p_elem'].addprevious(new_p)
             injected += 1
 
         if injected == 0:
@@ -2468,12 +2533,54 @@ class DocxHtmlConverter:
         return out_path
 
     @classmethod
+    def _is_sb_next_marker_paragraph(cls, p_elem) -> bool:
+        if p_elem is None or p_elem.tag != qn('w:p'):
+            return False
+        pPr = p_elem.find(qn('w:pPr'))
+        if pPr is None:
+            return False
+        pStyle = pPr.find(qn('w:pStyle'))
+        if pStyle is None:
+            return False
+        return pStyle.get(qn('w:val')) == cls._SB_NEXT_MARKER_STYLE_ID
+
+    @classmethod
     def _extract_and_strip_sb_next_marker(cls, p_elem) -> dict:
         """
-        扫描段落 run 的 w:t，寻找 __SB_NEXT__{json}__/SB_NEXT__ 隐藏标记。
-        找到则反序列化为短键 dict（如 {'orientation': 'landscape', 'page-width': '15840', ...}）
-        返回，并从段落中剥离 marker 文本/run，避免污染后续 HTML 输出。
+        提取拆分前预埋的 next_meta marker。优先策略：
+          1. 检查 `p_elem` 的**前一个兄弟段落**：若是 SBNextMarker 独立 marker
+             段落，从中解析 JSON 并将整段从树上移除；
+          2. 兼容旧版本：扫描 `p_elem` 自身 run 的 w:t 中的内联 marker，
+             解析后剥离 marker 文本/run。
+
+        返回短键 dict（如 {'orientation': 'landscape', 'page-width': '15840', ...}）；
+        未命中返回 {}。
         """
+        prev = p_elem.getprevious() if p_elem is not None else None
+        if cls._is_sb_next_marker_paragraph(prev):
+            payload = {}
+            for r in prev.findall(qn('w:r')):
+                for t in r.findall(qn('w:t')):
+                    text = t.text or ''
+                    if cls._SB_NEXT_MARKER_PREFIX not in text:
+                        continue
+                    m = cls._SB_NEXT_MARKER_RE.search(text)
+                    if not m:
+                        continue
+                    try:
+                        parsed = json.loads(m.group(1))
+                        if isinstance(parsed, dict):
+                            payload = parsed
+                    except Exception as e:
+                        logger.warning(f"_extract_and_strip_sb_next_marker: 解析 marker JSON 失败 err={e}")
+                    break
+                if payload:
+                    break
+            parent = prev.getparent()
+            if parent is not None:
+                parent.remove(prev)
+            return payload
+
         for r in list(p_elem.findall(qn('w:r'))):
             for t in list(r.findall(qn('w:t'))):
                 text = t.text or ''
@@ -2571,6 +2678,11 @@ class DocxHtmlConverter:
 
         for para in paragraphs:
             p_elem = para._p
+
+            # 自身是 SBNextMarker 独立 marker 段：跳过本轮（不移除，留给后续
+            # 分节符段落经 _extract_and_strip_sb_next_marker 消费并移除）。
+            if self._is_sb_next_marker_paragraph(p_elem):
+                continue
 
             # 先尝试抽取拆分前预埋的 next_meta marker（隐藏 run）。
             # 即便该段落 pPr/sectPr 已被外部拆分服务剥离，只要 marker 还在，
@@ -2711,6 +2823,15 @@ class DocxHtmlConverter:
                     next_key = f'data-next-{_k[5:]}'
                     # 拆分前预埋的 marker 已写入 data-next-* 时，尊重原值不覆盖。
                     breaks_map[_marker]['meta'].setdefault(next_key, _v)
+
+        # 清理：移除任何未被消费的残留 SBNextMarker 独立 marker 段，避免污染 HTML
+        for _para in list(doc.paragraphs):
+            _p_elem = _para._p
+            if self._is_sb_next_marker_paragraph(_p_elem):
+                _parent = _p_elem.getparent()
+                if _parent is not None:
+                    _parent.remove(_p_elem)
+                    modified = True
 
         temp_docx_name = f"_breaks_{uuid.uuid4().hex[:8]}.docx"
         temp_docx_path = self._normalize_path(os.path.join(work_dir, temp_docx_name))
