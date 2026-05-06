@@ -135,8 +135,6 @@ def convert_html_to_docx(html_content: str):
         if not os.path.exists(temp_docx_path):
             return False, f"转换失败：未生成文件 {temp_docx_path}", temp_docx_path
 
-        fix_spire_docx_anchor_dist(temp_docx_path)
-
         docx_stream = io.BytesIO()
         with open(temp_docx_path, "rb") as f:
             docx_stream.write(f.read())
