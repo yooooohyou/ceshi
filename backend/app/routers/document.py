@@ -287,7 +287,8 @@ async def update_html_by_node_new(
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
-                    'SELECT id, record_id, level, title_text, parent_id FROM "yxdl_docx_title_trees" WHERE id = %s',
+                    'SELECT id, record_id, level, title_text, parent_id, idx, batch_count '
+                    'FROM "yxdl_docx_title_trees" WHERE id = %s',
                     (node_id,),
                 )
                 row = cursor.fetchone()
@@ -297,6 +298,8 @@ async def update_html_by_node_new(
                 now_level = row[2]
                 now_title = row[3]
                 now_parent_id = row[4]
+                now_idx = row[5] or 0
+                now_batch_count = row[6] or 1
 
         logger.info(f"update_html_by_node_new: node_id={node_id} record_id={record_id} level={now_level}")
 
@@ -476,6 +479,11 @@ async def update_html_by_node_new(
                 batch_count=batch_count,
             )
         if sibling_nodes:
+            # 兄弟节点要跟 row 7228 同 batch（避免被 -batch_count 排序排到前面），
+            # 并把 idx 偏移到 row 7228 之后，保证 first_node 仍然在最前。
+            first_split_idx = first_node.idx or 0
+            for offset, sib in enumerate(sibling_nodes, start=1):
+                sib.idx = now_idx + (sib.idx - first_split_idx) if (sib.idx - first_split_idx) > 0 else now_idx + offset
             process_split_tree_nodes(
                 nodes=sibling_nodes,
                 record_id=record_id,
@@ -483,7 +491,7 @@ async def update_html_by_node_new(
                 file_base_path=temp_docx_path_1,
                 convert_html=False,
                 parent_id=now_parent_id,
-                batch_count=batch_count,
+                batch_count=now_batch_count,
             )
 
         node_ids = query_and_build_tree(record_id, current_time)
