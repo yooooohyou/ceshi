@@ -2436,6 +2436,10 @@ class DocxHtmlConverter:
 
             r_el = OxmlElement('w:r')
             rPr = OxmlElement('w:rPr')
+            # 将隐藏 run 的字符样式设为「正文」，避免继承所在段落（可能为标题）的样式
+            rStyle = OxmlElement('w:rStyle')
+            rStyle.set(qn('w:val'), '正文')
+            rPr.append(rStyle)
             vanish = OxmlElement('w:vanish')
             rPr.append(vanish)
             r_el.append(rPr)
