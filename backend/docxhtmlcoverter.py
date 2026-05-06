@@ -2518,6 +2518,41 @@ class DocxHtmlConverter:
             """判断是否为实质性文字（\xa0 / 普通空白 不算）"""
             return bool(t.replace('\xa0', '').strip())
 
+        def _has_renderable_content(p_elem) -> bool:
+            """段落是否含可渲染内容：任意 w:r 内含 w:drawing / w:pict 或实质文字。"""
+            for r in p_elem.findall(qn('w:r')):
+                for child in r:
+                    if child.tag in (qn('w:drawing'), qn('w:pict')):
+                        return True
+                    if child.tag == qn('w:t') and _is_real_text(child.text or ''):
+                        return True
+            return False
+
+        def _emit_section_marker(p_elem, marker: str):
+            """注入分节符占位符。
+
+            含可渲染内容（图片/文字）→ 在原段落后插入新段落作为占位符，原段落保留；
+            否则沿用旧策略：清空原段落 run 后写入占位符 run。
+            分节符 OOXML 语义为"当前段是该节最后一段"，故占位符位于原段落之后。
+            """
+            if _has_renderable_content(p_elem):
+                marker_p = OxmlElement('w:p')
+                marker_r = OxmlElement('w:r')
+                marker_t = OxmlElement('w:t')
+                marker_t.text = marker
+                marker_r.append(marker_t)
+                marker_p.append(marker_r)
+                p_elem.addnext(marker_p)
+                logger.warning(f"[分节符内容保留] addnext marker={marker}")
+            else:
+                for r in p_elem.findall(qn('w:r')):
+                    p_elem.remove(r)
+                r_el = OxmlElement('w:r')
+                t_el = OxmlElement('w:t')
+                t_el.text = marker
+                r_el.append(t_el)
+                p_elem.append(r_el)
+
         try:
             doc = PythonDocx(docx_path)
         except Exception as e:
@@ -2554,13 +2589,7 @@ class DocxHtmlConverter:
 
                     breaks_map[marker] = {'type': 'section', 'meta': meta}
 
-                    for r in p_elem.findall(qn('w:r')):
-                        p_elem.remove(r)
-                    r_el = OxmlElement('w:r')
-                    t_el = OxmlElement('w:t')
-                    t_el.text = marker
-                    r_el.append(t_el)
-                    p_elem.append(r_el)
+                    _emit_section_marker(p_elem, marker)
                     pPr.remove(sectPr)
                     modified = True
                     continue
@@ -2573,13 +2602,7 @@ class DocxHtmlConverter:
                 for k, v in sb_next_short.items():
                     meta[f'data-next-{k}'] = v
                 breaks_map[marker] = {'type': 'section', 'meta': meta}
-                for r in p_elem.findall(qn('w:r')):
-                    p_elem.remove(r)
-                r_el = OxmlElement('w:r')
-                t_el = OxmlElement('w:t')
-                t_el.text = marker
-                r_el.append(t_el)
-                p_elem.append(r_el)
+                _emit_section_marker(p_elem, marker)
                 modified = True
                 continue
 
