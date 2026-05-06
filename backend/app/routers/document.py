@@ -396,14 +396,15 @@ async def update_html_by_node_new(
         # 剥掉拆分服务给整篇 HTML 加的虚拟外层根：当 HTML 实际最小标题级 > 拆分根 level 时，
         # 拆分根并非真实标题（拆分服务在 had_title=1 时会把整篇文档包一层 level=1 的容器）。
         min_real_level = min(existing_levels) if existing_levels else 1
+        stripped_virtual = False
         while tree_nodes and tree_nodes[0].level < min_real_level:
             virtual_root = tree_nodes.pop(0)
             tree_nodes = (virtual_root.children or []) + tree_nodes
+            stripped_virtual = True
 
         # 拆分服务有时会保留 level 与真实最小标题级一致的"默认章节"壳，
         # 当 HTML 有真实首标题时把它整层剥掉，避免 DB 中出现多余的包装层 + 同名子节点。
         leading = get_leading_heading_text(html_content)
-        stripped_default = False
         while (
             tree_nodes
             and leading is not None
@@ -411,7 +412,7 @@ async def update_html_by_node_new(
         ):
             virtual_root = tree_nodes.pop(0)
             tree_nodes = (virtual_root.children or []) + tree_nodes
-            stripped_default = True
+            stripped_virtual = True
 
         if not tree_nodes:
             return unified_response(500, "拆分结果为空")
@@ -422,28 +423,25 @@ async def update_html_by_node_new(
         # 层级重基：拆分服务返回的 level 是 HTML 中绝对 h-tag 编号（通常根=1），
         # 与被更新节点在数据库里的 level 无关。把整棵子树平移 (now_level - first_node.level)，
         # 使得 first_node 落到原节点位置，后代按相对深度递增，并 cap 在 MAX_LEVEL_NODE。
-        if stripped_default:
-            # 剥过"默认章节"壳：first_node 就是 HTML 真实首标题，直接保留 HTML 真实级别，
-            # 不向 now_level 平移，确保父子关系/level 一次到位。
-            pass
-        else:
-            delta = now_level - first_node.level
+        delta = now_level - first_node.level
 
-            def _rebase_levels(ns, d):
-                for n in ns:
-                    n.level = max(1, min(MAX_LEVEL_NODE, n.level + d))
-                    if n.children:
-                        _rebase_levels(n.children, d)
+        def _rebase_levels(ns, d):
+            for n in ns:
+                n.level = max(1, min(MAX_LEVEL_NODE, n.level + d))
+                if n.children:
+                    _rebase_levels(n.children, d)
 
-            first_node.level = now_level
-            if first_node.children:
-                _rebase_levels(first_node.children, delta)
-            _rebase_levels(tree_nodes, delta)
+        first_node.level = now_level
+        if first_node.children:
+            _rebase_levels(first_node.children, delta)
+        _rebase_levels(tree_nodes, delta)
 
         first_result = process_single_tree_node(first_node, record_id, node_id, current_time, convert_html=False)
 
-        # process_single_tree_node 不写 title_text 列；剥壳路径下需补写真实标题
-        if stripped_default and first_node.text:
+        # process_single_tree_node 不写 title_text 列；剥过虚拟壳时
+        # first_node 才是真实首标题，需要把它的 title_text 同步到原 DB row，
+        # 否则原 row 仍保留之前的"默认章节"等占位名。
+        if stripped_virtual and first_node.text:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
