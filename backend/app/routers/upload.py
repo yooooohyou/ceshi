@@ -115,6 +115,7 @@ async def _split_mode(
 
     # 调用表格宽度适配接口
     new_file_path = call_set_table_width(abs_file_path)
+    # new_file_path = abs_file_path
     logger.info(abs_file_path)
     logger.info(new_file_path)
     logger.info("打印真实路径")
