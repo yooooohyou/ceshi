@@ -2423,9 +2423,9 @@ class DocxHtmlConverter:
         new_style.append(OxmlElement('w:qFormat'))
 
         pPr = OxmlElement('w:pPr')
-        outline_lvl = OxmlElement('w:outlineLvl')
-        outline_lvl.set(qn('w:val'), '9')  # 9 = 正文文本
-        pPr.append(outline_lvl)
+        # outline_lvl = OxmlElement('w:outlineLvl')
+        # outline_lvl.set(qn('w:val'), '9')  # 9 = 正文文本
+        # pPr.append(outline_lvl)
         new_style.append(pPr)
 
         rPr = OxmlElement('w:rPr')
