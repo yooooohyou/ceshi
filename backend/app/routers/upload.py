@@ -114,7 +114,12 @@ async def _split_mode(
             conn.commit()
 
     # 调用表格宽度适配接口
-    new_file_path = call_set_table_width(abs_file_path)
+    try:
+        new_file_path = call_set_table_width(abs_file_path)
+    except Exception as _e:
+        new_file_path = abs_file_path
+        logger.info("表格宽度适配接口失败")
+        logger.info(_e)
     # new_file_path = abs_file_path
     logger.info(abs_file_path)
     logger.info(new_file_path)
