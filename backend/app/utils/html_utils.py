@@ -453,24 +453,41 @@ def get_html_heading_levels(html_content: str):
 
 
 def get_leading_heading_text(html_content: str):
-    """若 HTML body 中第一个非空顶层元素是 h1-h9，返回其文本；
-    若首元素是正文/其他非标题元素或没有内容，则返回 None。"""
+    """若 HTML body 中首个有意义的内容是 h1-h9 标题，返回其文本；
+    若首个内容是正文段落等非标题元素或没有内容，返回 None。
+    会穿透 div/section/article 等纯容器寻找首个内容。"""
     if not html_content or not isinstance(html_content, str):
         return None
     soup = BeautifulSoup(html_content, "html.parser")
     container = soup.body or soup
-    for child in container.children:
-        if isinstance(child, NavigableString):
-            if not str(child).strip():
+
+    heading_re = re.compile(r"^h[1-9]$", re.IGNORECASE)
+    container_tags = {"div", "section", "article", "main", "header",
+                      "footer", "aside", "body"}
+
+    def walk(node):
+        for child in node.children:
+            if isinstance(child, NavigableString):
+                if str(child).strip():
+                    return ("text", None)
                 continue
-            return None
-        name = (getattr(child, "name", "") or "").lower()
-        if not name:
-            continue
-        if re.match(r"^h[1-9]$", name):
-            text = child.get_text(strip=True)
-            return text or None
+            name = (getattr(child, "name", "") or "").lower()
+            if not name:
+                continue
+            if heading_re.match(name):
+                text = child.get_text(strip=True)
+                return ("heading", text or None)
+            if name in container_tags:
+                result = walk(child)
+                if result is not None:
+                    return result
+                continue
+            return ("text", None)
         return None
+
+    result = walk(container)
+    if result and result[0] == "heading":
+        return result[1]
     return None
 
 
