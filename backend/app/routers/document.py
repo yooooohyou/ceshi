@@ -26,6 +26,7 @@ from app.models.schemas import unified_response, UpdateTreeStructureRequest, Tre
 from app.utils.file_utils import generate_unique_file_id
 from app.utils.html_utils import (
     get_html_heading_levels,
+    get_leading_heading_text,
     html_base64_images_to_urls,
     html_img_url_to_base64,
     replace_first_heading_text,
@@ -435,6 +436,21 @@ async def update_html_by_node_new(
         )
 
         node_ids = query_and_build_tree(record_id, current_time)
+
+        if node_ids and (node_ids[0].get("name") or "").strip() == "默认章节":
+            leading = get_leading_heading_text(html_content)
+            if leading:
+                first_db_id = node_ids[0].get("node_id")
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            'UPDATE "yxdl_docx_title_trees" '
+                            'SET title_text = %s, update_time = %s WHERE id = %s',
+                            (leading, current_time, first_db_id),
+                        )
+                        conn.commit()
+                node_ids[0]["name"] = leading
+
         return unified_response(200, "更新成功", {
             "record_id": record_id,
             "node_ids": node_ids,
