@@ -395,6 +395,20 @@ async def update_html_by_node_new(
         batch_count = get_next_batch_count(record_id)
         first_node = tree_nodes.pop(0)
 
+        # 拆分服务返回的第一个节点是"默认章节"虚拟根（had_title=1 时给整篇 HTML 包的 level=1 容器）。
+        # 保留它作为被更新节点的容器，但把其首个真实标题子节点的文本/eid/file_path 提到 first_node 上，
+        # 并消除该重复子节点，让其孙节点直接成为 first_node 的子节点；同步把 title_text 刷成新标题。
+        new_title_text: Optional[str] = None
+        if first_node.children:
+            real_first = first_node.children[0]
+            if real_first.text and real_first.text.strip():
+                new_title_text = real_first.text.strip()
+                first_node.text = new_title_text
+                first_node.eid = real_first.eid or first_node.eid
+                first_node.file_path = real_first.file_path or first_node.file_path
+                first_node.title_font_dict = real_first.title_font_dict or first_node.title_font_dict
+                first_node.children = (real_first.children or []) + first_node.children[1:]
+
         # 层级重基：拆分服务返回的 level 是 HTML 中绝对 h-tag 编号（通常根=1），
         # 与被更新节点在数据库里的 level 无关。把整棵子树平移 (now_level - first_node.level)，
         # 使得 first_node 落到原节点位置，后代按相对深度递增，并 cap 在 MAX_LEVEL_NODE。
@@ -412,6 +426,16 @@ async def update_html_by_node_new(
         _rebase_levels(tree_nodes, delta)
 
         first_result = process_single_tree_node(first_node, record_id, node_id, current_time, convert_html=False)
+
+        # process_single_tree_node 不更新 title_text，这里同步刷新被更新节点的标题文本。
+        if new_title_text:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        'UPDATE "yxdl_docx_title_trees" SET title_text = %s, update_time = %s WHERE id = %s',
+                        (new_title_text, current_time, node_id),
+                    )
+                    conn.commit()
 
         remaining_nodes = (first_node.children or []) + tree_nodes
         process_split_tree_nodes(
