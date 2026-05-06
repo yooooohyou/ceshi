@@ -287,7 +287,7 @@ async def update_html_by_node_new(
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
-                    'SELECT id, record_id, level FROM "yxdl_docx_title_trees" WHERE id = %s',
+                    'SELECT id, record_id, level, title_text, parent_id FROM "yxdl_docx_title_trees" WHERE id = %s',
                     (node_id,),
                 )
                 row = cursor.fetchone()
@@ -295,6 +295,8 @@ async def update_html_by_node_new(
                     return unified_response(404, f"未找到ID为{node_id}的标题树节点")
                 record_id = row[1]
                 now_level = row[2]
+                now_title = row[3]
+                now_parent_id = row[4]
 
         logger.info(f"update_html_by_node_new: node_id={node_id} record_id={record_id} level={now_level}")
 
@@ -441,29 +443,51 @@ async def update_html_by_node_new(
 
         first_result = process_single_tree_node(first_node, record_id, node_id, current_time, convert_html=False)
 
-        # process_single_tree_node 不写 title_text 列；剥过虚拟壳时
-        # first_node 才是真实首标题，需要把它的 title_text 同步到原 DB row，
-        # 否则原 row 仍保留之前的"默认章节"等占位名。
-        if stripped_virtual and first_node.text:
-            with get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute(
-                        'UPDATE "yxdl_docx_title_trees" '
-                        'SET title_text = %s WHERE id = %s',
-                        (first_node.text.strip(), node_id),
-                    )
-                    conn.commit()
-
-        remaining_nodes = (first_node.children or []) + tree_nodes
-        process_split_tree_nodes(
-            nodes=remaining_nodes,
-            record_id=record_id,
-            current_time=current_time,
-            file_base_path=temp_docx_path_1,
-            convert_html=False,
-            parent_id=first_result.get("node_id"),
-            batch_count=batch_count,
+        # process_single_tree_node 不写 title_text 列；
+        # 当原 DB row 的标题仍是占位"默认章节"，或本次剥过虚拟壳时，
+        # first_node 才是真正应当显示的首标题，需要把它同步回原 row。
+        need_refresh_title = (
+            (now_title or "").strip() == "默认章节" or stripped_virtual
         )
+        if need_refresh_title and first_node.text and first_node.text.strip():
+            new_title = first_node.text.strip()
+            if new_title != (now_title or "").strip():
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            'UPDATE "yxdl_docx_title_trees" '
+                            'SET title_text = %s WHERE id = %s',
+                            (new_title, node_id),
+                        )
+                        conn.commit()
+
+        # 区分子节点 vs 兄弟：拆分服务返回的同级根列表里，
+        # level > first_node.level 的是 first_node 的子节点；
+        # level <= first_node.level 的与 first_node 平级，应挂在原 row 的 parent_id 下。
+        sibling_nodes = [n for n in tree_nodes if n.level <= first_node.level]
+        nephew_nodes = [n for n in tree_nodes if n.level > first_node.level]
+        children_nodes = (first_node.children or []) + nephew_nodes
+
+        if children_nodes:
+            process_split_tree_nodes(
+                nodes=children_nodes,
+                record_id=record_id,
+                current_time=current_time,
+                file_base_path=temp_docx_path_1,
+                convert_html=False,
+                parent_id=first_result.get("node_id"),
+                batch_count=batch_count,
+            )
+        if sibling_nodes:
+            process_split_tree_nodes(
+                nodes=sibling_nodes,
+                record_id=record_id,
+                current_time=current_time,
+                file_base_path=temp_docx_path_1,
+                convert_html=False,
+                parent_id=now_parent_id,
+                batch_count=batch_count,
+            )
 
         node_ids = query_and_build_tree(record_id, current_time)
 
