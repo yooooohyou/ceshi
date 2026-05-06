@@ -287,7 +287,7 @@ async def update_html_by_node_new(
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
-                    'SELECT id, record_id, level, title_text FROM "yxdl_docx_title_trees" WHERE id = %s',
+                    'SELECT id, record_id, level, title_text, parent_id FROM "yxdl_docx_title_trees" WHERE id = %s',
                     (node_id,),
                 )
                 row = cursor.fetchone()
@@ -296,6 +296,7 @@ async def update_html_by_node_new(
                 record_id = row[1]
                 now_level = row[2]
                 now_title = row[3]
+                now_parent_id = row[4]
 
         logger.info(f"update_html_by_node_new: node_id={node_id} record_id={record_id} level={now_level}")
 
@@ -457,16 +458,33 @@ async def update_html_by_node_new(
                         )
                         conn.commit()
 
-        remaining_nodes = (first_node.children or []) + tree_nodes
-        process_split_tree_nodes(
-            nodes=remaining_nodes,
-            record_id=record_id,
-            current_time=current_time,
-            file_base_path=temp_docx_path_1,
-            convert_html=False,
-            parent_id=first_result.get("node_id"),
-            batch_count=batch_count,
-        )
+        # 区分子节点 vs 兄弟：拆分服务返回的同级根列表里，
+        # level > first_node.level 的是 first_node 的子节点；
+        # level <= first_node.level 的与 first_node 平级，应挂在原 row 的 parent_id 下。
+        sibling_nodes = [n for n in tree_nodes if n.level <= first_node.level]
+        nephew_nodes = [n for n in tree_nodes if n.level > first_node.level]
+        children_nodes = (first_node.children or []) + nephew_nodes
+
+        if children_nodes:
+            process_split_tree_nodes(
+                nodes=children_nodes,
+                record_id=record_id,
+                current_time=current_time,
+                file_base_path=temp_docx_path_1,
+                convert_html=False,
+                parent_id=first_result.get("node_id"),
+                batch_count=batch_count,
+            )
+        if sibling_nodes:
+            process_split_tree_nodes(
+                nodes=sibling_nodes,
+                record_id=record_id,
+                current_time=current_time,
+                file_base_path=temp_docx_path_1,
+                convert_html=False,
+                parent_id=now_parent_id,
+                batch_count=batch_count,
+            )
 
         node_ids = query_and_build_tree(record_id, current_time)
 
