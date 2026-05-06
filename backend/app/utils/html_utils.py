@@ -453,7 +453,7 @@ def get_html_heading_levels(html_content: str):
 
 
 def get_leading_heading_text(html_content: str):
-    """若 HTML body 中首个有意义的内容是 h1-h9 标题，返回其文本；
+    """若 HTML body 中首个有意义的内容是 h1-h9 标题，返回 (level, text) 元组；
     若首个内容是正文段落等非标题元素或没有内容，返回 None。
     会穿透 div/section/article 等纯容器寻找首个内容。"""
     if not html_content or not isinstance(html_content, str):
@@ -461,7 +461,7 @@ def get_leading_heading_text(html_content: str):
     soup = BeautifulSoup(html_content, "html.parser")
     container = soup.body or soup
 
-    heading_re = re.compile(r"^h[1-9]$", re.IGNORECASE)
+    heading_re = re.compile(r"^h([1-9])$", re.IGNORECASE)
     container_tags = {"div", "section", "article", "main", "header",
                       "footer", "aside", "body"}
 
@@ -474,9 +474,12 @@ def get_leading_heading_text(html_content: str):
             name = (getattr(child, "name", "") or "").lower()
             if not name:
                 continue
-            if heading_re.match(name):
+            m = heading_re.match(name)
+            if m:
                 text = child.get_text(strip=True)
-                return ("heading", text or None)
+                if not text:
+                    return None
+                return ("heading", (int(m.group(1)), text))
             if name in container_tags:
                 result = walk(child)
                 if result is not None:

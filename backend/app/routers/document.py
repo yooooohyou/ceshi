@@ -440,16 +440,19 @@ async def update_html_by_node_new(
         if node_ids and (node_ids[0].get("name") or "").strip() == "默认章节":
             leading = get_leading_heading_text(html_content)
             if leading:
+                leading_level, leading_text = leading
                 first_db_id = node_ids[0].get("node_id")
                 with get_db_connection() as conn:
                     with conn.cursor() as cursor:
                         cursor.execute(
                             'UPDATE "yxdl_docx_title_trees" '
-                            'SET title_text = %s, update_time = %s WHERE id = %s',
-                            (leading, current_time, first_db_id),
+                            'SET title_text = %s, level = %s, update_time = %s '
+                            'WHERE id = %s',
+                            (leading_text, leading_level, current_time, first_db_id),
                         )
                         conn.commit()
-                node_ids[0]["name"] = leading
+                node_ids[0]["name"] = leading_text
+                node_ids[0]["level"] = leading_level
 
         return unified_response(200, "更新成功", {
             "record_id": record_id,
