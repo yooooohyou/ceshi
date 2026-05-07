@@ -357,7 +357,7 @@ async def update_html_by_node_new(
                 now_batch_count = row[6] or 1
 
         logger.info(f"update_html_by_node_new: node_id={node_id} record_id={record_id} level={now_level}")
-
+        logger.info(html_content)
         html_content, _ = html_img_url_to_base64(html_content)
         html_content, _ = html_base64_images_to_urls(html_content, UPLOAD_DIR, STATIC_WEB_FRONT_PREFIX)
         existing_levels, max_level, len_existing_levels = get_html_heading_levels(html_content)
