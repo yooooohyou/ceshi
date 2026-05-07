@@ -365,7 +365,7 @@ async def update_html_by_node_new(
         logger.info("判断当前html层级")
         logger.info(max_level)
         # ── 无标题：直接更新当前节点 ────────────────────────────────────────
-        if max_level == 0 and len_existing_levels == 1:
+        if max_level == 0 or len_existing_levels == 2:
             success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
             eid = os.path.splitext(os.path.basename(temp_docx_path_1))[0]
 

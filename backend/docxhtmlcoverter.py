@@ -1198,7 +1198,6 @@ class DocxHtmlConverter:
                 )
 
             matched_b64 = None
-
             # ── 第一级：二进制精确匹配 ────────────────────────────────────
             if os.path.exists(abs_src):
                 try:
@@ -1213,7 +1212,6 @@ class DocxHtmlConverter:
                     logger.debug(f"   ⚠️ 读取 Spire 图片失败 {spire_fname}：{e}")
             # ── 第二级：文件名 stem 匹配 ──────────────────────────────────
             if matched_b64 is None:
-                spire_stem = os.path.splitext(spire_fname)[0].lower()
                 if spire_stem in orig_stem_map:
                     orig_fname  = orig_stem_map[spire_stem]
                     matched_b64 = orig_b64_map[orig_fname]
