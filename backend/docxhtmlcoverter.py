@@ -2489,6 +2489,41 @@ class DocxHtmlConverter:
             if not short:
                 continue
 
+            # 防重：若该分节符前已有 SBNextMarker 段（如 HTML→DOCX 已预埋
+            # is-user-insert），把"下一节"页面属性 setdefault 进现有 JSON，
+            # 不再重复插入新 marker 段。
+            prev = rec['p_elem'].getprevious()
+            if self._is_sb_next_marker_paragraph(prev):
+                merged = False
+                for r_old in prev.findall(qn('w:r')):
+                    if merged:
+                        break
+                    for t_old in r_old.findall(qn('w:t')):
+                        text_old = t_old.text or ''
+                        m_old = self._SB_NEXT_MARKER_RE.search(text_old)
+                        if not m_old:
+                            continue
+                        try:
+                            existing = json.loads(m_old.group(1))
+                        except Exception:
+                            existing = {}
+                        if not isinstance(existing, dict):
+                            existing = {}
+                        for k, v in short.items():
+                            existing.setdefault(k, v)
+                        new_text = (
+                            text_old[:m_old.start()]
+                            + self._SB_NEXT_MARKER_PREFIX
+                            + json.dumps(existing, ensure_ascii=True, separators=(',', ':'))
+                            + self._SB_NEXT_MARKER_SUFFIX
+                            + text_old[m_old.end():]
+                        )
+                        t_old.text = new_text
+                        merged = True
+                        break
+                injected += 1
+                continue
+
             marker_text = (
                 self._SB_NEXT_MARKER_PREFIX
                 + json.dumps(short, ensure_ascii=True, separators=(',', ':'))
@@ -2962,6 +2997,10 @@ class DocxHtmlConverter:
                 for data_m in re.finditer(r'\b(data-[\w-]+)="([^"]*)"', attrs_str):
                     meta[data_m.group(1)] = data_m.group(2)
 
+                iui_m = re.search(r'\bis_user_insert="(true|false)"', attrs_str, re.IGNORECASE)
+                if iui_m:
+                    meta['is-user-insert'] = iui_m.group(1).lower()
+
                 # 兜底：前端未传 data-next-* 时，从分节符 span 文本（"…横版"/"…竖版"）
                 # 推断"以下那节"的方向，并据当前节 page-width/height 交换出下一节尺寸。
                 # OOXML 规则：pPr/sectPr 描述当前（结束于此）节，下一节属性来自 body sectPr，
@@ -3087,6 +3126,40 @@ class DocxHtmlConverter:
                     sectPr.append(pgMar)
 
                 pPr.append(sectPr)
+
+                if 'is-user-insert' in meta:
+                    self._ensure_sb_next_marker_style(doc)
+
+                    payload = {'is-user-insert': meta['is-user-insert'] == 'true'}
+                    for k, v in meta.items():
+                        if k.startswith('data-next-'):
+                            payload[k[len('data-next-'):]] = v
+
+                    marker_text = (
+                        self._SB_NEXT_MARKER_PREFIX
+                        + json.dumps(payload, ensure_ascii=True, separators=(',', ':'))
+                        + self._SB_NEXT_MARKER_SUFFIX
+                    )
+
+                    new_p = OxmlElement('w:p')
+                    new_pPr = OxmlElement('w:pPr')
+                    pStyle = OxmlElement('w:pStyle')
+                    pStyle.set(qn('w:val'), self._SB_NEXT_MARKER_STYLE_ID)
+                    new_pPr.append(pStyle)
+                    new_p.append(new_pPr)
+
+                    r_el = OxmlElement('w:r')
+                    rPr = OxmlElement('w:rPr')
+                    rPr.append(OxmlElement('w:vanish'))
+                    r_el.append(rPr)
+                    t_el = OxmlElement('w:t')
+                    t_el.set(qn('xml:space'), 'preserve')
+                    t_el.text = marker_text
+                    r_el.append(t_el)
+                    new_p.append(r_el)
+
+                    p_elem.addprevious(new_p)
+
                 logger.debug(f"✅ 写入分节符：{text}，类型={section_type}")
 
             modified = True
