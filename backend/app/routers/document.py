@@ -428,7 +428,7 @@ async def update_html_by_node_new(
         with open(new_file_path, "rb") as _f:
             file_bytes = _f.read()
         logger.info("要拆分的文件路径")
-        logger.info("new_file_path")
+        logger.info(new_file_path)
         split_result = call_docx_split(
             file_stream=file_bytes,
             file_name=original_filename,
