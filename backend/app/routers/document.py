@@ -412,6 +412,7 @@ async def update_html_by_node_new(
         logger.info(html_content)
         logger.info(11111111111111111111111111111111111)
         leading = get_leading_heading_text(html_content)
+
         logger.info(leading)
         while (
             tree_nodes
