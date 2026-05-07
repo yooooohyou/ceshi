@@ -192,6 +192,7 @@ async def update_html_by_node(
 @router.post("/del_html_node", summary="软删除树节点（级联子孙）")
 async def del_html_node(
         node_ids: List[int] = Body(..., description="要软删除的节点ID列表，会级联删除全部子孙节点"),
+        html_content: str = Body(default="", description="站位")
 ):
     """对 /doc_editor/route_generate_tree 生成的树节点执行软删除（is_deleted=1），
     级联删除所有子孙节点。返回结构与 /doc_editor/route_generate_tree（split 分支）一致：
