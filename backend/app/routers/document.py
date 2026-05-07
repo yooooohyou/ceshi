@@ -21,6 +21,7 @@ from app.db.database import (
     process_split_tree_nodes,
     process_split_tree_nodes_with_select,
     query_and_build_tree,
+    soft_delete_tree_nodes,
 )
 from app.models.schemas import unified_response, UpdateTreeStructureRequest, TreeNodeUpdate
 from app.utils.file_utils import generate_unique_file_id
@@ -85,7 +86,7 @@ async def get_html_by_node(request: Request, node_id: int):
            r.split_file_id, r.process_mode
     FROM "yxdl_docx_title_trees" t
     LEFT JOIN "yxdl_docx_upload_records" r ON t.record_id = r.id
-    WHERE t.id = %s
+    WHERE t.id = %s AND t.is_deleted = 0
     """
     try:
         with get_db_connection() as conn:
@@ -104,7 +105,7 @@ async def get_html_by_node(request: Request, node_id: int):
                         """UPDATE "yxdl_docx_title_trees"
                            SET html_content = %s, update_time = NOW(),
                                is_conversion_completion = 1, update_file_path = %s, eid = %s
-                           WHERE id = %s""",
+                           WHERE id = %s AND is_deleted = 0""",
                         (html_content, temp_file_docx_, eid, node_id),
                     )
                     conn.commit()
@@ -145,7 +146,10 @@ async def update_html_by_node(
 
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute('SELECT id FROM "yxdl_docx_title_trees" WHERE id = %s', (node_id,))
+                cursor.execute(
+                    'SELECT id FROM "yxdl_docx_title_trees" WHERE id = %s AND is_deleted = 0',
+                    (node_id,),
+                )
                 if not cursor.fetchone():
                     return unified_response(404, f"未找到ID为{node_id}的标题树节点")
 
@@ -166,7 +170,7 @@ async def update_html_by_node(
         update_sql = f"""
         UPDATE "yxdl_docx_title_trees"
         SET {", ".join(update_fields)}
-        WHERE id = %s
+        WHERE id = %s AND is_deleted = 0
         """
         update_values.append(node_id)
 
@@ -183,6 +187,51 @@ async def update_html_by_node(
 
     except Exception as e:
         return unified_response(500, f"更新节点HTML失败：{str(e)}")
+
+
+@router.post("/del_html_node", summary="软删除树节点（级联子孙）")
+async def del_html_node(
+        node_ids: List[int] = Body(..., description="要软删除的节点ID列表，会级联删除全部子孙节点"),
+):
+    """对 /doc_editor/route_generate_tree 生成的树节点执行软删除（is_deleted=1），
+    级联删除所有子孙节点。返回结构与 /doc_editor/route_generate_tree（split 分支）一致：
+    data 中携带 record_id、node_ids（剩余的嵌套树）、node_type、split_file_id。"""
+    try:
+        if not node_ids:
+            return unified_response(400, "node_ids 不能为空")
+        if any((not isinstance(x, int)) or x <= 0 for x in node_ids):
+            return unified_response(400, "node_ids 元素必须为正整数")
+
+        unique_ids = list(set(node_ids))
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    'SELECT record_id FROM "yxdl_docx_title_trees" '
+                    'WHERE id = ANY(%s) AND is_deleted = 0 LIMIT 1',
+                    (unique_ids,),
+                )
+                row = cursor.fetchone()
+        if not row:
+            return unified_response(404, "未找到任何待删除节点（可能已删除或ID不存在）")
+        record_id = row[0]
+
+        result = soft_delete_tree_nodes(unique_ids)
+
+        current_time = datetime.datetime.now()
+        remaining_tree = query_and_build_tree(record_id, current_time)
+
+        return unified_response(200, f"已软删除 {result['affected_count']} 个节点", {
+            "record_id": record_id,
+            "node_ids": remaining_tree,
+            "node_type": "branch",
+            "split_file_id": "",
+            "deleted_node_ids": result["affected_ids"],
+            "deleted_count": result["affected_count"],
+        })
+
+    except Exception as e:
+        return unified_response(500, f"软删除节点失败：{str(e)}")
 
 
 @router.post("/modify_title_and_inner_cylinder_title_by_node", summary="修改节点标题及HTML内标题")
@@ -205,7 +254,7 @@ async def modify_title_and_inner_cylinder_title_by_node(
                 cursor.execute(
                     """SELECT id, html_content, title_text,
                               is_conversion_completion, origin_file_path
-                       FROM "yxdl_docx_title_trees" WHERE id = %s""",
+                       FROM "yxdl_docx_title_trees" WHERE id = %s AND is_deleted = 0""",
                     (node_id,),
                 )
                 row = cursor.fetchone()
@@ -227,7 +276,7 @@ async def modify_title_and_inner_cylinder_title_by_node(
                         cursor.execute(
                             """UPDATE "yxdl_docx_title_trees"
                                SET title_text = %s, update_time = %s
-                               WHERE id = %s""",
+                               WHERE id = %s AND is_deleted = 0""",
                             (new_title, current_time, node_id),
                         )
                         conn.commit()
@@ -251,7 +300,7 @@ async def modify_title_and_inner_cylinder_title_by_node(
                        SET title_text = %s, html_content = %s,
                            update_file_path = %s, eid = %s,
                            update_time = %s, is_conversion_completion = 1
-                       WHERE id = %s""",
+                       WHERE id = %s AND is_deleted = 0""",
                     (new_title, html_content, temp_docx_path, eid, current_time, node_id),
                 )
                 conn.commit()
@@ -288,7 +337,7 @@ async def update_html_by_node_new(
             with conn.cursor() as cursor:
                 cursor.execute(
                     'SELECT id, record_id, level, title_text, parent_id, idx, batch_count '
-                    'FROM "yxdl_docx_title_trees" WHERE id = %s',
+                    'FROM "yxdl_docx_title_trees" WHERE id = %s AND is_deleted = 0',
                     (node_id,),
                 )
                 row = cursor.fetchone()
@@ -325,7 +374,7 @@ async def update_html_by_node_new(
             update_sql = f"""
                 UPDATE "yxdl_docx_title_trees"
                 SET {", ".join(update_fields)}
-                WHERE id = %s
+                WHERE id = %s AND is_deleted = 0
             """
             update_values.append(node_id)
 
@@ -460,7 +509,7 @@ async def update_html_by_node_new(
                     with conn.cursor() as cursor:
                         cursor.execute(
                             'UPDATE "yxdl_docx_title_trees" '
-                            'SET title_text = %s WHERE id = %s',
+                            'SET title_text = %s WHERE id = %s AND is_deleted = 0',
                             (new_title, node_id),
                         )
                         conn.commit()
@@ -536,7 +585,7 @@ async def merge_docx_office_server(
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                'SELECT id, record_id FROM "yxdl_docx_title_trees" WHERE id = %s',
+                'SELECT id, record_id FROM "yxdl_docx_title_trees" WHERE id = %s AND is_deleted = 0',
                 (node_id,),
             )
             row = cursor.fetchone()
@@ -552,7 +601,7 @@ async def merge_docx_office_server(
             id, title_text, level, eid, idx, parent_id, batch_count,
             origin_file_path, update_file_path, is_conversion_completion, split_id, title_font_dict
         FROM "yxdl_docx_title_trees"
-        WHERE record_id = %s
+        WHERE record_id = %s AND is_deleted = 0
         ORDER BY level ASC, idx ASC;
     """
     try:
@@ -614,7 +663,7 @@ async def merge_docx_office_server(
                     cursor.executemany(
                         """UPDATE "yxdl_docx_title_trees"
                            SET level = %s, idx = %s, update_time = %s
-                           WHERE id = %s""",
+                           WHERE id = %s AND is_deleted = 0""",
                         [(u["level"], u["idx"], current_time, u["id"]) for u in updates],
                     )
                     conn.commit()
@@ -999,7 +1048,7 @@ async def update_tree_structure_based_on_record_id(body: UpdateTreeStructureRequ
             with conn.cursor() as cursor:
                 cursor.execute(
                     f'SELECT id FROM "yxdl_docx_title_trees" '
-                    f'WHERE record_id = %s AND id = ANY(%s)',
+                    f'WHERE record_id = %s AND id = ANY(%s) AND is_deleted = 0',
                     (record_id, node_id_list),
                 )
                 valid_ids = {row[0] for row in cursor.fetchall()}
@@ -1018,7 +1067,7 @@ async def update_tree_structure_based_on_record_id(body: UpdateTreeStructureRequ
                 cursor.executemany(
                     """UPDATE "yxdl_docx_title_trees"
                        SET level = %s, parent_id = %s, idx = %s, update_time = %s
-                       WHERE id = %s""",
+                       WHERE id = %s AND is_deleted = 0""",
                     [(level, parent_id, idx, current_time, node_id)
                      for level, parent_id, idx, node_id in updates],
                 )
