@@ -459,8 +459,7 @@ async def update_html_by_node_new(
 
         # 拆分服务有时会保留 level 与真实最小标题级一致的"默认章节"壳，
         # 当 HTML 有真实首标题时把它整层剥掉，避免 DB 中出现多余的包装层 + 同名子节点。
-        logger.info(html_content)
-        logger.info(11111111111111111111111111111111111)
+        logger.info("打印html标题层级")
         leading = get_leading_heading_text(html_content)
 
         logger.info(leading)

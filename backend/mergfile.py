@@ -118,7 +118,8 @@ def call_docx_split(file_stream: bytes, file_name: str, file_id: str, had_title:
         )
         response.raise_for_status()  # 抛出HTTP状态码异常
         result = response.json()
-        logger.debug(result)
+        logger.info("打印拆分接口返回值")
+        logger.info(result)
         return SplitResponse(**result)
     except requests.exceptions.HTTPError as e:
         raise HTTPException(
