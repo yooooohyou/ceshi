@@ -278,6 +278,97 @@ class DocxHtmlConverter:
         logger.debug(f"✅ 解析到图片显示顺序：{image_order}")
         return image_order
 
+    _REGION_BY_BASENAME = (
+        ('document.xml',  'document'),
+        ('footnotes.xml', 'footnote'),
+        ('endnotes.xml',  'endnote'),
+    )
+
+    def _classify_xml_region(self, xml_basename):
+        for name, region in self._REGION_BY_BASENAME:
+            if xml_basename == name:
+                return region
+        if xml_basename.startswith('header'):
+            return 'header'
+        if xml_basename.startswith('footer'):
+            return 'footer'
+        return 'unknown'
+
+    def _get_image_occurrence_from_docx(self, docx_path):
+        """
+        【内部方法】解析DOCX，按 OXML 真实出现顺序提取图片占位序列（不去重）。
+        每项形如 (media_filename, region)，region ∈
+        {'document','footnote','endnote','header','footer','unknown'}。
+        与 _get_image_order_from_docx 并存：那一份去重，被尺寸修正等多处依赖；
+        本份用于 _embed_images_to_html 中按"出现位置"逐个对齐 <img> 与原图，
+        以解决"一图多引"导致 cur_idx 越界、走兜底的问题。
+        """
+        occurrences = []
+        try:
+            with zipfile.ZipFile(docx_path, 'r') as zip_file:
+                all_files = zip_file.namelist()
+
+                def _xml_sort_key(f):
+                    name = os.path.basename(f)
+                    if name == 'document.xml':
+                        return (0, f)
+                    if name in ('footnotes.xml', 'endnotes.xml'):
+                        return (1, f)
+                    return (2, f)
+
+                target_xml_files = sorted(
+                    [
+                        f for f in all_files
+                        if re.match(
+                            r'word/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$', f
+                        )
+                    ],
+                    key=_xml_sort_key,
+                )
+
+                rel_pattern = re.compile(
+                    r'<Relationship\s+Id="(rId\d+)"\s+Type="[^"]*image[^"]*"\s+Target="([^"]+)"'
+                )
+                id_pattern = re.compile(r'r:(?:embed|link|id)="(rId\d+)"')
+
+                for xml_file in target_xml_files:
+                    xml_basename = os.path.basename(xml_file)
+                    rels_path = f'word/_rels/{xml_basename}.rels'
+                    if rels_path not in all_files:
+                        continue
+                    rels_content = zip_file.read(rels_path).decode('utf-8')
+                    rels_map = {
+                        m.group(1): os.path.basename(m.group(2))
+                        for m in rel_pattern.finditer(rels_content)
+                    }
+                    if not rels_map:
+                        continue
+                    xml_content = zip_file.read(xml_file).decode('utf-8')
+                    region = self._classify_xml_region(xml_basename)
+                    for m in id_pattern.finditer(xml_content):
+                        r_id = m.group(1)
+                        img_name = rels_map.get(r_id)
+                        if img_name:
+                            occurrences.append((img_name, region))
+        except Exception as e:
+            logger.warning(f"⚠️ 解析图片占位序列失败：{e}，将退化为 word/media 排序")
+            try:
+                with zipfile.ZipFile(docx_path, 'r') as zip_file:
+                    fallback = sorted(
+                        os.path.basename(f.filename)
+                        for f in zip_file.infolist()
+                        if f.filename.startswith('word/media/') and not f.is_dir()
+                    )
+                occurrences = [(n, 'unknown') for n in fallback]
+            except Exception:
+                occurrences = []
+
+        logger.debug(
+            f"✅ 解析到图片占位序列（{len(occurrences)} 项）："
+            f"{occurrences[:8]}{' …' if len(occurrences) > 8 else ''}"
+        )
+        return occurrences
+
     def _extract_original_images(self, docx_path, output_img_dir):
         """【内部方法】从DOCX中提取原始无压缩图片（强制绝对路径）"""
         output_img_dir = self._normalize_path(output_img_dir)
@@ -1157,7 +1248,8 @@ class DocxHtmlConverter:
     #  【修复核心】图片内嵌：二进制精确匹配策略                             #
     # ------------------------------------------------------------------ #
 
-    def _embed_images_to_html(self, html_path, image_display_order, original_img_dir):
+    def _embed_images_to_html(self, html_path, image_display_order, original_img_dir,
+                              image_occurrence_list=None):
         """
         对已生成的 HTML 文件做图片 base64 内嵌（in-place）。
 
@@ -1166,17 +1258,26 @@ class DocxHtmlConverter:
         在页眉、页脚、正文中生成多个 <img> 标签时，映射表只有一条记录，
         导致第二次以后的引用无法命中，最终图片内容全部错位。
 
-        新方案采用四级匹配策略，按优先级依次尝试：
+        参数：
+          image_display_order: List[str]，去重后的 media 文件名列表，
+            来自 _get_image_order_from_docx，多处复用，签名保持。
+          image_occurrence_list: Optional[List[Tuple[str, str]]]，
+            按 OXML 真实出现顺序、不去重的占位序列，每项 (media_filename, region)。
+            来自 _get_image_occurrence_from_docx。提供时优先用于"位置对齐"，
+            过滤掉 header/footer 区域（_clean_header_footer 已剥离），
+            剩下的项与 HTML 中 <img> 序列一一对应，能解决"一图多引"导致的
+            cur_idx 越界 → 走兜底问题。
+
+        匹配策略（按优先级）：
           1. 二进制精确匹配：读取 Spire 生成的图片文件内容，与 original_img_dir
              中所有原始图片做逐字节比对，命中则使用原始无压缩图片的 base64。
              此策略完全不依赖文件名或顺序，对同一张图被引用 N 次的情况也正确。
           2. 文件名 stem 匹配（去扩展名不区分大小写）：
              Spire 修改了扩展名但文件名主体未变时使用。
-          3. 显示顺序对齐：当 Spire 重新压缩或重命名导致前两级都失败时，
-             按 <img> 在 HTML 中的出现序号 i 取 image_display_order[i]，
-             映射回 word/media 中的原始无损图片。Spire 输出 <img> 顺序与
-             文档显示顺序一致，因此该回退能在保证"一图多引"行为的前提下，
-             把绝大多数原本走兜底的图片重新对齐到原始 base64。
+          3. 位置对齐（优先用 image_occurrence_list 过滤后序列；缺失时退回到
+             image_display_order）：当 Spire 重新压缩或重命名导致前两级都失败
+             时，按 <img> 在 HTML 中的出现序号 i 映射回 word/media 中的原始
+             无损图片。
           4. 兜底：直接使用 Spire 生成的图片文件做 base64（保留原有兜底行为）。
         """
         with open(html_path, 'r', encoding='utf-8') as f:
@@ -1212,10 +1313,25 @@ class DocxHtmlConverter:
         # ── 3. 逐个 <img> 标签做替换 ─────────────────────────────────────
         img_src_re = re.compile(r'<img\b[^>]*>', re.IGNORECASE | re.DOTALL)
 
-        order_list = list(image_display_order or [])
-        # img_index 记录当前处理到第几个非 data: URI 的 <img>，用于第三级
-        # "显示顺序对齐"。只有真正参与匹配的 <img> 才递增，避免被已内嵌的
-        # data: URI 标签或解析失败标签干扰序号。
+        # 优先使用按 OXML 出现顺序、不去重的 occurrence 序列做位置对齐。
+        # 过滤掉 header/footer：_clean_header_footer 会从 HTML 中剥离这两块，
+        # 它们对应的图片不会出现在最终 <img> 序列里。
+        VISIBLE_REGIONS = {'document', 'footnote', 'endnote', 'unknown'}
+        if image_occurrence_list:
+            aligned_list = [
+                (fname, region) for (fname, region) in image_occurrence_list
+                if region in VISIBLE_REGIONS
+            ]
+        else:
+            aligned_list = []
+
+        # 退化序列：旧的去重版"显示顺序"。当 occurrence 序列长度不够时（比如
+        # 解析异常或 Spire 多生成了某些图）做最后一搏，至少不比 v1 差。
+        fallback_order = list(image_display_order or [])
+
+        # img_index 记录当前处理到第几个非 data: URI 的 <img>。只有真正参与
+        # 匹配的 <img> 才递增，避免被已内嵌的 data: URI 标签或解析失败标签
+        # 干扰序号。
         img_index = [0]
 
         def _replace_img(m):
@@ -1260,13 +1376,22 @@ class DocxHtmlConverter:
                     orig_fname  = orig_stem_map[spire_stem]
                     matched_b64 = orig_b64_map[orig_fname]
                     logger.debug(f"🔄 {spire_fname} 文件名匹配 → {orig_fname}")
-            # ── 第三级：按显示顺序对齐 ────────────────────────────────────
-            if matched_b64 is None and cur_idx < len(order_list):
-                orig_fname = order_list[cur_idx]
+            # ── 第三级：按 OXML 出现位置对齐（不去重） ───────────────────
+            if matched_b64 is None and cur_idx < len(aligned_list):
+                orig_fname, region = aligned_list[cur_idx]
                 if orig_fname in orig_b64_map:
                     matched_b64 = orig_b64_map[orig_fname]
                     logger.debug(
-                        f"🔄 {spire_fname} 顺序对齐[{cur_idx}] → {orig_fname}"
+                        f"🔄 {spire_fname} 位置对齐[i={cur_idx},region={region}]"
+                        f" → {orig_fname}"
+                    )
+            # ── 第三级降级：去重版显示顺序（最后一搏） ──────────────────
+            if matched_b64 is None and cur_idx < len(fallback_order):
+                orig_fname = fallback_order[cur_idx]
+                if orig_fname in orig_b64_map:
+                    matched_b64 = orig_b64_map[orig_fname]
+                    logger.debug(
+                        f"🔄 {spire_fname} 顺序对齐[{cur_idx}] → {orig_fname}（降级）"
                     )
             # ── 第四级：兜底，直接用 Spire 生成的图片 ────────────────────
             if matched_b64 is None and os.path.exists(abs_src):
@@ -2157,6 +2282,7 @@ class DocxHtmlConverter:
         )
 
         image_display_order = self._get_image_order_from_docx(docx_path)
+        image_occurrence_list = self._get_image_occurrence_from_docx(docx_path)
         self._extract_original_images(docx_path, original_img_dir)
 
         img_size_map = self._extract_image_display_sizes(docx_path)
@@ -2184,7 +2310,10 @@ class DocxHtmlConverter:
 
             # 【修复核心】使用二进制精确匹配内嵌图片
             logger.debug("🖼️ 开始统一内嵌图片（二进制精确匹配）...")
-            self._embed_images_to_html(html_path, image_display_order, original_img_dir)
+            self._embed_images_to_html(
+                html_path, image_display_order, original_img_dir,
+                image_occurrence_list=image_occurrence_list,
+            )
 
             with open(html_path, 'r', encoding='utf-8') as f:
                 html_content = f.read()
@@ -2282,6 +2411,7 @@ class DocxHtmlConverter:
 
         # 5. 解析图片顺序 + 提取原始图片 + 提取显示尺寸
         image_display_order = self._get_image_order_from_docx(docx_path_for_spire)
+        image_occurrence_list = self._get_image_occurrence_from_docx(docx_path_for_spire)
         extracted_imgs = self._extract_original_images(docx_path_for_spire, original_img_dir)
         img_size_map   = self._extract_image_display_sizes(docx_path_for_spire)
 
@@ -2334,7 +2464,10 @@ class DocxHtmlConverter:
 
         # 10. 【修复核心】二进制精确匹配内嵌图片
         logger.debug("🖼️ 内嵌图片（二进制精确匹配）...")
-        self._embed_images_to_html(html_path, image_display_order, original_img_dir)
+        self._embed_images_to_html(
+            html_path, image_display_order, original_img_dir,
+            image_occurrence_list=image_occurrence_list,
+        )
 
         # 11. 重新读取（_embed_images_to_html 已写回文件）
         with open(html_path, 'r', encoding='utf-8') as f:
