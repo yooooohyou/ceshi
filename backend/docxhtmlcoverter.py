@@ -3639,9 +3639,14 @@ class DocxHtmlConverter:
         return chunks_html
 
     def _html_chunk_to_docx(self, html_chunk: str, output_path: str,
-                             temp_img_dir: str | None) -> bool:
+                             temp_img_dir: str | None,
+                             expected_image_bytes: list[bytes] | None = None) -> bool:
         """
         将单个 HTML chunk 转为 DOCX（通过 Spire）。
+        若提供 expected_image_bytes（按 HTML 中 <img> 出现顺序的原始字节），
+        Spire 落盘后再调用 _align_chunk_docx_image_order 把 docx 里
+        每个 <a:blip> 出现位置的 media 字节强制对齐到该序列，
+        消除 Spire 内部去重 / rId 顺序非确定性带来的"图片乱序"。
         """
         document       = None
         temp_html_path = None
@@ -3682,6 +3687,18 @@ class DocxHtmlConverter:
             document = Document()
             document.LoadFromFile(temp_html_path, FileFormat.Html, self.html_validation_type)
             document.SaveToFile(output_path, FileFormat.Docx2016)
+            document.Close()
+            del document
+            document = None
+
+            if expected_image_bytes:
+                try:
+                    self._align_chunk_docx_image_order(output_path, expected_image_bytes)
+                except Exception as _ae:
+                    logger.warning(
+                        f"⚠️ chunk 图片保序失败（{os.path.basename(output_path)}）："
+                        f"{type(_ae).__name__}: {_ae}"
+                    )
             return True
 
         except Exception as e:
@@ -3696,6 +3713,179 @@ class DocxHtmlConverter:
                     os.remove(temp_html_path)
                 except Exception:
                     pass
+
+    _IMAGE_REL_TYPE = (
+        'http://schemas.openxmlformats.org/officeDocument/2006/'
+        'relationships/image'
+    )
+    _A_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+    _R_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+
+    _MIME_TO_EXT_FOR_ALIGN = {
+        'image/png':  'png',
+        'image/jpeg': 'jpg',
+        'image/gif':  'gif',
+        'image/bmp':  'bmp',
+        'image/webp': 'webp',
+    }
+    _ALIGN_KNOWN_EXT_TYPES = {
+        'png':  'image/png',
+        'jpg':  'image/jpeg',
+        'jpeg': 'image/jpeg',
+        'gif':  'image/gif',
+        'bmp':  'image/bmp',
+        'tif':  'image/tiff',
+        'tiff': 'image/tiff',
+        'webp': 'image/webp',
+    }
+
+    def _align_chunk_docx_image_order(self, chunk_docx_path: str,
+                                      expected_image_bytes: list[bytes]) -> bool:
+        """
+        在 Spire 转出 chunk DOCX 之后调用：把 docx 内 <a:blip> 出现位置的
+        媒体字节强制对齐到 expected_image_bytes（按 HTML 中 <img> 顺序的原始
+        字节）。绕过 Spire 内部对相同字节的图片去重 / rId 顺序非确定性，
+        从根本上解决"图片偶尔乱序"。
+
+        策略：
+          - 路径 A：当 docx 内每个 <a:blip> 的 r:embed 都唯一时，直接覆盖
+            对应 word/media/<file> 的字节。
+          - 路径 B：当存在共享 rId（一个 rId 被多个 <a:blip> 复用）时，
+            为每个 blip 位置分配独立 rId + 独立 media 文件，再修改
+            document.xml 把对应位置的 r:embed 指向新 rId。
+        失败时仅 warning，不破坏文档。
+        """
+        if not expected_image_bytes:
+            return True
+
+        RELS_PATH = 'word/_rels/document.xml.rels'
+        DOC_PATH  = 'word/document.xml'
+        CT_PATH   = '[Content_Types].xml'
+
+        with zipfile.ZipFile(chunk_docx_path, 'r') as zf:
+            files = {item.filename: zf.read(item.filename) for item in zf.infolist()}
+
+        if DOC_PATH not in files or RELS_PATH not in files:
+            logger.warning(
+                f"⚠️ 保序：缺少 {DOC_PATH} 或 {RELS_PATH}，跳过"
+                f"（{os.path.basename(chunk_docx_path)}）"
+            )
+            return False
+
+        doc_tree = etree.fromstring(files[DOC_PATH])
+        nsmap = {'a': self._A_NS, 'r': self._R_NS}
+
+        blip_elems = doc_tree.findall('.//a:blip', namespaces=nsmap)
+        embed_attr = f'{{{self._R_NS}}}embed'
+        blip_rids = [el.get(embed_attr) for el in blip_elems]
+        blip_rids_filtered = [(el, rid) for el, rid in zip(blip_elems, blip_rids) if rid]
+
+        N = len(blip_rids_filtered)
+        M = len(expected_image_bytes)
+        if N != M:
+            logger.warning(
+                f"⚠️ 保序：blip 数 N={N} 与期望图片数 M={M} 不一致，跳过保序"
+                f"（{os.path.basename(chunk_docx_path)}）"
+            )
+            return False
+        if N == 0:
+            return True
+
+        rels_tree = etree.fromstring(files[RELS_PATH])
+        rel_ns = rels_tree.nsmap.get(None) or 'http://schemas.openxmlformats.org/package/2006/relationships'
+        rid_to_target = {}
+        max_rid_num = 0
+        for rel in rels_tree.findall(f'{{{rel_ns}}}Relationship'):
+            rid = rel.get('Id') or ''
+            rid_to_target[rid] = (rel.get('Type') or '', rel.get('Target') or '')
+            m = re.match(r'rId(\d+)$', rid)
+            if m:
+                max_rid_num = max(max_rid_num, int(m.group(1)))
+
+        rid_usage = {}
+        for _, rid in blip_rids_filtered:
+            rid_usage[rid] = rid_usage.get(rid, 0) + 1
+        all_unique = all(v == 1 for v in rid_usage.values())
+
+        new_media_files = {}
+        new_rels = []
+        new_ct_exts = set()
+        existing_ct_exts = set()
+        ct_xml = files.get(CT_PATH, b'').decode('utf-8') if CT_PATH in files else ''
+        for ext_m in re.finditer(r'Extension="([^"]+)"', ct_xml):
+            existing_ct_exts.add(ext_m.group(1).lower())
+
+        if all_unique:
+            mode = 'A'
+            for (_, rid), data in zip(blip_rids_filtered, expected_image_bytes):
+                target = rid_to_target.get(rid, ('', ''))[1]
+                if not target:
+                    continue
+                # rels 内 Target 通常是相对 word/ 的路径，例如 "media/image1.png"
+                zip_path = target if target.startswith('word/') else f'word/{target}'
+                files[zip_path] = data
+                ext = os.path.splitext(zip_path)[1].lstrip('.').lower()
+                if ext and ext not in existing_ct_exts:
+                    new_ct_exts.add(ext)
+        else:
+            mode = 'B'
+            for i, ((blip_el, _old_rid), data) in enumerate(
+                zip(blip_rids_filtered, expected_image_bytes)
+            ):
+                mime = self._guess_mime(data[:16])
+                ext = self._MIME_TO_EXT_FOR_ALIGN.get(mime, 'png')
+                new_rid_num = max_rid_num + 1 + i
+                new_rid = f'rId{new_rid_num}'
+                # 确保新 rId 不与现有冲突（极少发生，做防御）
+                while new_rid in rid_to_target:
+                    new_rid_num += 1
+                    new_rid = f'rId{new_rid_num}'
+                new_target = f'media/order_{i:04d}_{uuid.uuid4().hex[:6]}.{ext}'
+                new_zip_path = f'word/{new_target}'
+                files[new_zip_path] = data
+                rid_to_target[new_rid] = (self._IMAGE_REL_TYPE, new_target)
+                new_rels.append((new_rid, new_target))
+                blip_el.set(embed_attr, new_rid)
+                if ext not in existing_ct_exts:
+                    new_ct_exts.add(ext)
+
+        # 写回 document.xml（仅 mode B 修改了 DOM；mode A 不动 doc，
+        # 但统一走 tostring 也没问题）
+        files[DOC_PATH] = etree.tostring(
+            doc_tree, xml_declaration=True, encoding='UTF-8', standalone=True
+        )
+
+        if new_rels:
+            rels_xml_str = files[RELS_PATH].decode('utf-8')
+            extra = ''.join(
+                f'<Relationship Id="{rid}" Type="{self._IMAGE_REL_TYPE}" Target="{tgt}"/>'
+                for rid, tgt in new_rels
+            )
+            rels_xml_str = rels_xml_str.replace(
+                '</Relationships>', f'{extra}</Relationships>', 1
+            )
+            files[RELS_PATH] = rels_xml_str.encode('utf-8')
+
+        if new_ct_exts and ct_xml:
+            extra_ct = ''.join(
+                f'<Default Extension="{ext}" ContentType="{self._ALIGN_KNOWN_EXT_TYPES.get(ext, "application/octet-stream")}"/>'
+                for ext in sorted(new_ct_exts)
+                if ext in self._ALIGN_KNOWN_EXT_TYPES
+            )
+            if extra_ct:
+                ct_xml = ct_xml.replace('</Types>', f'{extra_ct}</Types>', 1)
+                files[CT_PATH] = ct_xml.encode('utf-8')
+
+        tmp_path = chunk_docx_path + '.alignedtmp'
+        with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for fname, data in files.items():
+                zf.writestr(fname, data)
+        os.replace(tmp_path, chunk_docx_path)
+        logger.debug(
+            f"✅ 保序完成 mode={mode} N={N} new_rels={len(new_rels)} "
+            f"({os.path.basename(chunk_docx_path)})"
+        )
+        return True
 
     def _merge_docx_chunks(self, chunk_docx_paths: list[str], output_docx_path: str) -> bool:
         """
@@ -4050,7 +4240,9 @@ class DocxHtmlConverter:
         chunk_dir     = None
 
         try:
-            html_text, temp_img_dir = self._extract_base64_images(html_text, output_dir)
+            html_text, temp_img_dir, image_bytes_in_order = self._extract_base64_images(
+                html_text, output_dir
+            )
             html_text = self._fix_centered_images_for_import(html_text)
             html_text = self._normalize_img_units_for_import(html_text)
             html_text = self._preprocess_tables_for_import(html_text)
@@ -4066,7 +4258,10 @@ class DocxHtmlConverter:
             logger.debug(f"📊 HTML 段落估算：{para_count}，阈值：{self.MAX_PARAGRAPHS}")
             if para_count <= self.MAX_PARAGRAPHS:
                 logger.debug("✅ 无需分片，直接转换")
-                ok = self._html_chunk_to_docx(html_text, output_docx_path, temp_img_dir)
+                ok = self._html_chunk_to_docx(
+                    html_text, output_docx_path, temp_img_dir,
+                    expected_image_bytes=image_bytes_in_order,
+                )
                 if ok:
                     try:
                         self._fix_heading_outline_levels_in_docx(output_docx_path)
@@ -4087,12 +4282,33 @@ class DocxHtmlConverter:
 
             html_chunks = self._split_html_to_chunks(html_text)
 
+            # 按 chunk 中 <img> 计数把"按 HTML 顺序的原图字节列表"切片，
+            # 让每个 chunk 转 docx 后立刻按位置对齐 <a:blip> 媒体字节，
+            # 防止 Spire 内部去重 / 顺序非确定性引起的图片错位。
+            _img_open_re = re.compile(r'<img\b', re.IGNORECASE)
+            chunk_bytes_offsets = []
+            _bytes_off = 0
+            total_imgs = len(image_bytes_in_order)
+            for chunk_html in html_chunks:
+                n_imgs = len(_img_open_re.findall(chunk_html))
+                end_off = min(_bytes_off + n_imgs, total_imgs)
+                chunk_bytes_offsets.append(image_bytes_in_order[_bytes_off:end_off])
+                _bytes_off = end_off
+            if _bytes_off != total_imgs:
+                logger.warning(
+                    f"⚠️ HTML 分片后 <img> 计数与提取顺序不一致："
+                    f"chunked={_bytes_off}, total={total_imgs}，保序可能不完整"
+                )
+
             chunk_docx_paths = []
             for idx, chunk_html in enumerate(html_chunks):
                 chunk_docx_path = self._normalize_path(
                     os.path.join(chunk_dir, f"chunk_{idx:04d}.docx")
                 )
-                ok = self._html_chunk_to_docx(chunk_html, chunk_docx_path, temp_img_dir)
+                ok = self._html_chunk_to_docx(
+                    chunk_html, chunk_docx_path, temp_img_dir,
+                    expected_image_bytes=chunk_bytes_offsets[idx],
+                )
                 if ok:
                     chunk_docx_paths.append(chunk_docx_path)
                     logger.debug(f"   ✅ chunk_{idx:04d} 转换完成")
@@ -4497,7 +4713,14 @@ class DocxHtmlConverter:
 
     def _extract_base64_images(self, html_text: str, base_dir: str):
         """
-        HTML→DOCX 方向的图片预处理，返回 (modified_html, temp_img_dir)。
+        HTML→DOCX 方向的图片预处理，返回
+        (modified_html, temp_img_dir, image_bytes_in_order)。
+
+        image_bytes_in_order：按 HTML 中 <img> finditer 顺序记录的"原始字节"
+        列表，长度等于 HTML 内被成功落盘的 <img> 数。供 _html_chunk_to_docx
+        调用 _align_chunk_docx_image_order 时按位置对齐 docx 内 <a:blip>
+        的 media 字节，绕过 Spire 内部对相同字节图片去重 / rId 顺序非确定性
+        导致的"图片顺序乱"。
         """
         import urllib.request
 
@@ -4523,7 +4746,7 @@ class DocxHtmlConverter:
             logger.debug("   🔧 检测到 JSON 转义引号，已还原 \\\" → \"")
         matches = list(img_tag_re.finditer(html_text))
         if not matches:
-            return html_text, None
+            return html_text, None, []
 
         temp_img_dir = self._normalize_path(
             os.path.join(base_dir, f"b64tmp_{uuid.uuid4().hex[:8]}")
@@ -4532,6 +4755,7 @@ class DocxHtmlConverter:
 
         url_cache  = {}
         patch_list = []
+        image_bytes_in_order = []
         has_any    = False
 
         for m in matches:
@@ -4683,10 +4907,11 @@ class DocxHtmlConverter:
                                + new_tag[style_m2.end():])
 
             patch_list.append((m.start(), m.end(), new_tag))
+            image_bytes_in_order.append(img_bytes)
             logger.debug(f"   📤 {fname}（{real_mime}，{w_px}×{h_px}px）")
         if not has_any:
             shutil.rmtree(temp_img_dir, ignore_errors=True)
-            return html_text, None
+            return html_text, None, []
 
         result = list(html_text)
         for start, end, new_tag in reversed(patch_list):
@@ -4694,7 +4919,7 @@ class DocxHtmlConverter:
         html_text = ''.join(result)
 
         logger.debug(f"   📦 共处理 {len(patch_list)} 张图片 → {temp_img_dir}")
-        return html_text, temp_img_dir
+        return html_text, temp_img_dir, image_bytes_in_order
 
 
 # ------------------------------ 调用示例 ------------------------------
