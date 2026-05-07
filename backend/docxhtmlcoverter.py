@@ -275,7 +275,7 @@ class DocxHtmlConverter:
                     if f.filename.startswith('word/media/') and not f.is_dir()
                 )
 
-        logger.debug(f"✅ 解析到图片显示顺序：{image_order}")
+        logger.info(f"✅ 解析到图片显示顺序：{image_order}")
         return image_order
 
     _REGION_BY_BASENAME = (
@@ -363,7 +363,7 @@ class DocxHtmlConverter:
             except Exception:
                 occurrences = []
 
-        logger.debug(
+        logger.info(
             f"✅ 解析到图片占位序列（{len(occurrences)} 项）："
             f"{occurrences[:8]}{' …' if len(occurrences) > 8 else ''}"
         )
@@ -440,12 +440,12 @@ class DocxHtmlConverter:
                 if result.returncode == 0 and os.path.exists(lo_output):
                     if lo_output != png_path:
                         os.rename(lo_output, png_path)
-                    logger.debug(f"   🔄 EMF→PNG（LibreOffice）：{os.path.basename(emf_path)}")
+                    logger.info(f"   🔄 EMF→PNG（LibreOffice）：{os.path.basename(emf_path)}")
                     return png_path
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 continue
             except Exception as e:
-                logger.debug(f"   ⚠️ LibreOffice 转换异常：{e}")
+                logger.info(f"   ⚠️ LibreOffice 转换异常：{e}")
                 continue
 
         try:
@@ -453,11 +453,11 @@ class DocxHtmlConverter:
             img = SpireImage.FromFile(emf_path)
             img.Save(png_path)
             if os.path.exists(png_path):
-                logger.debug(f"   🔄 EMF→PNG（Spire.Image）：{os.path.basename(emf_path)}")
+                logger.info(f"   🔄 EMF→PNG（Spire.Image）：{os.path.basename(emf_path)}")
                 return png_path
         except Exception as e:
-            logger.debug(f"   ⚠️ Spire.Image 转换失败：{e}")
-        logger.debug(f"   ⚠️ EMF→PNG 所有方案均失败，跳过：{os.path.basename(emf_path)}")
+            logger.info(f"   ⚠️ Spire.Image 转换失败：{e}")
+        logger.info(f"   ⚠️ EMF→PNG 所有方案均失败，跳过：{os.path.basename(emf_path)}")
         return None
 
     def _image_to_base64(self, img_path):
@@ -526,15 +526,15 @@ class DocxHtmlConverter:
                 )
                 if os.path.exists(candidate):
                     result[spire_name] = candidate
-                    logger.debug(f"   ⚠️ {spire_name} 精确匹配失败，位置索引降级 → {image_display_order[idx]}")
+                    logger.info(f"   ⚠️ {spire_name} 精确匹配失败，位置索引降级 → {image_display_order[idx]}")
                     continue
 
             fallback = self._normalize_path(os.path.join(fallback_img_dir, spire_name))
             if os.path.exists(fallback):
                 result[spire_name] = fallback
-                logger.debug(f"   ⚠️ {spire_name} 降级到 Spire 生成目录")
+                logger.info(f"   ⚠️ {spire_name} 降级到 Spire 生成目录")
             else:
-                logger.debug(f"   ⚠️ {spire_name} 找不到对应原始图片，跳过")
+                logger.info(f"   ⚠️ {spire_name} 找不到对应原始图片，跳过")
         return result
 
     # ------------------------------------------------------------------ #
@@ -648,7 +648,7 @@ class DocxHtmlConverter:
 
         except Exception as e:
             logger.warning(f"⚠️ 提取图片显示尺寸失败：{e}")
-        logger.debug(f"📐 从 DOCX 提取到 {len(size_map)} 张图片的显示尺寸")
+        logger.info(f"📐 从 DOCX 提取到 {len(size_map)} 张图片的显示尺寸")
         return size_map
 
     @staticmethod
@@ -675,7 +675,7 @@ class DocxHtmlConverter:
             left    = int(pgMar.get(f'{{{W_NS}}}left',  1800)) if pgMar is not None else 1800
             right   = int(pgMar.get(f'{{{W_NS}}}right', 1800)) if pgMar is not None else 1800
             content = (page_w - left - right) / 20.0
-            logger.debug(f"📐 页面内容宽度：{content:.1f}pt（页宽{page_w/20:.1f}pt - 左{left/20:.1f}pt - 右{right/20:.1f}pt）")
+            logger.info(f"📐 页面内容宽度：{content:.1f}pt（页宽{page_w/20:.1f}pt - 左{left/20:.1f}pt - 右{right/20:.1f}pt）")
             return max(content, 200.0)
         except Exception as e:
             logger.warning(f"⚠️ 提取页面内容宽度失败：{e}，使用默认值 {DEFAULT_PT}pt")
@@ -803,7 +803,7 @@ class DocxHtmlConverter:
                 tag = re.sub(r'(<img\b)', rf'\1 style="width:{w_px}px; height:{h_px}px"', tag)
                 tag = re.sub(r'(<img\b)(.*?)(<img\b)', r'\1\2', tag)
 
-            logger.debug(f"   📐 {src_basename} → {orig_name} 锁定尺寸 {w_px}×{h_px}px")
+            logger.info(f"   📐 {src_basename} → {orig_name} 锁定尺寸 {w_px}×{h_px}px")
             return tag
 
         return re.sub(r'<img\b[^>]*>', _replace_img_tag, html_content, flags=re.IGNORECASE)
@@ -918,7 +918,7 @@ class DocxHtmlConverter:
                 continue
 
             ratio = content_width_pt / tbl_width_pt
-            logger.debug(f"   📏 表格宽度 {tbl_width_pt:.1f}pt → {content_width_pt:.1f}pt（ratio={ratio:.4f}）")
+            logger.info(f"   📏 表格宽度 {tbl_width_pt:.1f}pt → {content_width_pt:.1f}pt（ratio={ratio:.4f}）")
             tbl_open_tag = _scale_tag_width(tbl_open_tag, ratio)
 
             def _scale_cell(cm):
@@ -1037,7 +1037,7 @@ class DocxHtmlConverter:
                     if result != (None, None):
                         break
                 except Exception as e:
-                    logger.debug(f"   ⚠️ 获取图片尺寸失败（第{attempt}次，timeout={timeout}s）{url[:60]}：{e}")
+                    logger.info(f"   ⚠️ 获取图片尺寸失败（第{attempt}次，timeout={timeout}s）{url[:60]}：{e}")
             _url_cache[url] = result
             return result
 
@@ -1114,7 +1114,7 @@ class DocxHtmlConverter:
                     w_px, h_px = round(max_w_px), round(raw_h * scale)
                 else:
                     w_px, h_px = round(raw_w), round(raw_h)
-                logger.debug(f"   📐 [A] {round(raw_w)}×{round(raw_h)}px → {w_px}×{h_px}px（上限{round(max_w_px)}）")
+                logger.info(f"   📐 [A] {round(raw_w)}×{round(raw_h)}px → {w_px}×{h_px}px（上限{round(max_w_px)}）")
                 return _apply_sizes(tag, w_px, h_px)
 
             if raw_w and raw_w > 0 and height_is_auto:
@@ -1126,7 +1126,7 @@ class DocxHtmlConverter:
                         w_px, h_px = round(max_w_px), round(computed_h * scale)
                     else:
                         w_px, h_px = round(raw_w), round(computed_h)
-                    logger.debug(f"   📐 [A½] width={round(raw_w)}px + height:auto → 物理{phys_w}×{phys_h} → {w_px}×{h_px}px")
+                    logger.info(f"   📐 [A½] width={round(raw_w)}px + height:auto → 物理{phys_w}×{phys_h} → {w_px}×{h_px}px")
                     return _apply_sizes(tag, w_px, h_px)
                 else:
                     final_w = round(min(raw_w, max_w_px))
@@ -1142,7 +1142,7 @@ class DocxHtmlConverter:
                         tag2 = tag2[:style_m2.start()] + f'style="{s}"' + tag2[style_m2.end():]
                     tag2 = re.sub(r'\s+width="[^"]*"', '', tag2, flags=re.IGNORECASE)
                     tag2 = re.sub(r'(<img\b)', rf'\1 width="{final_w}"', tag2)
-                    logger.debug(f"   ⚠️ [A½-fallback] 无法获取物理像素，width={final_w}px，height交由Spire决定")
+                    logger.info(f"   ⚠️ [A½-fallback] 无法获取物理像素，width={final_w}px，height交由Spire决定")
                     return tag2
 
             phys_w, phys_h = _get_phys_size(src, tag)
@@ -1150,11 +1150,11 @@ class DocxHtmlConverter:
             if not phys_w or not phys_h:
                 if 'max-width' in style_dict or 'max-height' in style_dict:
                     tag = _apply_sizes(tag, round(max_w_px), round(max_w_px))
-                    logger.debug(f"   ⚠️ 无法获取物理像素，回退到上下文宽度：{src[:60]}")
+                    logger.info(f"   ⚠️ 无法获取物理像素，回退到上下文宽度：{src[:60]}")
                 return tag
 
             if phys_w:
-                logger.debug(f"   📐 [B/C] 物理 {phys_w}×{phys_h}：{src[:60]}")
+                logger.info(f"   📐 [B/C] 物理 {phys_w}×{phys_h}：{src[:60]}")
             if float(phys_w) > max_w_px:
                 scale = max_w_px / phys_w
                 w_px, h_px = round(max_w_px), round(phys_h * scale)
@@ -1299,7 +1299,7 @@ class DocxHtmlConverter:
                     orig_bytes_map[fname] = data
                     orig_b64_map[fname]   = b64
             except Exception as e:
-                logger.debug(f"   ⚠️ 预加载原始图片失败 {fname}：{e}")
+                logger.info(f"   ⚠️ 预加载原始图片失败 {fname}：{e}")
         if not orig_b64_map:
             logger.warning("⚠️ 原始图片目录为空，跳过内嵌")
             return
@@ -1365,23 +1365,23 @@ class DocxHtmlConverter:
                     for orig_fname, orig_bytes in orig_bytes_map.items():
                         if spire_bytes == orig_bytes:
                             matched_b64 = orig_b64_map[orig_fname]
-                            logger.debug(f"🔄 {spire_fname} 二进制匹配 → {orig_fname}（原始无压缩）")
+                            logger.info(f"🔄 {spire_fname} 二进制匹配 → {orig_fname}（原始无压缩）")
                             break
                 except Exception as e:
-                    logger.debug(f"   ⚠️ 读取 Spire 图片失败 {spire_fname}：{e}")
+                    logger.info(f"   ⚠️ 读取 Spire 图片失败 {spire_fname}：{e}")
             # ── 第二级：文件名 stem 匹配 ──────────────────────────────────
             if matched_b64 is None:
                 spire_stem = os.path.splitext(spire_fname)[0].lower()
                 if spire_stem in orig_stem_map:
                     orig_fname  = orig_stem_map[spire_stem]
                     matched_b64 = orig_b64_map[orig_fname]
-                    logger.debug(f"🔄 {spire_fname} 文件名匹配 → {orig_fname}")
+                    logger.info(f"🔄 {spire_fname} 文件名匹配 → {orig_fname}")
             # ── 第三级：按 OXML 出现位置对齐（不去重） ───────────────────
             if matched_b64 is None and cur_idx < len(aligned_list):
                 orig_fname, region = aligned_list[cur_idx]
                 if orig_fname in orig_b64_map:
                     matched_b64 = orig_b64_map[orig_fname]
-                    logger.debug(
+                    logger.info(
                         f"🔄 {spire_fname} 位置对齐[i={cur_idx},region={region}]"
                         f" → {orig_fname}"
                     )
@@ -1390,7 +1390,7 @@ class DocxHtmlConverter:
                 orig_fname = fallback_order[cur_idx]
                 if orig_fname in orig_b64_map:
                     matched_b64 = orig_b64_map[orig_fname]
-                    logger.debug(
+                    logger.info(
                         f"🔄 {spire_fname} 顺序对齐[{cur_idx}] → {orig_fname}（降级）"
                     )
             # ── 第四级：兜底，直接用 Spire 生成的图片 ────────────────────
@@ -1402,14 +1402,14 @@ class DocxHtmlConverter:
                 new_tag = tag[:src_m.start()] + f'src="{matched_b64}"' + tag[src_m.end():]
                 return new_tag
 
-            logger.debug(f"   ⚠️ {spire_fname} 所有匹配均失败，保留原 src")
+            logger.info(f"   ⚠️ {spire_fname} 所有匹配均失败，保留原 src")
             return tag
 
         html_content = img_src_re.sub(_replace_img, html_content)
 
         with open(html_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
-        logger.debug("✅ 图片内嵌完成（二进制精确匹配）")
+        logger.info("✅ 图片内嵌完成（二进制精确匹配）")
     # ------------------------------------------------------------------ #
     #  分片工具                                                             #
     # ------------------------------------------------------------------ #
@@ -1425,10 +1425,10 @@ class DocxHtmlConverter:
             el for el in body
             if el.tag in (qn('w:p'), qn('w:tbl'))
         ]
-        logger.debug(f"[python-docx 诊断] body 顶层元素总数: {len(elements)}")
+        logger.info(f"[python-docx 诊断] body 顶层元素总数: {len(elements)}")
         para_cnt  = sum(1 for e in elements if e.tag == qn('w:p'))
         table_cnt = sum(1 for e in elements if e.tag == qn('w:tbl'))
-        logger.debug(f"[python-docx 诊断] 段落: {para_cnt}, 表格: {table_cnt}")
+        logger.info(f"[python-docx 诊断] 段落: {para_cnt}, 表格: {table_cnt}")
         return doc, elements
 
     @staticmethod
@@ -1569,7 +1569,7 @@ class DocxHtmlConverter:
 
             for rid in sorted(missing_rids):
                 if rid not in src_rels_map:
-                    logger.debug(f"   ⚠️ rId={rid} 在源文档 rels 中也找不到，跳过")
+                    logger.info(f"   ⚠️ rId={rid} 在源文档 rels 中也找不到，跳过")
                     continue
 
                 entry, zip_path = src_rels_map[rid]
@@ -1627,7 +1627,7 @@ class DocxHtmlConverter:
                 dst_zip.writestr(zip_path, file_data)
 
         os.replace(tmp_path, chunk_docx_path)
-        logger.debug(f"   💉 注入 {len(entries_to_add)} 条 rels + {len(files_to_copy)} 个资源文件")
+        logger.info(f"   💉 注入 {len(entries_to_add)} 条 rels + {len(files_to_copy)} 个资源文件")
     @staticmethod
     def _pydocx_append_element(dst_doc, el, src_doc=None):
         """将元素深拷贝追加到目标文档 body（sectPr 前）。"""
@@ -1718,7 +1718,7 @@ class DocxHtmlConverter:
         total_paras  = sum(1 for e in elements if e.tag == qn('w:p'))
         total_tables = sum(1 for e in elements if e.tag == qn('w:tbl'))
         needs = total_paras > self.MAX_PARAGRAPHS or total_tables > self.MAX_TABLES
-        logger.debug(f"📊 文档规模：{total_paras} 段落，{total_tables} 表格，{'需要' if needs else '无需'}分片")
+        logger.info(f"📊 文档规模：{total_paras} 段落，{total_tables} 表格，{'需要' if needs else '无需'}分片")
         return needs
 
     @staticmethod
@@ -1876,7 +1876,7 @@ class DocxHtmlConverter:
             obj.remove(ole_node)
 
             summary = f"（{', '.join(log_parts)}）" if log_parts else "（尺寸无变化）"
-            logger.debug(f"   ✂️ 移除 OLEObject 本体（r:id={ole_rid}）{summary}")
+            logger.info(f"   ✂️ 移除 OLEObject 本体（r:id={ole_rid}）{summary}")
         return cloned
 
     def _split_docx_to_chunks(self, docx_path, chunk_dir, image_display_order=None):
@@ -1914,7 +1914,7 @@ class DocxHtmlConverter:
             doc.save(path)
             ref_imgs = set(image_display_order) if image_display_order else None
             self._inject_resources_into_chunk(docx_path, path, ref_imgs)
-            logger.debug(f"✅ 切片 chunk_{idx:04d}：{p_cnt} 段落，{t_cnt} 表格")
+            logger.info(f"✅ 切片 chunk_{idx:04d}：{p_cnt} 段落，{t_cnt} 表格")
             return path
 
         def _flush_current_chunk():
@@ -1987,7 +1987,7 @@ class DocxHtmlConverter:
                         split_doc.save(split_path)
                         ref_imgs = set(image_display_order) if image_display_order else None
                         self._inject_resources_into_chunk(docx_path, split_path, ref_imgs)
-                        logger.debug(f"✅ 切片 chunk_{chunk_idx:04d}：（表格分片 {split_group_id}，{rows_in_chunk} 行）")
+                        logger.info(f"✅ 切片 chunk_{chunk_idx:04d}：（表格分片 {split_group_id}，{rows_in_chunk} 行）")
                         chunk_paths.append(split_path)
                         chunk_idx += 1
 
@@ -2005,7 +2005,7 @@ class DocxHtmlConverter:
         if para_count > 0 or table_count > 0:
             chunk_paths.append(_save_chunk(dst_doc, chunk_idx, para_count, table_count))
 
-        logger.debug(f"📦 共切分为 {len(chunk_paths)} 个子文档")
+        logger.info(f"📦 共切分为 {len(chunk_paths)} 个子文档")
         return chunk_paths
 
     # ------------------------------------------------------------------ #
@@ -2101,7 +2101,7 @@ class DocxHtmlConverter:
                 f.write(html_content)
             os.remove(css_file_path)
 
-        logger.debug(f"✅ chunk转换完成（图片未内嵌）：{os.path.basename(html_path)}")
+        logger.info(f"✅ chunk转换完成（图片未内嵌）：{os.path.basename(html_path)}")
         return True
 
     def _merge_html_files_to_disk(self, chunk_html_paths, output_path):
@@ -2184,7 +2184,7 @@ class DocxHtmlConverter:
 
         with open(output_path, 'w', encoding='utf-8') as out_f:
             for file_idx, chunk_path in enumerate(chunk_html_paths):
-                logger.debug(f"🔗 合并 chunk {file_idx}: {os.path.basename(chunk_path)}")
+                logger.info(f"🔗 合并 chunk {file_idx}: {os.path.basename(chunk_path)}")
                 with open(chunk_path, 'r', encoding='utf-8') as f:
                     content = f.read()
 
@@ -2199,7 +2199,7 @@ class DocxHtmlConverter:
 
                 body_m = re.search(r'<body[^>]*>(.*?)</body>', content, re.DOTALL | re.IGNORECASE)
                 if not body_m:
-                    logger.debug(f"   ⚠️ chunk {file_idx} 未找到 body，跳过")
+                    logger.info(f"   ⚠️ chunk {file_idx} 未找到 body，跳过")
                     continue
 
                 body = body_m.group(1)
@@ -2259,11 +2259,11 @@ class DocxHtmlConverter:
                         break
 
                 out_f.write('\n')
-                logger.debug(f"   ✅ chunk {file_idx} 合并完成")
+                logger.info(f"   ✅ chunk {file_idx} 合并完成")
             _flush_pending_table(out_f)
             out_f.write("</body>\n</html>\n")
 
-        logger.debug(f"✅ 流式合并完成：{output_path}")
+        logger.info(f"✅ 流式合并完成：{output_path}")
     # ------------------------------------------------------------------ #
     #  分片转换主流程                                                        #
     # ------------------------------------------------------------------ #
@@ -2305,11 +2305,11 @@ class DocxHtmlConverter:
                     chunk_html_paths.append(chunk_html_path)
                 else:
                     logger.warning(f"⚠️ chunk_{idx:04d} 转换失败，跳过")
-            logger.debug(f"📋 收集到 {len(chunk_html_paths)} 个chunk HTML文件，开始流式合并...")
+            logger.info(f"📋 收集到 {len(chunk_html_paths)} 个chunk HTML文件，开始流式合并...")
             self._merge_html_files_to_disk(chunk_html_paths, html_path)
 
             # 【修复核心】使用二进制精确匹配内嵌图片
-            logger.debug("🖼️ 开始统一内嵌图片（二进制精确匹配）...")
+            logger.info("🖼️ 开始统一内嵌图片（二进制精确匹配）...")
             self._embed_images_to_html(
                 html_path, image_display_order, original_img_dir,
                 image_occurrence_list=image_occurrence_list,
@@ -2319,14 +2319,14 @@ class DocxHtmlConverter:
                 html_content = f.read()
 
             if img_size_map:
-                logger.debug("📐 修正图片显示尺寸...")
+                logger.info("📐 修正图片显示尺寸...")
                 html_content = self._fix_html_img_sizes(
                     html_content, img_size_map,
                     image_display_order,
                     image_display_order
                 )
 
-            logger.debug("📏 将表格固定宽度改为 100% 自适应...")
+            logger.info("📏 将表格固定宽度改为 100% 自适应...")
             html_content = self._make_tables_responsive(html_content)
             html_content = self._fix_underline_span_width(html_content)
 
@@ -2336,7 +2336,7 @@ class DocxHtmlConverter:
             with open(html_path, 'w', encoding='utf-8') as f:
                 f.write(html_content)
 
-            logger.debug(f"🎉 分片转换完成：{html_path}")
+            logger.info(f"🎉 分片转换完成：{html_path}")
         except Exception as e:
             logger.error(f"❌ 分片转换异常：{e}")
             import traceback
@@ -2345,7 +2345,7 @@ class DocxHtmlConverter:
         finally:
             if os.path.exists(chunk_dir):
                 shutil.rmtree(chunk_dir, ignore_errors=True)
-                logger.debug(f"🗑️ 清理chunk目录：{chunk_dir}")
+                logger.info(f"🗑️ 清理chunk目录：{chunk_dir}")
         if os.path.exists(html_path):
             with open(html_path, 'r', encoding='utf-8') as f:
                 return f.read()
@@ -2453,9 +2453,9 @@ class DocxHtmlConverter:
                 '</head>',
                 f'<style type="text/css">\n{css_content}\n</style>\n</head>'
             )
-            logger.debug("✅ 已内嵌CSS样式")
+            logger.info("✅ 已内嵌CSS样式")
         # 8. 【修复】去除页眉页脚（非分片路径补充，与分片路径行为一致）
-        logger.debug("🧹 去除页眉页脚...")
+        logger.info("🧹 去除页眉页脚...")
         html_content = self._clean_header_footer(html_content)
 
         # 9. 将处理后的HTML写回文件，供 _embed_images_to_html 读取
@@ -2463,7 +2463,7 @@ class DocxHtmlConverter:
             f.write(html_content)
 
         # 10. 【修复核心】二进制精确匹配内嵌图片
-        logger.debug("🖼️ 内嵌图片（二进制精确匹配）...")
+        logger.info("🖼️ 内嵌图片（二进制精确匹配）...")
         self._embed_images_to_html(
             html_path, image_display_order, original_img_dir,
             image_occurrence_list=image_occurrence_list,
@@ -2475,13 +2475,13 @@ class DocxHtmlConverter:
 
         # 12. 修正图片显示尺寸（DPI 2 倍问题）
         if img_size_map:
-            logger.debug("📐 修正图片显示尺寸...")
+            logger.info("📐 修正图片显示尺寸...")
             html_content = self._fix_html_img_sizes(
                 html_content, img_size_map, image_display_order, image_display_order
             )
 
         # ====== 新增：修正表格固定宽度，使其网页自适应 ======
-        logger.debug("📏 将表格固定宽度改为 100% 自适应...")
+        logger.info("📏 将表格固定宽度改为 100% 自适应...")
         html_content = self._make_tables_responsive(html_content)
         # ====================================================
         html_content = self._fix_underline_span_width(html_content)
@@ -2509,12 +2509,12 @@ class DocxHtmlConverter:
                         shutil.rmtree(temp_path, ignore_errors=True)
                     else:
                         os.remove(temp_path)
-                    logger.debug(f"🗑️ 清理临时文件：{temp_path}")
+                    logger.info(f"🗑️ 清理临时文件：{temp_path}")
                 except Exception as e:
                     logger.warning(f"⚠️ 清理临时文件失败 {temp_path}：{e}")
-        logger.debug(f"\n🎉 DOCX转HTML完成！")
-        logger.debug(f"📄 最终文件绝对路径：{html_path}")
-        logger.debug(f"✅ 特性：图片Base64内嵌 | CSS内嵌 | 图片无压缩 | 顺序对齐 | 页眉页脚已清理")
+        logger.info(f"\n🎉 DOCX转HTML完成！")
+        logger.info(f"📄 最终文件绝对路径：{html_path}")
+        logger.info(f"✅ 特性：图片Base64内嵌 | CSS内嵌 | 图片无压缩 | 顺序对齐 | 页眉页脚已清理")
         return html_content
 
     # ------------------------------------------------------------------ #
@@ -3250,7 +3250,7 @@ class DocxHtmlConverter:
             return f'<p>{marker}</p>'
 
         processed_html = BREAK_RE.sub(replacer, html_text)
-        logger.debug(f"📄 从HTML提取分隔符：{len(breaks_info)} 个")
+        logger.info(f"📄 从HTML提取分隔符：{len(breaks_info)} 个")
         return processed_html, breaks_info
 
     def _apply_break_markers_to_docx(self, docx_path: str, breaks_info: list):
@@ -3282,7 +3282,7 @@ class DocxHtmlConverter:
                 br_el.set(qn('w:type'), 'page')
                 r_el.append(br_el)
                 p_elem.append(r_el)
-                logger.debug(f"✅ 写入分页符：{text}")
+                logger.info(f"✅ 写入分页符：{text}")
 
             elif info['type'] == 'section':
                 meta = info.get('meta', {})
@@ -3356,7 +3356,7 @@ class DocxHtmlConverter:
 
                     p_elem.addprevious(new_p)
 
-                logger.debug(f"✅ 写入分节符：{text}，类型={section_type}")
+                logger.info(f"✅ 写入分节符：{text}，类型={section_type}")
 
             modified = True
 
@@ -3397,9 +3397,9 @@ class DocxHtmlConverter:
                                 pgMar = OxmlElement('w:pgMar')
                                 body_sectPr.append(pgMar)
                             pgMar.set(qn(f'w:{_side}'), _mv)
-                    logger.debug(f"💾 body sectPr 已更新：orient={next_orient}, w={next_pw}, h={next_ph}")
+                    logger.info(f"💾 body sectPr 已更新：orient={next_orient}, w={next_pw}, h={next_ph}")
             doc.save(docx_path)
-            logger.debug(f"💾 分隔符已写入DOCX：{docx_path}")
+            logger.info(f"💾 分隔符已写入DOCX：{docx_path}")
 
     # ------------------------------------------------------------------ #
     #  HTML → DOCX 分片工具                                                #
@@ -3548,7 +3548,7 @@ class DocxHtmlConverter:
 
         _flush_chunk()
 
-        logger.debug(f"📦 HTML 切分为 {len(chunks_html)} 个 chunk（总估算段落：{self._html_count_paragraphs(body_content)}）")
+        logger.info(f"📦 HTML 切分为 {len(chunks_html)} 个 chunk（总估算段落：{self._html_count_paragraphs(body_content)}）")
         return chunks_html
 
     @staticmethod
@@ -3635,7 +3635,7 @@ class DocxHtmlConverter:
 
         _flush_table_chunk()
 
-        logger.debug(f"   📊 超大表格按行切分为 {len(chunks_html)} 个 chunk（{len(all_trs)} 行）")
+        logger.info(f"   📊 超大表格按行切分为 {len(chunks_html)} 个 chunk（{len(all_trs)} 行）")
         return chunks_html
 
     def _html_chunk_to_docx(self, html_chunk: str, output_path: str,
@@ -3685,7 +3685,7 @@ class DocxHtmlConverter:
             return True
 
         except Exception as e:
-            logger.debug(f"   ❌ chunk 转 DOCX 失败（{os.path.basename(output_path)}）：{e}")
+            logger.info(f"   ❌ chunk 转 DOCX 失败（{os.path.basename(output_path)}）：{e}")
             return False
         finally:
             if document:
@@ -3812,17 +3812,17 @@ class DocxHtmlConverter:
                 chunk_tree = etree.fromstring(chunk_doc_patched.encode('utf-8'))
                 chunk_body = chunk_tree.find(f'{{{W_NS}}}body')
                 if chunk_body is None:
-                    logger.debug(f"   ⚠️ chunk {chunk_idx} 无 body，跳过")
+                    logger.info(f"   ⚠️ chunk {chunk_idx} 无 body，跳过")
                     continue
                 for el in list(chunk_body):
                     if el.tag == sectPr_tag:
                         continue
                     base_body.append(copy.deepcopy(el))
             except Exception as e:
-                logger.debug(f"   ⚠️ chunk {chunk_idx} XML 解析失败：{e}，跳过")
+                logger.info(f"   ⚠️ chunk {chunk_idx} XML 解析失败：{e}，跳过")
                 continue
 
-            logger.debug(f"   ✅ chunk {chunk_idx} 合并完成（rId 重映射 {len(rid_remap)} 条，媒体 {len(extra_media)} 个）")
+            logger.info(f"   ✅ chunk {chunk_idx} 合并完成（rId 重映射 {len(rid_remap)} 条，媒体 {len(extra_media)} 个）")
         if base_sectPr is not None:
             base_body.append(base_sectPr)
 
@@ -3880,7 +3880,7 @@ class DocxHtmlConverter:
                 dst_zip.writestr(zip_path, data)
 
         os.replace(tmp_path, output_docx_path)
-        logger.debug(f"✅ DOCX 合并完成：{output_docx_path}")
+        logger.info(f"✅ DOCX 合并完成：{output_docx_path}")
         return True
 
     # ------------------------------------------------------------------ #
@@ -3939,7 +3939,7 @@ class DocxHtmlConverter:
         if modified_count:
             try:
                 doc.save(docx_path)
-                logger.debug(f"✅ 修复标题大纲级别：{modified_count} 处")
+                logger.info(f"✅ 修复标题大纲级别：{modified_count} 处")
             except Exception as e:
                 logger.warning(f"⚠️ 修复标题大纲级别：保存 DOCX 失败：{e}")
                 return False
@@ -4041,7 +4041,7 @@ class DocxHtmlConverter:
             return False
 
         # 在处理图片 base64 之前，先修正表格宽度和图片比例意图
-        logger.debug("🧹 正在优化 HTML 表格宽度与图片比例...")
+        logger.info("🧹 正在优化 HTML 表格宽度与图片比例...")
         # html_text = self._sanitize_html_styles_for_import(html_text)
         output_dir   = os.path.dirname(output_docx_path)
         os.makedirs(output_dir, exist_ok=True)
@@ -4063,9 +4063,9 @@ class DocxHtmlConverter:
                 logger.warning(f"⚠️ 分隔符预处理失败，跳过：{_be}")
 
             para_count = self._html_count_paragraphs(html_text)
-            logger.debug(f"📊 HTML 段落估算：{para_count}，阈值：{self.MAX_PARAGRAPHS}")
+            logger.info(f"📊 HTML 段落估算：{para_count}，阈值：{self.MAX_PARAGRAPHS}")
             if para_count <= self.MAX_PARAGRAPHS:
-                logger.debug("✅ 无需分片，直接转换")
+                logger.info("✅ 无需分片，直接转换")
                 ok = self._html_chunk_to_docx(html_text, output_docx_path, temp_img_dir)
                 if ok:
                     try:
@@ -4079,7 +4079,7 @@ class DocxHtmlConverter:
                         logger.warning(f"⚠️ 分隔符写入DOCX失败：{_be}")
                 return ok
 
-            logger.debug(f"⚡ 触发 HTML 分片转换（段落估算 {para_count} > {self.MAX_PARAGRAPHS}）")
+            logger.info(f"⚡ 触发 HTML 分片转换（段落估算 {para_count} > {self.MAX_PARAGRAPHS}）")
             chunk_dir = self._normalize_path(
                 os.path.join(output_dir, f"html2docx_{uuid.uuid4().hex[:8]}")
             )
@@ -4095,14 +4095,14 @@ class DocxHtmlConverter:
                 ok = self._html_chunk_to_docx(chunk_html, chunk_docx_path, temp_img_dir)
                 if ok:
                     chunk_docx_paths.append(chunk_docx_path)
-                    logger.debug(f"   ✅ chunk_{idx:04d} 转换完成")
+                    logger.info(f"   ✅ chunk_{idx:04d} 转换完成")
                 else:
-                    logger.debug(f"   ⚠️ chunk_{idx:04d} 转换失败，跳过")
+                    logger.info(f"   ⚠️ chunk_{idx:04d} 转换失败，跳过")
             if not chunk_docx_paths:
                 logger.error("❌ 所有 chunk 均转换失败")
                 return False
 
-            logger.debug(f"🔗 开始合并 {len(chunk_docx_paths)} 个 chunk DOCX...")
+            logger.info(f"🔗 开始合并 {len(chunk_docx_paths)} 个 chunk DOCX...")
             ok = self._merge_docx_chunks(chunk_docx_paths, output_docx_path)
             if ok:
                 try:
@@ -4126,13 +4126,13 @@ class DocxHtmlConverter:
             if temp_img_dir and os.path.exists(temp_img_dir):
                 try:
                     shutil.rmtree(temp_img_dir, ignore_errors=True)
-                    logger.debug(f"🗑️ 清理图片临时目录：{temp_img_dir}")
+                    logger.info(f"🗑️ 清理图片临时目录：{temp_img_dir}")
                 except Exception as e:
                     logger.warning(f"⚠️ 清理图片临时目录失败：{e}")
             if chunk_dir and os.path.exists(chunk_dir):
                 try:
                     shutil.rmtree(chunk_dir, ignore_errors=True)
-                    logger.debug(f"🗑️ 清理chunk目录：{chunk_dir}")
+                    logger.info(f"🗑️ 清理chunk目录：{chunk_dir}")
                 except Exception as e:
                     logger.warning(f"⚠️ 清理chunk目录失败：{e}")
     # ------------------------------------------------------------------ #
@@ -4284,7 +4284,7 @@ class DocxHtmlConverter:
             tag = m.group(0)
             if not _img_is_centered(tag):
                 return tag
-            logger.debug(f"   🖼️ 居中 img 包裹为居中段落")
+            logger.info(f"   🖼️ 居中 img 包裹为居中段落")
             return f'<p align="center" style="text-align:center;">{_remove_center_css(tag)}</p>'
 
         html_text = IMG_RE.sub(_wrap_img, html_text)
@@ -4520,7 +4520,7 @@ class DocxHtmlConverter:
 
         if '\\"' in html_text:
             html_text = html_text.replace('\\"', '"')
-            logger.debug("   🔧 检测到 JSON 转义引号，已还原 \\\" → \"")
+            logger.info("   🔧 检测到 JSON 转义引号，已还原 \\\" → \"")
         matches = list(img_tag_re.finditer(html_text))
         if not matches:
             return html_text, None
@@ -4557,10 +4557,10 @@ class DocxHtmlConverter:
                             with urllib.request.urlopen(req, timeout=timeout) as resp:
                                 img_bytes = resp.read()
                             url_cache[src] = img_bytes
-                            logger.debug(f"   🌐 下载图片（第{attempt}次）：{src[:60]}  {len(img_bytes):,}B")
+                            logger.info(f"   🌐 下载图片（第{attempt}次）：{src[:60]}  {len(img_bytes):,}B")
                             break
                         except Exception as e:
-                            logger.debug(f"   ⚠️ 下载失败（第{attempt}次，timeout={timeout}s）{src[:60]}：{e}")
+                            logger.info(f"   ⚠️ 下载失败（第{attempt}次，timeout={timeout}s）{src[:60]}：{e}")
                             if attempt == 3:
                                 url_cache[src] = None
                     if not img_bytes:
@@ -4571,7 +4571,7 @@ class DocxHtmlConverter:
                     with open(src, 'rb') as f:
                         img_bytes = f.read()
                 except Exception as e:
-                    logger.debug(f"   ⚠️ 读取本地图片失败：{e}")
+                    logger.info(f"   ⚠️ 读取本地图片失败：{e}")
             if not img_bytes:
                 continue
 
@@ -4592,13 +4592,13 @@ class DocxHtmlConverter:
                     pil_img.save(buf, format='JPEG', quality=92)
                     img_bytes = buf.getvalue()
                     real_mime = 'image/jpeg'
-                    logger.debug(f"   🔄 {real_mime} 不受 Spire 支持，已用 Pillow 转换为 JPEG")
+                    logger.info(f"   🔄 {real_mime} 不受 Spire 支持，已用 Pillow 转换为 JPEG")
                 except Exception as e:
-                    logger.debug(f"   ⚠️ Pillow 转换失败（{real_mime}→JPEG）：{e}，保留原格式")
+                    logger.info(f"   ⚠️ Pillow 转换失败（{real_mime}→JPEG）：{e}，保留原格式")
             # 修正 EXIF 方向（Spire 不处理 Orientation，浏览器会自动应用；无条件调用，函数内部自行判断）
             fixed = self._fix_exif_orientation(img_bytes)
             if fixed is not img_bytes:
-                logger.debug(f"   🔄 已修正 EXIF Orientation")
+                logger.info(f"   🔄 已修正 EXIF Orientation")
                 img_bytes = fixed
 
             ext   = MIME_TO_EXT.get(real_mime, '.png')
@@ -4609,7 +4609,7 @@ class DocxHtmlConverter:
 
             declared_mime = b64_m.group(1).lower() if b64_m else ''
             if declared_mime and declared_mime != real_mime:
-                logger.debug(f"   🔧 MIME 校正：{declared_mime} → {real_mime}（{fname}）")
+                logger.info(f"   🔧 MIME 校正：{declared_mime} → {real_mime}（{fname}）")
             phys_w, phys_h = self._read_image_wh(img_bytes)
 
             style_m = re.search(r'style="([^"]*)"', tag, re.IGNORECASE | re.DOTALL)
@@ -4683,7 +4683,7 @@ class DocxHtmlConverter:
                                + new_tag[style_m2.end():])
 
             patch_list.append((m.start(), m.end(), new_tag))
-            logger.debug(f"   📤 {fname}（{real_mime}，{w_px}×{h_px}px）")
+            logger.info(f"   📤 {fname}（{real_mime}，{w_px}×{h_px}px）")
         if not has_any:
             shutil.rmtree(temp_img_dir, ignore_errors=True)
             return html_text, None
@@ -4693,7 +4693,7 @@ class DocxHtmlConverter:
             result[start:end] = list(new_tag)
         html_text = ''.join(result)
 
-        logger.debug(f"   📦 共处理 {len(patch_list)} 张图片 → {temp_img_dir}")
+        logger.info(f"   📦 共处理 {len(patch_list)} 张图片 → {temp_img_dir}")
         return html_text, temp_img_dir
 
 
@@ -4704,12 +4704,12 @@ if __name__ == "__main__":
     # 示例1：DOCX转单文件HTML（自动判断是否需要分片）
     input_docx = r"C:\Users\you62\Desktop\标书助手生成（空白文档.docx）-1778135646335.docx_1778147545272.docx"
     output_html = r"C:\Users\you62\Desktop\index.html"
-    html_content = converter.docx_to_single_html(input_docx, output_html)
+    # html_content = converter.docx_to_single_html(input_docx, output_html)
 
     # 示例2：HTML文本转DOCX
-    # if os.path.exists(output_html):
-    #     with open(output_html, 'r', encoding='utf-8') as f:
-    #         sample_html = f.read()
-    #     converter.html_text_to_docx(sample_html, r"C:\Users\you62\Desktop\output.docx")
-    # else:
-    #     logger.debug(f"错误：未找到HTML文件 {output_html}")
+    if os.path.exists(output_html):
+        with open(output_html, 'r', encoding='utf-8') as f:
+            sample_html = f.read()
+        converter.html_text_to_docx(sample_html, r"C:\Users\you62\Desktop\output.docx")
+    else:
+        logger.info(f"错误：未找到HTML文件 {output_html}")
