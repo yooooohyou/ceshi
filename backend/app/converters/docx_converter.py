@@ -10,6 +10,7 @@ from app.utils.file_utils import generate_unique_filename
 from app.utils.html_utils import (
     add_nowrap_to_signature_paragraphs,
     fix_spire_anchor_image_roundtrip,
+    force_heading_color_black,
     hide_mce_anchor_tags,
     html_base64_images_to_urls,
 )
@@ -107,6 +108,7 @@ def docx_to_html(file_path: str):
             html_content = hide_mce_anchor_tags(html_content)
             html_content = add_nowrap_to_signature_paragraphs(html_content)
             html_content = fix_spire_anchor_image_roundtrip(html_content)
+            html_content = force_heading_color_black(html_content)
 
 
         return html_content or "", abs_file_path
