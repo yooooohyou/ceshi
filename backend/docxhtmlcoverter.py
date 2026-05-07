@@ -1190,6 +1190,7 @@ class DocxHtmlConverter:
             spire_fname = os.path.basename(src.replace('\\', '/'))
 
             # 构建 Spire 图片绝对路径
+            logger.info(src)
             abs_src = self._normalize_path(src)
             if not os.path.isabs(abs_src):
                 abs_src = self._normalize_path(
@@ -2490,7 +2491,7 @@ class DocxHtmlConverter:
                 continue
 
             # 防重：若该分节符前已有 SBNextMarker 段（如 HTML→DOCX 已预埋
-            # is-user-insert），把"下一节"页面属性 setdefault 进现有 JSON，
+            # is_user_insert），把"下一节"页面属性 setdefault 进现有 JSON，
             # 不再重复插入新 marker 段。
             prev = rec['p_elem'].getprevious()
             if self._is_sb_next_marker_paragraph(prev):
@@ -2999,7 +3000,7 @@ class DocxHtmlConverter:
 
                 iui_m = re.search(r'\bis_user_insert="(true|false)"', attrs_str, re.IGNORECASE)
                 if iui_m:
-                    meta['is-user-insert'] = iui_m.group(1).lower()
+                    meta['is_user_insert'] = iui_m.group(1).lower()
 
                 # 兜底：前端未传 data-next-* 时，从分节符 span 文本（"…横版"/"…竖版"）
                 # 推断"以下那节"的方向，并据当前节 page-width/height 交换出下一节尺寸。
@@ -3127,10 +3128,10 @@ class DocxHtmlConverter:
 
                 pPr.append(sectPr)
 
-                if 'is-user-insert' in meta:
+                if 'is_user_insert' in meta:
                     self._ensure_sb_next_marker_style(doc)
 
-                    payload = {'is-user-insert': meta['is-user-insert'] == 'true'}
+                    payload = {'is_user_insert': meta['is_user_insert'] == 'true'}
                     for k, v in meta.items():
                         if k.startswith('data-next-'):
                             payload[k[len('data-next-'):]] = v
@@ -4506,7 +4507,7 @@ if __name__ == "__main__":
     converter = DocxHtmlConverter()
 
     # 示例1：DOCX转单文件HTML（自动判断是否需要分片）
-    input_docx = r"C:\Users\you62\Desktop\9_供应能力（框架）_低压电线.docx"
+    input_docx = r"C:\Users\you62\Desktop\标书助手生成（空白文档.docx）-1778135646335.docx_1778147545272.docx"
     output_html = r"C:\Users\you62\Desktop\index.html"
     html_content = converter.docx_to_single_html(input_docx, output_html)
 
