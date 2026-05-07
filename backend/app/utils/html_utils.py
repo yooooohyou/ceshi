@@ -504,6 +504,17 @@ def get_leading_heading_text(html_content: str):
     return None
 
 
+_BLANK_HEADING_TEXT_RE = re.compile(
+    r'[\s   - ​-‍  　﻿]+'
+)
+
+
+def _heading_text_is_blank(tag) -> bool:
+    """heading 文本仅由空白字符（含 NBSP、全角空格、零宽字符、BOM）组成时视为空。"""
+    txt = tag.get_text(separator='', strip=False) or ''
+    return _BLANK_HEADING_TEXT_RE.sub('', txt) == ''
+
+
 def is_single_section_html(html_content: str) -> bool:
     """
     判定 HTML 是否属于"单段落式输入"：
@@ -511,11 +522,17 @@ def is_single_section_html(html_content: str) -> bool:
       - 只有一个 h1-h9 标题，且它是 body 首个有意义内容（首行）。
     用于 /doc_editor/update_html_by_node_new 决定是否走"直接更新当前节点"
     快速分支（无需调拆分服务重建子树）。
+
+    标题文本仅为空白字符（含 &nbsp;、全角空格、零宽字符等）时不计入总数，
+    视作占位段不影响判定（例如分节符后强制插入的空 <h2>&nbsp;</h2>）。
     """
     if not html_content or not isinstance(html_content, str):
         return True
     soup = BeautifulSoup(html_content, "html.parser")
-    headings = soup.find_all(re.compile(r"^h[1-9]$", re.IGNORECASE))
+    headings = [
+        h for h in soup.find_all(re.compile(r"^h[1-9]$", re.IGNORECASE))
+        if not _heading_text_is_blank(h)
+    ]
     total = len(headings)
     if total == 0:
         return True
