@@ -45,6 +45,36 @@ class DocxHtmlConverter:
         self.MAX_PARAGRAPHS = 450
         self.MAX_TABLES = 20
 
+    _EXT_TO_IMAGE_FORMAT = {
+        '.png':  0,
+        '.jpg':  1, '.jpeg': 1, '.jpe': 1, '.jfif': 1,
+        '.bmp':  2,
+        '.gif':  3,
+    }
+
+    def _pick_image_format(self, original_img_dir):
+        """
+        根据 original_img_dir 中已提取的原始图片扩展名分布，挑选多数派格式
+        作为 Spire HtmlExportOptions.ImageFormat 的取值，让 Spire 尽量保持原图
+        编码、避免 PNG↔JPG 重压缩，从而提高 _embed_images_to_html 的一/二级
+        匹配命中率，减少走兜底分支。
+        无原图、无可识别扩展名时返回 self.default_image_format。
+        """
+        if not original_img_dir or not os.path.isdir(original_img_dir):
+            return self.default_image_format
+        counter = {}
+        try:
+            for fname in os.listdir(original_img_dir):
+                ext = os.path.splitext(fname)[1].lower()
+                fmt = self._EXT_TO_IMAGE_FORMAT.get(ext)
+                if fmt is not None:
+                    counter[fmt] = counter.get(fmt, 0) + 1
+        except OSError:
+            return self.default_image_format
+        if not counter:
+            return self.default_image_format
+        return max(counter.items(), key=lambda kv: kv[1])[0]
+
     # ------------------------------------------------------------------ #
     #  路径工具                                                             #
     # ------------------------------------------------------------------ #
@@ -1136,13 +1166,18 @@ class DocxHtmlConverter:
         在页眉、页脚、正文中生成多个 <img> 标签时，映射表只有一条记录，
         导致第二次以后的引用无法命中，最终图片内容全部错位。
 
-        新方案采用三级匹配策略，按优先级依次尝试：
+        新方案采用四级匹配策略，按优先级依次尝试：
           1. 二进制精确匹配：读取 Spire 生成的图片文件内容，与 original_img_dir
              中所有原始图片做逐字节比对，命中则使用原始无压缩图片的 base64。
              此策略完全不依赖文件名或顺序，对同一张图被引用 N 次的情况也正确。
           2. 文件名 stem 匹配（去扩展名不区分大小写）：
              Spire 修改了扩展名但文件名主体未变时使用。
-          3. 兜底：直接使用 Spire 生成的图片文件做 base64（保留原有兜底行为）。
+          3. 显示顺序对齐：当 Spire 重新压缩或重命名导致前两级都失败时，
+             按 <img> 在 HTML 中的出现序号 i 取 image_display_order[i]，
+             映射回 word/media 中的原始无损图片。Spire 输出 <img> 顺序与
+             文档显示顺序一致，因此该回退能在保证"一图多引"行为的前提下，
+             把绝大多数原本走兜底的图片重新对齐到原始 base64。
+          4. 兜底：直接使用 Spire 生成的图片文件做 base64（保留原有兜底行为）。
         """
         with open(html_path, 'r', encoding='utf-8') as f:
             html_content = f.read()
@@ -1177,6 +1212,12 @@ class DocxHtmlConverter:
         # ── 3. 逐个 <img> 标签做替换 ─────────────────────────────────────
         img_src_re = re.compile(r'<img\b[^>]*>', re.IGNORECASE | re.DOTALL)
 
+        order_list = list(image_display_order or [])
+        # img_index 记录当前处理到第几个非 data: URI 的 <img>，用于第三级
+        # "显示顺序对齐"。只有真正参与匹配的 <img> 才递增，避免被已内嵌的
+        # data: URI 标签或解析失败标签干扰序号。
+        img_index = [0]
+
         def _replace_img(m):
             tag   = m.group(0)
             src_m = re.search(r'src="([^"]+)"', tag)
@@ -1188,6 +1229,8 @@ class DocxHtmlConverter:
                 return tag  # 已内嵌，跳过
 
             spire_fname = os.path.basename(src.replace('\\', '/'))
+            cur_idx = img_index[0]
+            img_index[0] += 1
 
             # 构建 Spire 图片绝对路径
             abs_src = self._normalize_path(src)
@@ -1217,7 +1260,15 @@ class DocxHtmlConverter:
                     orig_fname  = orig_stem_map[spire_stem]
                     matched_b64 = orig_b64_map[orig_fname]
                     logger.debug(f"🔄 {spire_fname} 文件名匹配 → {orig_fname}")
-            # ── 第三级：兜底，直接用 Spire 生成的图片 ────────────────────
+            # ── 第三级：按显示顺序对齐 ────────────────────────────────────
+            if matched_b64 is None and cur_idx < len(order_list):
+                orig_fname = order_list[cur_idx]
+                if orig_fname in orig_b64_map:
+                    matched_b64 = orig_b64_map[orig_fname]
+                    logger.debug(
+                        f"🔄 {spire_fname} 顺序对齐[{cur_idx}] → {orig_fname}"
+                    )
+            # ── 第四级：兜底，直接用 Spire 生成的图片 ────────────────────
             if matched_b64 is None and os.path.exists(abs_src):
                 matched_b64 = self._image_to_base64(abs_src)
                 if matched_b64:
@@ -1877,10 +1928,13 @@ class DocxHtmlConverter:
         html_content = _remove_div_block(html_content, generic_hf_pattern)
         return html_content
 
-    def _docx_to_html_no_embed(self, docx_path, html_path):
+    def _docx_to_html_no_embed(self, docx_path, html_path, image_format=None):
         """
         【内部方法】DOCX转HTML，图片保留为文件引用，不做base64内嵌。
         专供分片流程使用。
+        image_format: 透传给 Spire HtmlExportOptions.ImageFormat；为 None 时
+                      使用 self.default_image_format。由分片主流程按整份 DOCX
+                      的原图主格式统一传入，避免每个 chunk 各自决策。
         """
         docx_path = self._normalize_path(docx_path)
         html_path = self._normalize_path(html_path)
@@ -1890,12 +1944,15 @@ class DocxHtmlConverter:
             os.path.join(html_dir, f"img_{uuid.uuid4().hex[:8]}")
         )
 
+        if image_format is None:
+            image_format = self.default_image_format
+
         document = Document()
         try:
             document.LoadFromFile(docx_path)
             document.HtmlExportOptions.ImageEmbedded = False
             document.HtmlExportOptions.ImagesPath = spire_img_dir
-            document.HtmlExportOptions.ImageFormat = self.default_image_format
+            document.HtmlExportOptions.ImageFormat = image_format
             document.SaveToFile(html_path, FileFormat.Html)
         except Exception as e:
             logger.error(f"❌ Spire转换HTML失败：{e}")
@@ -2103,6 +2160,7 @@ class DocxHtmlConverter:
         self._extract_original_images(docx_path, original_img_dir)
 
         img_size_map = self._extract_image_display_sizes(docx_path)
+        image_format = self._pick_image_format(original_img_dir)
 
         try:
             chunk_paths = self._split_docx_to_chunks(
@@ -2114,7 +2172,9 @@ class DocxHtmlConverter:
                 chunk_html_path = self._normalize_path(
                     os.path.join(chunk_dir, f"chunk_{idx:04d}.html")
                 )
-                ok = self._docx_to_html_no_embed(chunk_path, chunk_html_path)
+                ok = self._docx_to_html_no_embed(
+                    chunk_path, chunk_html_path, image_format=image_format
+                )
                 if ok:
                     chunk_html_paths.append(chunk_html_path)
                 else:
@@ -2228,13 +2288,16 @@ class DocxHtmlConverter:
         if not image_display_order and extracted_imgs:
             image_display_order = sorted(extracted_imgs)
             logger.warning(f"⚠️ 顺序解析为空，兜底使用：{image_display_order}")
+
+        image_format = self._pick_image_format(original_img_dir)
+
         # 6. Spire转换生成临时HTML（图片不内嵌，保留文件引用）
         document = Document()
         try:
             document.LoadFromFile(docx_path_for_spire)
             document.HtmlExportOptions.ImageEmbedded = False
             document.HtmlExportOptions.ImagesPath = spire_img_dir
-            document.HtmlExportOptions.ImageFormat = self.default_image_format
+            document.HtmlExportOptions.ImageFormat = image_format
             # 标题清理格式
             self._clean_docx_headings_before_convert(document)
             document.SaveToFile(html_path, FileFormat.Html)
