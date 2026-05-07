@@ -456,8 +456,7 @@ def get_html_heading_levels(html_content: str):
         return [], 0
     soup = BeautifulSoup(html_content, "html.parser")
     headings = soup.find_all(re.compile(r"^h[1-9]$", re.IGNORECASE))
-    # existing_levels = sorted({int(h.name[1]) for h in headings})
-    existing_levels = (int(h.name[1]) for h in headings)
+    existing_levels = sorted({int(h.name[1]) for h in headings})
     max_level = max(existing_levels) if existing_levels else 0
     len_existing_levels = len(existing_levels)
     return existing_levels, max_level, len_existing_levels
@@ -503,6 +502,26 @@ def get_leading_heading_text(html_content: str):
     if result and result[0] == "heading":
         return result[1]
     return None
+
+
+def is_single_section_html(html_content: str) -> bool:
+    """
+    判定 HTML 是否属于"单段落式输入"：
+      - 没有任何 h1-h9 标题；或
+      - 只有一个 h1-h9 标题，且它是 body 首个有意义内容（首行）。
+    用于 /doc_editor/update_html_by_node_new 决定是否走"直接更新当前节点"
+    快速分支（无需调拆分服务重建子树）。
+    """
+    if not html_content or not isinstance(html_content, str):
+        return True
+    soup = BeautifulSoup(html_content, "html.parser")
+    headings = soup.find_all(re.compile(r"^h[1-9]$", re.IGNORECASE))
+    total = len(headings)
+    if total == 0:
+        return True
+    if total == 1:
+        return get_leading_heading_text(html_content) is not None
+    return False
 
 
 def replace_first_heading_text(html_content: str, new_title: str) -> str:
