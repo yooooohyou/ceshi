@@ -541,6 +541,23 @@ def is_single_section_html(html_content: str) -> bool:
     return False
 
 
+def force_heading_color_black(html_content: str) -> str:
+    """在 Spire 导出 HTML 的 </head> 之前追加一段覆盖 CSS，把 h1-h9 默认文字色改为黑色。
+
+    层叠顺序晚于 Spire 默认 <style>，因此对未指定 inline color 的标题胜出；
+    不使用 !important，标签 inline style="color:..." 与内层 <span style="color:..."> 仍生效。
+    若 HTML 中找不到 </head>，原样返回。
+    """
+    if not html_content or '</head>' not in html_content:
+        return html_content or ''
+    override = (
+        '<style type="text/css">'
+        'h1,h2,h3,h4,h5,h6,h7,h8,h9{color:#000000}'
+        '</style>'
+    )
+    return html_content.replace('</head>', override + '</head>', 1)
+
+
 def replace_first_heading_text(html_content: str, new_title: str) -> str:
     """将 HTML 中第一个 h1-h6 标签的文本内容替换为 new_title。
     若找不到任何标题标签，则原样返回。"""
