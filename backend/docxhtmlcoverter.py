@@ -4929,7 +4929,7 @@ if __name__ == "__main__":
     # 示例1：DOCX转单文件HTML（自动判断是否需要分片）
     input_docx = r"C:\Users\you62\Desktop\9_供应能力（框架）_低压电线.docx"
     output_html = r"C:\Users\you62\Desktop\index.html"
-    html_content = converter.docx_to_single_html(input_docx, output_html)
+    # html_content = converter.docx_to_single_html(input_docx, output_html)
 
     # 示例2：HTML文本转DOCX
     if os.path.exists(output_html):
