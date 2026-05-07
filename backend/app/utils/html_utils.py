@@ -504,6 +504,26 @@ def get_leading_heading_text(html_content: str):
     return None
 
 
+def is_single_section_html(html_content: str) -> bool:
+    """
+    判定 HTML 是否属于"单段落式输入"：
+      - 没有任何 h1-h9 标题；或
+      - 只有一个 h1-h9 标题，且它是 body 首个有意义内容（首行）。
+    用于 /doc_editor/update_html_by_node_new 决定是否走"直接更新当前节点"
+    快速分支（无需调拆分服务重建子树）。
+    """
+    if not html_content or not isinstance(html_content, str):
+        return True
+    soup = BeautifulSoup(html_content, "html.parser")
+    headings = soup.find_all(re.compile(r"^h[1-9]$", re.IGNORECASE))
+    total = len(headings)
+    if total == 0:
+        return True
+    if total == 1:
+        return get_leading_heading_text(html_content) is not None
+    return False
+
+
 def replace_first_heading_text(html_content: str, new_title: str) -> str:
     """将 HTML 中第一个 h1-h6 标签的文本内容替换为 new_title。
     若找不到任何标题标签，则原样返回。"""

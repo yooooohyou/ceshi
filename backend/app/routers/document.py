@@ -31,6 +31,7 @@ from app.utils.html_utils import (
     get_leading_heading_text,
     html_base64_images_to_urls,
     html_img_url_to_base64,
+    is_single_section_html,
     replace_first_heading_text,
 )
 from app.utils.path_utils import save_html_and_get_url
@@ -364,8 +365,8 @@ async def update_html_by_node_new(
         current_time = datetime.datetime.now()
         logger.info("判断当前html层级")
         logger.info(max_level)
-        # ── 无标题：直接更新当前节点 ────────────────────────────────────────
-        if max_level == 0 and len_existing_levels == 1:
+        # ── 单段输入（无标题，或仅首行一个标题）：直接更新当前节点 ──────────
+        if is_single_section_html(html_content):
             success, result, temp_docx_path_1 = convert_html_to_docx(html_content)
             eid = os.path.splitext(os.path.basename(temp_docx_path_1))[0]
 
