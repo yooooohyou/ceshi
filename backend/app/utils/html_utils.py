@@ -446,7 +446,7 @@ def add_contenteditable_to_headings(html_content: str) -> str:
         return html_content
     soup = BeautifulSoup(html_content, "html.parser")
     for heading in soup.find_all(re.compile(r"^h[1-9]$", re.IGNORECASE)):
-        heading["contenteditable"] = "true"
+        heading["contenteditable"] = "false"
     return str(soup)
 
 
