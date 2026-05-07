@@ -110,6 +110,16 @@ def init_db_tables():
     ADD COLUMN "title_font_dict" jsonb DEFAULT NULL;
     """
 
+    check_is_deleted_sql = """
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'yxdl_docx_title_trees' AND column_name = 'is_deleted'
+    LIMIT 1;
+    """
+    alter_is_deleted_sql = """
+    ALTER TABLE "yxdl_docx_title_trees"
+    ADD COLUMN "is_deleted" int2 NOT NULL DEFAULT 0;
+    """
+
     ddl_steps = [
         ("create_upload_records", create_file_table_sql),
         ("create_title_trees",    create_title_tree_table_sql),
@@ -135,6 +145,17 @@ def init_db_tables():
                 conn.commit()
     except Exception as e:
         logger.warning(f"数据库初始化步骤 add_title_font_dict 失败，跳过：{e}")
+
+    # is_deleted 列：先查后加，独立事务
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(check_is_deleted_sql)
+                if not cursor.fetchone():
+                    cursor.execute(alter_is_deleted_sql)
+                conn.commit()
+    except Exception as e:
+        logger.warning(f"数据库初始化步骤 add_is_deleted 失败，跳过：{e}")
 
     logger.debug("PostgreSQL 数据表初始化流程结束")
 
@@ -205,7 +226,7 @@ def get_next_batch_count(record_id: int) -> int:
     sql = """
         SELECT COALESCE(MAX(batch_count), 0) + 1
         FROM "yxdl_docx_title_trees"
-        WHERE record_id = %s;
+        WHERE record_id = %s AND is_deleted = 0;
     """
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
@@ -226,7 +247,7 @@ def get_tree_node_file_paths(record_id: int) -> List[str]:
             ELSE origin_file_path
         END AS file_path
     FROM "yxdl_docx_title_trees"
-    WHERE record_id = %s;
+    WHERE record_id = %s AND is_deleted = 0;
     """
     try:
         with get_db_connection() as conn:
@@ -246,6 +267,45 @@ def get_tree_node_file_paths(record_id: int) -> List[str]:
 
 
 # ─── 树节点处理 ──────────────────────────────────────────────────────────────
+
+def soft_delete_tree_nodes(node_ids: List[int]) -> Dict[str, Any]:
+    """级联软删除给定节点及其所有子孙（is_deleted = 1）。
+
+    使用 PostgreSQL WITH RECURSIVE 一次性找出输入节点 + 全部子孙并 UPDATE，
+    单事务原子提交；只软删 is_deleted = 0 的行，幂等。
+    返回 {affected_ids: [...], affected_count: int, missing_ids: [...]}。
+    """
+    if not node_ids:
+        return {"affected_ids": [], "affected_count": 0, "missing_ids": []}
+
+    sql = """
+    WITH RECURSIVE descendants(id) AS (
+        SELECT id FROM "yxdl_docx_title_trees"
+        WHERE id = ANY(%s) AND is_deleted = 0
+      UNION
+        SELECT t.id FROM "yxdl_docx_title_trees" t
+        JOIN descendants d ON t.parent_id = d.id
+        WHERE t.is_deleted = 0
+    )
+    UPDATE "yxdl_docx_title_trees" SET
+        is_deleted = 1,
+        update_time = CURRENT_TIMESTAMP
+    WHERE id IN (SELECT id FROM descendants)
+    RETURNING id;
+    """
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, (list(node_ids),))
+            affected = [row[0] for row in cursor.fetchall()]
+            conn.commit()
+    affected_set = set(affected)
+    missing = [nid for nid in node_ids if nid not in affected_set]
+    return {
+        "affected_ids": affected,
+        "affected_count": len(affected),
+        "missing_ids": missing,
+    }
+
 
 def process_split_tree_nodes(
     nodes,
@@ -431,7 +491,7 @@ def process_single_tree_node(
             SET update_time = %s, level = %s, origin_file_path = %s,
                 html_content = %s, is_conversion_completion = %s, eid = %s,
                 title_font_dict = %s
-            WHERE record_id = %s AND id = %s
+            WHERE record_id = %s AND id = %s AND is_deleted = 0
             RETURNING id;
             """
             params = (
@@ -446,7 +506,7 @@ def process_single_tree_node(
             SET update_time = %s, level = %s, origin_file_path = %s,
                 is_conversion_completion = %s, eid = %s,
                 title_font_dict = %s
-            WHERE record_id = %s AND id = %s
+            WHERE record_id = %s AND id = %s AND is_deleted = 0
             RETURNING id;
             """
             params = (
@@ -525,7 +585,7 @@ def recover_split_tree_nodes(record_id: int) -> List[Dict[str, Any]]:
         id, title_text, level, eid, idx, parent_id, batch_count,
         origin_file_path, update_file_path, is_conversion_completion, split_id
     FROM "yxdl_docx_title_trees"
-    WHERE record_id = %s
+    WHERE record_id = %s AND is_deleted = 0
     ORDER BY level ASC, idx ASC;
     """
     try:
@@ -578,7 +638,7 @@ def query_and_build_tree(rec_id: int, cur_time: datetime.datetime) -> List[Dict[
             id, title_text, level, eid, idx, parent_id, batch_count,
             origin_file_path, update_file_path, is_conversion_completion
         FROM "yxdl_docx_title_trees"
-        WHERE record_id = %s
+        WHERE record_id = %s AND is_deleted = 0
         ORDER BY level ASC, idx ASC;
     """
     try:
