@@ -514,6 +514,8 @@ def is_single_section_html(html_content: str) -> bool:
     """
     if not html_content or not isinstance(html_content, str):
         return True
+    logger.info(11111111111111111)
+    logger.info(html_content)
     soup = BeautifulSoup(html_content, "html.parser")
     headings = soup.find_all(re.compile(r"^h[1-9]$", re.IGNORECASE))
     total = len(headings)
