@@ -26,6 +26,7 @@ from app.db.database import (
 from app.models.schemas import unified_response, UpdateTreeStructureRequest, TreeNodeUpdate
 from app.utils.file_utils import generate_unique_file_id
 from app.utils.html_utils import (
+    add_contenteditable_to_headings,
     get_html_heading_levels,
     get_leading_heading_text,
     html_base64_images_to_urls,
@@ -115,7 +116,9 @@ async def get_html_by_node(request: Request, node_id: int):
                 "node_id": node_id,
                 "title_text": updated_result["title_text"],
                 "level": updated_result["level"],
-                "http_path": save_html_and_get_url(updated_result["html_content"] or ""),
+                "http_path": save_html_and_get_url(
+                    add_contenteditable_to_headings(updated_result["html_content"] or "")
+                ),
                 "temp_file_docx_": temp_file_docx_,
             })
 
@@ -123,7 +126,9 @@ async def get_html_by_node(request: Request, node_id: int):
             "node_id": node_id,
             "title_text": result["title_text"],
             "level": result["level"],
-            "http_path": save_html_and_get_url(result["html_content"] or ""),
+            "http_path": save_html_and_get_url(
+                add_contenteditable_to_headings(result["html_content"] or "")
+            ),
         })
 
     except Exception as e:

@@ -440,6 +440,16 @@ def fix_spire_anchor_image_roundtrip(html_content: str) -> str:
 
 
 
+def add_contenteditable_to_headings(html_content: str) -> str:
+    """为 HTML 中所有 h1-h9 标签添加 contenteditable="true" 属性。"""
+    if not html_content or not isinstance(html_content, str):
+        return html_content
+    soup = BeautifulSoup(html_content, "html.parser")
+    for heading in soup.find_all(re.compile(r"^h[1-9]$", re.IGNORECASE)):
+        heading["contenteditable"] = "true"
+    return str(soup)
+
+
 def get_html_heading_levels(html_content: str):
     """返回 (existing_levels, max_level)"""
     if not html_content or not isinstance(html_content, str):
