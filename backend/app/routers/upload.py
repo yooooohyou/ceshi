@@ -341,8 +341,33 @@ async def route_docx2html_marge(
             del_page_break=0,
         )
 
+        # 拆分服务 data.files 只是落盘的扁平结果，顺序无保证（had_title=1 时
+        # 标题 chunk 常被排到末尾），直接按 files 顺序拼会让首页跑到 HTML 末尾。
+        # 改用 data.tree（带 eid/idx/children 的真实文档顺序）做 DFS，配合
+        # build_eid_path_mapping 把 eid 映射到 file_path，按树序合并。
+        tree_nodes = [TreeItem(**item) for item in split_result.data.get("tree", [])]
+        eid_path_map = build_eid_path_mapping(split_result.data.get("files", []))
+        for node in tree_nodes:
+            assign_file_path_to_tree(node, eid_path_map)
+
+        ordered_files: list[str] = []
+        seen: set[str] = set()
+
+        def _collect_in_tree_order(nodes):
+            for n in nodes:
+                fp = (n.file_path or "").strip()
+                if fp and fp not in seen:
+                    seen.add(fp)
+                    ordered_files.append(fp)
+                _collect_in_tree_order(n.children or [])
+
+        _collect_in_tree_order(tree_nodes)
+
+        if not ordered_files:
+            ordered_files = list(split_result.data.get("files", []))
+
         html_list = []
-        for file__ in split_result.data.get("files", []):
+        for file__ in ordered_files:
             html_content, _ = docx_to_html(file__)
             html_list.append(html_content)
         total_html_content = merge_html_texts(html_list)
