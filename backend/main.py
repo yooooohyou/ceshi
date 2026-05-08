@@ -30,6 +30,12 @@ app.add_middleware(
 if system_path == "Windows":
     app.mount(STATIC_WEB_PREFIX, StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
+# ─── /watermark 静态目录挂载（用于资质模板等下载） ───────────────────────────
+from app.routers.bid_assistant import STATIC_DIR as _BID_STATIC_DIR, WATERMARK_URL_PREFIX  # noqa: E402
+import os as _os  # noqa: E402
+if _os.path.isdir(_BID_STATIC_DIR):
+    app.mount(WATERMARK_URL_PREFIX, StaticFiles(directory=_BID_STATIC_DIR), name="watermark")
+
 # ─── HTTP 日志中间件 ──────────────────────────────────────────────────────────
 app.middleware("http")(http_log_middleware)
 
