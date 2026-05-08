@@ -57,7 +57,6 @@ app.include_router(conversion.router,    prefix="/doc_editor", tags=["转换"])
 app.include_router(generation.router,    prefix="/doc_editor", tags=["生成器"])
 app.include_router(embeds.router,        prefix="/doc_editor", tags=["嵌入组件"])
 app.include_router(bid_assistant.router, prefix="/doc_editor", tags=["招投标助手"])
-app.include_router(bid_assistant.watermark_router, tags=["水印下载"])
 app.include_router(logs.router,          tags=["日志"])
 app.include_router(misc.router,          tags=["其他"])
 
