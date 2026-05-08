@@ -518,21 +518,18 @@ async def update_html_by_node_new(
         batch_count = get_next_batch_count(record_id)
         first_node = tree_nodes.pop(0)
 
-        # 层级重基：拆分服务返回的 level 是 HTML 中绝对 h-tag 编号（通常根=1），
-        # 与被更新节点在数据库里的 level 无关。把整棵子树平移 (now_level - first_node.level)，
-        # 使得 first_node 落到原节点位置，后代按相对深度递增，并 cap 在 MAX_LEVEL_NODE。
-        delta = now_level - first_node.level
-
-        def _rebase_levels(ns, d):
+        # 拆分服务返回的 level 是 HTML 原 h-tag 数字（H2→2、H3→3 …），
+        # DB 中 yxdl_docx_title_trees.level 直接采用同一坐标系，不再按 now_level 平移。
+        # process_single_tree_node 会用 first_node.level 覆盖 row.level 列，
+        # 自动让被更新 row 跟随 HTML 首标题的 h-tag 数字。
+        def _cap_levels(ns):
             for n in ns:
-                n.level = max(1, min(MAX_LEVEL_NODE, n.level + d))
+                n.level = max(1, min(MAX_LEVEL_NODE, n.level))
                 if n.children:
-                    _rebase_levels(n.children, d)
+                    _cap_levels(n.children)
 
-        first_node.level = now_level
-        if first_node.children:
-            _rebase_levels(first_node.children, delta)
-        _rebase_levels(tree_nodes, delta)
+        _cap_levels([first_node])
+        _cap_levels(tree_nodes)
 
         first_result = process_single_tree_node(first_node, record_id, node_id, current_time, convert_html=False)
 
