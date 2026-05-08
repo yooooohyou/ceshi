@@ -24,7 +24,7 @@ from app.db.database import (
     soft_delete_tree_nodes,
 )
 from app.models.schemas import unified_response, UpdateTreeStructureRequest, TreeNodeUpdate
-from app.utils.file_utils import generate_unique_file_id
+from app.utils.file_utils import generate_unique_file_id, generate_unique_filename
 from app.utils.html_utils import (
     add_contenteditable_to_headings,
     get_html_heading_levels,
@@ -455,12 +455,44 @@ async def update_html_by_node_new(
         if not tree_nodes:
             return unified_response(500, "拆分结果为空")
 
+        # 剥虚拟根前，把它 file_path（首标题前的"裸"段落/表格/图等无主内容）
+        # 合并到首个真实子节点 file_path 头部，否则 pop 后该段 docx 没人引用，
+        # "默认章节"里的内容会彻底丢失。
+        def _absorb_wrapper_content(virtual_root):
+            children = virtual_root.children or []
+            wrapper_fp = (getattr(virtual_root, "file_path", None) or "").strip()
+            if not wrapper_fp or not os.path.exists(wrapper_fp) or not children:
+                return
+            first_child = children[0]
+            child_fp = (first_child.file_path or "").strip()
+            if not child_fp or not os.path.exists(child_fp):
+                first_child.file_path = wrapper_fp
+                return
+            try:
+                from docxhtmlcoverter import DocxHtmlConverter
+                merged_path = os.path.join(
+                    UPLOAD_DIR, generate_unique_filename("absorbed.docx")
+                )
+                ok = DocxHtmlConverter()._merge_docx_chunks(
+                    [wrapper_fp, child_fp], merged_path
+                )
+                if ok and os.path.exists(merged_path):
+                    first_child.file_path = merged_path
+                else:
+                    logger.warning(
+                        f"剥虚拟根：合并 wrapper 到首子节点失败 "
+                        f"wrapper={wrapper_fp} child={child_fp}，按原 pop 处理"
+                    )
+            except Exception as _e:
+                logger.warning(f"剥虚拟根：合并 file_path 异常 err={_e}，按原 pop 处理")
+
         # 剥掉拆分服务给整篇 HTML 加的虚拟外层根：当 HTML 实际最小标题级 > 拆分根 level 时，
         # 拆分根并非真实标题（拆分服务在 had_title=1 时会把整篇文档包一层 level=1 的容器）。
         min_real_level = min(existing_levels) if existing_levels else 1
         stripped_virtual = False
         while tree_nodes and tree_nodes[0].level < min_real_level:
             virtual_root = tree_nodes.pop(0)
+            _absorb_wrapper_content(virtual_root)
             tree_nodes = (virtual_root.children or []) + tree_nodes
             stripped_virtual = True
 
@@ -476,6 +508,7 @@ async def update_html_by_node_new(
             and (tree_nodes[0].text or "").strip() == "默认章节"
         ):
             virtual_root = tree_nodes.pop(0)
+            _absorb_wrapper_content(virtual_root)
             tree_nodes = (virtual_root.children or []) + tree_nodes
             stripped_virtual = True
 
