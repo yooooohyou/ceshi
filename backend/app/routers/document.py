@@ -374,9 +374,25 @@ async def update_html_by_node_new(
                              "update_file_path = %s", "eid = %s", "is_conversion_completion = %s"]
             update_values = [html_content, current_time, temp_docx_path_1, eid, 1]
 
+            # 跟随 HTML 首行 heading：title 显式参数优先，否则用 heading 文本；
+            # level 直接用 h-tag 数字（与多段路径"保留 HTML 原 h-tag"对齐）。
+            leading = get_leading_heading_text(html_content)
+            h_level, h_text = leading if leading is not None else (None, None)
+
+            new_title = None
             if title_text is not None and title_text.strip():
+                new_title = title_text.strip()
+            elif h_text and h_text.strip():
+                new_title = h_text.strip()
+            if new_title:
                 update_fields.append("title_text = %s")
-                update_values.append(title_text.strip())
+                update_values.append(new_title)
+
+            new_level = None
+            if h_level is not None:
+                new_level = max(1, min(MAX_LEVEL_NODE, int(h_level)))
+                update_fields.append("level = %s")
+                update_values.append(new_level)
 
             update_sql = f"""
                 UPDATE "yxdl_docx_title_trees"
@@ -394,7 +410,8 @@ async def update_html_by_node_new(
             return unified_response(200, "节点HTML内容更新成功", {
                 "node_id": node_id,
                 "node_ids": node_ids,
-                "updated_title": ("标题更新为" + title_text.strip()) if title_text else "标题未更新",
+                "updated_title": ("标题更新为" + new_title) if new_title else "标题未更新",
+                "updated_level": new_level,
                 "update_time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
             })
 
