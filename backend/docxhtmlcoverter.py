@@ -3056,13 +3056,13 @@ class DocxHtmlConverter:
                     breaks_map[_marker]['meta'].setdefault(next_key, _v)
 
         # 清理：移除任何未被消费的残留 SBNextMarker 独立 marker 段，避免污染 HTML
-        for _para in list(doc.paragraphs):
-            _p_elem = _para._p
-            if self._is_sb_next_marker_paragraph(_p_elem):
-                _parent = _p_elem.getparent()
-                if _parent is not None:
-                    _parent.remove(_p_elem)
-                    modified = True
+        # for _para in list(doc.paragraphs):
+        #     _p_elem = _para._p
+        #     if self._is_sb_next_marker_paragraph(_p_elem):
+        #         _parent = _p_elem.getparent()
+        #         if _parent is not None:
+        #             _parent.remove(_p_elem)
+        #             modified = True
 
         temp_docx_name = f"_breaks_{uuid.uuid4().hex[:8]}.docx"
         temp_docx_path = self._normalize_path(os.path.join(work_dir, temp_docx_name))
