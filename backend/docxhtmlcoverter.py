@@ -3260,6 +3260,29 @@ class DocxHtmlConverter:
         if not breaks_info:
             return
 
+        # OOXML 不变量：上一节分节符的 data-next-* 等价于下一节分节符的 data-*
+        # （都描述夹在二者之间的那一节）。HTML 经手工编辑后 data-* 可能与
+        # 上游 data-next-* 不一致；以 data-next-* 为权威源向下传播覆盖，
+        # 避免出现"应横版的节被写成竖版"等版式错位。
+        prev_next_meta = None
+        for _info in breaks_info:
+            if _info.get('type') != 'section':
+                continue
+            _meta = _info.setdefault('meta', {})
+            if prev_next_meta is not None:
+                for _src, _dst in (
+                    ('data-next-page-width',    'data-page-width'),
+                    ('data-next-page-height',   'data-page-height'),
+                    ('data-next-orientation',   'data-orientation'),
+                    ('data-next-margin-top',    'data-margin-top'),
+                    ('data-next-margin-bottom', 'data-margin-bottom'),
+                    ('data-next-margin-left',   'data-margin-left'),
+                    ('data-next-margin-right',  'data-margin-right'),
+                ):
+                    if _src in prev_next_meta:
+                        _meta[_dst] = prev_next_meta[_src]
+            prev_next_meta = _meta
+
         marker_map = {item['marker']: item for item in breaks_info}
         doc = PythonDocx(docx_path)
         modified = False
