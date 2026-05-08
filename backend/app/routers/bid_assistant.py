@@ -2,15 +2,17 @@ import logging
 import os
 from urllib.parse import quote, urlparse
 
-from fastapi import APIRouter, Body
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Body, HTTPException
+from fastapi.responses import FileResponse, JSONResponse
 
 from app.core.config import get_server_uploads_config
 
 router = APIRouter()
+# 用于无 /doc_editor 前缀的下载路由
+watermark_router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# 静态文件目录（backend/static），挂载在 /watermark/ 路径下
+# 静态文件目录（backend/static）
 STATIC_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "static")
 )
@@ -83,3 +85,31 @@ async def template_file_upload1(
             "msg": f"接口异常：{str(e)}",
             "data": "",
         })
+
+
+# ─── /watermark/<file_name> 直接下载源文件（不做任何压缩/转换） ─────────────
+@watermark_router.get(
+    f"{WATERMARK_URL_PREFIX}/{{file_name:path}}",
+    summary="下载 static 下的源文件（原样字节流）",
+    include_in_schema=False,
+)
+async def watermark_download(file_name: str):
+    safe_name = os.path.basename(file_name)
+    if not safe_name or safe_name in {".", ".."}:
+        raise HTTPException(status_code=400, detail="非法的文件名")
+
+    abs_path = os.path.join(STATIC_DIR, safe_name)
+    if not os.path.isfile(abs_path):
+        raise HTTPException(status_code=404, detail=f"文件不存在：{safe_name}")
+
+    return FileResponse(
+        path=abs_path,
+        filename=safe_name,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe_name)}",
+            "Content-Encoding": "identity",
+            "Cache-Control": "no-transform",
+        },
+    )
+
