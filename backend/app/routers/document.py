@@ -374,9 +374,20 @@ async def update_html_by_node_new(
                              "update_file_path = %s", "eid = %s", "is_conversion_completion = %s"]
             update_values = [html_content, current_time, temp_docx_path_1, eid, 1]
 
+            # 显式参数优先；否则跟随 HTML 首行 heading 文本，
+            # 让"在 HTML 里直接改首行标题"也能同步到 DB 与返回树。
+            new_title = None
             if title_text is not None and title_text.strip():
+                new_title = title_text.strip()
+            else:
+                leading = get_leading_heading_text(html_content)
+                if leading is not None:
+                    _lvl, ltext = leading
+                    if ltext and ltext.strip():
+                        new_title = ltext.strip()
+            if new_title:
                 update_fields.append("title_text = %s")
-                update_values.append(title_text.strip())
+                update_values.append(new_title)
 
             update_sql = f"""
                 UPDATE "yxdl_docx_title_trees"
@@ -394,7 +405,7 @@ async def update_html_by_node_new(
             return unified_response(200, "节点HTML内容更新成功", {
                 "node_id": node_id,
                 "node_ids": node_ids,
-                "updated_title": ("标题更新为" + title_text.strip()) if title_text else "标题未更新",
+                "updated_title": ("标题更新为" + new_title) if new_title else "标题未更新",
                 "update_time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
             })
 
