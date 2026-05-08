@@ -1012,10 +1012,13 @@ async def merge_docx_office_server(
                     f"merge_docx_office_server: out_map_path 兜底失败 src={src_path} err={cp_err}"
                 )
 
-    # ── 最后一步：清理合并产物中所有 SBNextMarker 段 ──────────────────────────
-    # 拆分阶段 inject_section_next_meta_markers 预埋的隐藏 marker 段（pStyle=
-    # SBNextMarker，vanish）会被合并接口一并并入最终 DOCX，虽不显示但仍是真实
-    # 段落，会让用户下载到的文档有空白段、且语义上不属于内容。
+    # ── 最后一步：清理合并产物中所有 SBNextMarker 痕迹 ────────────────────────
+    # 拆分阶段 inject_section_next_meta_markers 预埋的隐藏 marker（pStyle=
+    # SBNextMarker，run 带 vanish，文本形如 __SB_NEXT__{...}__/SB_NEXT__）会被
+    # 外部合并服务带进最终 DOCX。合并服务有时会把 marker 文本搬到带 sectPr 的
+    # 分节符段里、或丢掉 pStyle/vanish，导致 marker 文本在 Word 中变可见。
+    # 因此清理需双管齐下：1) pStyle=SBNextMarker 的整段直接删；2) 其它段落里
+    # 命中 marker 正则的 w:t 做 inline 替换；段落清空后若无 sectPr 才整段删。
     final_path = (
         merged_file_message.data.get("filepath")
         or merged_file_message.data.get("out_path", "")
@@ -1023,23 +1026,67 @@ async def merge_docx_office_server(
     if final_path and os.path.isfile(final_path):
         try:
             from docx import Document
+            from docx.oxml.ns import qn
             from docxhtmlcoverter import DocxHtmlConverter
+
+            sb_re = DocxHtmlConverter._SB_NEXT_MARKER_RE
+            sb_prefix = DocxHtmlConverter._SB_NEXT_MARKER_PREFIX
+            t_qn = qn('w:t')
+            sectPr_qn = qn('w:sectPr')
+            pPr_qn = qn('w:pPr')
 
             t_clean = time.perf_counter()
             cleanup_doc = Document(final_path)
             removed_marker = 0
+            cleaned_inline = 0
             for para in list(cleanup_doc.paragraphs):
                 p_elem = para._p
+
+                # 1) pStyle=SBNextMarker 的独立 marker 段：整段删
                 if DocxHtmlConverter._is_sb_next_marker_paragraph(p_elem):
                     parent = p_elem.getparent()
                     if parent is not None:
                         parent.remove(p_elem)
                         removed_marker += 1
-            if removed_marker:
+                    continue
+
+                # 2) 段落文本里有 __SB_NEXT__ 前缀：inline 清除 marker 文本
+                t_elems = list(p_elem.iter(t_qn))
+                if not t_elems:
+                    continue
+                full_text = ''.join((t.text or '') for t in t_elems)
+                if sb_prefix not in full_text:
+                    continue
+
+                hit = False
+                for t in t_elems:
+                    if t.text and sb_re.search(t.text):
+                        t.text = sb_re.sub('', t.text)
+                        hit = True
+                if not hit:
+                    # marker 跨多个 w:t（边缘情况）：把首个 w:t 改成清理后的全文，
+                    # 其余 w:t 清空，避免破坏其它段落格式时仅丢 marker 区段的样式。
+                    cleaned_full = sb_re.sub('', full_text)
+                    t_elems[0].text = cleaned_full
+                    for extra in t_elems[1:]:
+                        extra.text = ''
+
+                remaining = ''.join((t.text or '') for t in p_elem.iter(t_qn)).strip()
+                pPr = p_elem.find(pPr_qn)
+                has_sectPr = pPr is not None and pPr.find(sectPr_qn) is not None
+                if not remaining and not has_sectPr:
+                    parent = p_elem.getparent()
+                    if parent is not None:
+                        parent.remove(p_elem)
+                        removed_marker += 1
+                else:
+                    cleaned_inline += 1
+
+            if removed_marker or cleaned_inline:
                 cleanup_doc.save(final_path)
             logger.info(
-                f"merge_docx_office_server: 清理 SBNextMarker 段完成"
-                f" path={final_path} removed={removed_marker}"
+                f"merge_docx_office_server: 清理 SBNextMarker 完成"
+                f" path={final_path} removed={removed_marker} inline={cleaned_inline}"
                 f" 耗时={time.perf_counter() - t_clean:.2f}s"
             )
         except Exception as e:
