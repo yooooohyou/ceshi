@@ -1012,6 +1012,39 @@ async def merge_docx_office_server(
                     f"merge_docx_office_server: out_map_path 兜底失败 src={src_path} err={cp_err}"
                 )
 
+    # ── 最后一步：清理合并产物中所有 SBNextMarker 段 ──────────────────────────
+    # 拆分阶段 inject_section_next_meta_markers 预埋的隐藏 marker 段（pStyle=
+    # SBNextMarker，vanish）会被合并接口一并并入最终 DOCX，虽不显示但仍是真实
+    # 段落，会让用户下载到的文档有空白段、且语义上不属于内容。
+    final_path = (
+        merged_file_message.data.get("filepath")
+        or merged_file_message.data.get("out_path", "")
+    )
+    if final_path and os.path.isfile(final_path):
+        try:
+            from docx import Document
+            from docxhtmlcoverter import DocxHtmlConverter
+
+            t_clean = time.perf_counter()
+            cleanup_doc = Document(final_path)
+            removed_marker = 0
+            for para in list(cleanup_doc.paragraphs):
+                p_elem = para._p
+                if DocxHtmlConverter._is_sb_next_marker_paragraph(p_elem):
+                    parent = p_elem.getparent()
+                    if parent is not None:
+                        parent.remove(p_elem)
+                        removed_marker += 1
+            if removed_marker:
+                cleanup_doc.save(final_path)
+            logger.info(
+                f"merge_docx_office_server: 清理 SBNextMarker 段完成"
+                f" path={final_path} removed={removed_marker}"
+                f" 耗时={time.perf_counter() - t_clean:.2f}s"
+            )
+        except Exception as e:
+            logger.warning(f"merge_docx_office_server: SBNextMarker 清理失败 err={e}")
+
     return merged_file_message
 
 
